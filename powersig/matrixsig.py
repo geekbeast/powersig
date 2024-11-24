@@ -94,7 +94,7 @@ def build_tile_power_series(left_bc_ps: MatrixPowerSeries, bottom_bc_ps: MatrixP
     # Truncate if necessary using tbd utility functions to eliminate terms with really small coefficients.
 
     while True:
-        for step in range(1, 10):
+        for step in range(1, 16):
             u_n.inplace_matrix_integrate(IminusG1, IminusG2)
             # u_n = u_n.integrate(s_base=s_min, t_base=t_min)
             u_n *= rho
