@@ -81,10 +81,14 @@ def build_tile_power_series(left_bc_ps: MatrixPowerSeries, bottom_bc_ps: MatrixP
         u = MatrixPowerSeries((left_bc_ps + bottom_bc_ps - ic).coefficients.cuda())
     else:
         u = left_bc_ps + bottom_bc_ps - ic
-        
+
     u_n = u.deep_clone()
     IminusG1 = build_integration_gather_matrix_s(s_min, u_n.coefficients.shape[1],u_n.coefficients.device)
     IminusG2 = build_integration_gather_matrix_t(t_min, u_n.coefficients.shape[0],u_n.coefficients.device)
+
+    if torch.cuda.is_available():
+        IminusG1 = IminusG1.cuda()
+        IminusG2 = IminusG2.cuda()
     # print(f"u_0={u}")
     # Repeatedly integrate to generate the new power series
     # Truncate if necessary using tbd utility functions to eliminate terms with really small coefficients.
@@ -106,6 +110,9 @@ def build_tile_power_series(left_bc_ps: MatrixPowerSeries, bottom_bc_ps: MatrixP
             IminusG1 = build_integration_gather_matrix_s(s_min, u_n.coefficients.shape[1],u_n.coefficients.device)
             IminusG2 = build_integration_gather_matrix_t(t_min, u_n.coefficients.shape[0],u_n.coefficients.device)
             # print(f"Resized coefficient matrix to {u_n.coefficients.shape} for convergence.")
+            if torch.cuda.is_available():
+                IminusG1 = IminusG1.cuda()
+                IminusG2 = IminusG2.cuda()
 
     print(f"Final size of coefficient matrix: {u.coefficients.shape}")
     # Return the resulting power series
