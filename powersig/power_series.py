@@ -5,6 +5,8 @@ from typing import Self, Tuple
 import torch
 from torch import Tensor
 
+from powersig.util.series import resize
+
 
 class TileSolutionPowerSeries:
     def __init__(self, rho: float, s_base: float, t_base: float, initial_condition: float,
@@ -84,8 +86,151 @@ def matrix_geometric_series(A: torch.Tensor, truncation_order: int = 10):
     I = torch.eye(A.shape[0], dtype=A.dtype, device=A.device)
     return torch.matmul(torch.inverse(I - A), I - torch.matrix_power(A, truncation_order + 1))
 
-
 class MatrixPowerSeries:
+    """
+    This class represents a general power series in two integer variables by storing the coefficients of the
+    truncated power series for terms {s^i}{t^j} in a coefficient matrix $c_ij$
+    """
+
+    def __init__(self, coefficients: torch.Tensor):
+        assert len(coefficients.shape) == 2, "Coefficients must be a matrix."
+        self.coefficients = coefficients
+        self.A1 = self.build_A1()
+        self.A2 = self.build_A2()
+
+    def __call__(self, s: float, t: float) -> torch.Tensor:
+        return torch.matmul(torch.matmul(self.build_gather_t(t), self.coefficients), self.build_gather_s(s))
+
+    def build_gather_s(self, s: float) -> torch.Tensor:
+        return build_G1_s(s, self.coefficients.shape[1], self.coefficients.device)
+
+    def build_gather_t(self, t: float):
+        return build_G2_t(t, self.coefficients.shape[0], self.coefficients.device)
+
+    def inplace_matrix_integrate(self, IminusG1: torch.Tensor, IminusG2: torch.Tensor) -> Self:
+        indefinite_integral = torch.matmul(self.A2, torch.matmul(self.coefficients, self.A1))
+        self.coefficients = torch.matmul(torch.matmul(IminusG2, indefinite_integral), IminusG1)
+        return self
+
+    def inplace_integrate(self, s_base: float, t_base: float) -> Self:
+        """
+        This function is mainly used for testing integrate. When repeatedly integrating for the same domain, it is
+        worth using matrix_integrate directly.
+        :param s_base: The lower limit of integration for s
+        :param t_base: The lower limit of integration for t
+        :return: An integrated power series.
+        """
+        IminusG1 = build_integration_gather_matrix_s(s_base, self.coefficients.shape[1], self.coefficients.device)
+        IminusG2 = build_integration_gather_matrix_t(t_base, self.coefficients.shape[0], self.coefficients.device)
+        return self.inplace_matrix_integrate(IminusG1, IminusG2)
+
+    def bind_s(self, s: float) -> Self:
+        return self.bind_s_with_matrix(self.build_gather_s(s))
+
+    def bind_t(self, t: float) -> Self:
+        return self.bind_t_with_matrix(self.build_gather_t(t))
+
+    def bind_s_with_matrix(self, G1: torch.Tensor) -> Self:
+        self.coefficients[:, :1] = torch.matmul(self.coefficients, G1)
+        self.coefficients[:, 1:] = 0
+        return self
+
+    def bind_t_with_matrix(self, G2: torch.Tensor) -> Self:
+        self.coefficients[:1, :] = torch.matmul(G2, self.coefficients)
+        self.coefficients[1:, :] = 0
+        return self
+
+    def build_A1(self):
+        return torch.diag_embed(
+            1 / torch.arange(start=1, end=self.coefficients.shape[1], dtype=torch.float64, device=self.get_device()),
+            offset=1).to_sparse()
+
+    def build_A2(self):
+        return torch.diag_embed(
+            1 / torch.arange(start=1, end=self.coefficients.shape[1], dtype=torch.float64, device=self.get_device()),
+            offset=-1).to_sparse()
+
+    def get_device(self):
+        return self.coefficients.device
+
+    def __str__(self):
+        ps = ""
+        for i in range(self.coefficients.shape[0]):
+            for j in range(self.coefficients.shape[1]):
+                c = self.coefficients[i, j].item()
+                if c > 0:
+                    if ps == "":
+                        ps += f"{c}*s^{i}*t^{j} "
+                    else:
+                        ps += f"+ {c}*s^{i}*t^{j} "
+
+        return ps
+
+    def __add__(self, other: int | float | Self) -> Self:
+        if isinstance(other, int) or isinstance(other, float):
+            result = MatrixPowerSeries(torch.clone(self.coefficients))
+            result.coefficients[0,0] += other
+            return result
+
+        # Deliberately omitting check to make sure they are on the same device.
+        if self.coefficients.shape == other.coefficients.shape:
+            return MatrixPowerSeries(self.coefficients + other.coefficients)
+        elif self.coefficients.shape > other.coefficients.shape:
+            result = MatrixPowerSeries(resize(other.coefficients, self.coefficients.shape))
+            return result.__iadd__(self)
+        else:
+            result = MatrixPowerSeries(resize(self.coefficients, other.coefficients.shape))
+            return result.__iadd__(other)
+
+
+    def __iadd__(self, other: int | float | Self) -> Self:
+        if isinstance(other, int) or isinstance(other, float):
+            self.coefficients += other
+        else:
+            self.coefficients += other.coefficients
+
+        return self
+
+    def __sub__(self, other: int | float | Self) -> Self:
+        if isinstance(other, int) or isinstance(other, float):
+            result = MatrixPowerSeries(torch.clone(self.coefficients))
+            result.coefficients[0,0] -= other
+            return result
+
+        return MatrixPowerSeries(self.coefficients - other.coefficients)
+
+    def __isub__(self, other: int | float | Self) -> Self:
+        if isinstance(other, int) or isinstance(other, float):
+            self.coefficients[0,0] -= other
+        else:
+            self.coefficients -= other.coefficients
+
+        return self
+
+    def __mul__(self, other: int | float) -> Self:
+        result = MatrixPowerSeries(torch.clone(self.coefficients))
+        result.coefficients *= other
+
+        return result
+
+    def __imul__(self, other: int | float) -> Self:
+        self.coefficients *= other
+
+        return self
+
+    def deep_clone(self) -> Self:
+        return MatrixPowerSeries(torch.clone(self.coefficients))
+
+    def is_converged(self, tol: float = 1e-10) -> bool:
+        """
+        This function checks to see if coefficients have dropped off far enough for it to be safe to truncate.
+        """
+        return math.isclose(0,
+                     torch.max(torch.max(self.coefficients[-1, :]), torch.max(self.coefficients[0, :])).item(),
+                     rel_tol=0,
+                     abs_tol=tol)
+
+class SparseMatrixPowerSeries:
     """
     This class represents a general power series in two integer variables by storing the coefficients of the
     truncated power series for terms {s^i}{t^j} in a coefficient matrix $c_ij$

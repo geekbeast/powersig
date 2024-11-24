@@ -6,7 +6,7 @@ import torch
 
 from powersig.power_series import build_integration_gather_matrix_t, build_integration_gather_matrix_s, \
     MatrixPowerSeries
-from powersig.util.series import torch_compute_dot_prod, torch_compute_derivative_batch
+from powersig.util.series import torch_compute_dot_prod, torch_compute_derivative_batch, double_length
 
 
 class FrontierParameters:
@@ -21,12 +21,14 @@ class FrontierParameters:
     def is_ready(self) -> bool:
         return self.left_bc_ps is not None and self.bottom_bc_ps is not None and self.ic is not None
 
+
 class ParallelParameters:
     def __init__(self, i: int, j: int, dX_i: torch.Tensor, dY_j: torch.Tensor):
         self.i = i
         self.j = j
         self.dX_i = dX_i
         self.dY_j = dY_j
+
 
 class MatrixSig:
     def __init__(self, X: torch.Tensor, Y: torch.Tensor):
@@ -40,14 +42,21 @@ class MatrixSig:
 
     def compute_gram_matrix(self) -> torch.Tensor:
         devices = [torch.device(f"cuda:{i}") for i in range(torch.cuda.device_count())]
-        device_index = 0
         gram_matrix = torch.zeros((self.dX.shape[0], self.dY.shape[0]), dtype=torch.float64)
+
+        device_index = 0
+
         entries = []
         for i in range(self.dX.shape[0]):
             for j in range(self.dY.shape[0]):
-                entries.append(ParallelParameters(i, j, self.dX[i].to(device=devices[device_index]),
-                                                       self.dY[j].to(device=devices[device_index])))
-                device_index = (device_index + 1) % len(devices)
+                if len(devices) > 0:
+                    entries.append(ParallelParameters(i, j,
+                                                      self.dX[i].to(device=devices[device_index]),
+                                                      self.dY[j].to(device=devices[device_index])))
+                    device_index = (device_index + 1) % len(devices)
+                else:
+                    entries.append(ParallelParameters(i, j, self.dX[i], self.dY[j]))
+
         for i, j, entry in self.executor.map(compute_gram_matrix_entry, entries):
             gram_matrix[i, j] = entry  # entry.item()
 
@@ -64,28 +73,41 @@ def compute_gram_matrix_entry(params: ParallelParameters) -> (int, int, float):
         compute_gram_entry(params.dX_i, params.dY_j)
     )
 
+
 def build_tile_power_series(left_bc_ps: MatrixPowerSeries, bottom_bc_ps: MatrixPowerSeries, rho: float,
                             s_min: float, t_min: float, ic: float) -> MatrixPowerSeries:
     # Gather the constants into a new power series
     u = left_bc_ps + bottom_bc_ps - ic
     u_n = u.deep_clone()
-    IminusG1 = build_integration_gather_matrix_s(s_min, left_bc_ps.coefficients.shape[1],
-                                                 left_bc_ps.coefficients.device)
-    IminusG2 = build_integration_gather_matrix_t(t_min, left_bc_ps.coefficients.shape[0],
-                                                 left_bc_ps.coefficients.device)
+    IminusG1 = build_integration_gather_matrix_s(s_min, u_n.coefficients.shape[1],u_n.coefficients.device)
+    IminusG2 = build_integration_gather_matrix_t(t_min, u_n.coefficients.shape[0],u_n.coefficients.device)
     # print(f"u_0={u}")
     # Repeatedly integrate to generate the new power series
     # Truncate if necessary using tbd utility functions to eliminate terms with really small coefficients.
-    for step in range(1, 10):
-        u_n.inplace_matrix_integrate(IminusG1, IminusG2)
-        # u_n = u_n.integrate(s_base=s_min, t_base=t_min)
-        u_n *= rho
-        # print(f"u_{step}={u_n}")
-        u += u_n
-        # print(f"u={u}")
 
+    while True:
+        for step in range(1, 10):
+            u_n.inplace_matrix_integrate(IminusG1, IminusG2)
+            # u_n = u_n.integrate(s_base=s_min, t_base=t_min)
+            u_n *= rho
+            # print(f"u_{step}={u_n}")
+            u += u_n
+            # print(f"u={u}")
+
+        if u_n.is_converged():
+            break
+        else:
+            u_n = MatrixPowerSeries(double_length(u_n.coefficients))
+            u = MatrixPowerSeries(double_length(u.coefficients))
+            IminusG1 = build_integration_gather_matrix_s(s_min, u_n.coefficients.shape[1],u_n.coefficients.device)
+            IminusG2 = build_integration_gather_matrix_t(t_min, u_n.coefficients.shape[0],u_n.coefficients.device)
+            # print(f"Resized coefficient matrix to {u_n.coefficients.shape} for convergence.")
+
+    print(f"Final size of coefficient matrix: {u.coefficients.shape}")
     # Return the resulting power series
     return u
+
+
 
 
 def compute_gram_entry(dX_i, dY_j) -> float:
@@ -93,9 +115,9 @@ def compute_gram_entry(dX_i, dY_j) -> float:
     dt = 1 / dY_j.shape[0]
 
     # Initial boundary conditions
-    ocs = torch.zeros([2048, 2048], device=dX_i.device, dtype=torch.float64)  # Hard coded truncation order
+    ocs = torch.zeros([64, 64], device=dX_i.device, dtype=torch.float64)  # Hard coded truncation order
     ocs[0, 0] = 1
-    one = MatrixPowerSeries(ocs.to_sparse())
+    one = MatrixPowerSeries(ocs)
 
     initial_left_bc_ps = one.deep_clone()
     initial_bottom_bc_ps = one.deep_clone()

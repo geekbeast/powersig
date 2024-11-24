@@ -1,5 +1,14 @@
 import torch
 
+def double_length(tensor: torch.Tensor) -> torch.Tensor:
+    new_tensor = torch.zeros([tensor.shape[0] * 2, tensor.shape[1] * 2],dtype=torch.float64,device=tensor.device)
+    new_tensor[:tensor.shape[0], :tensor.shape[1]] = tensor
+    return new_tensor
+
+def resize(tensor: torch.Tensor, new_shape) -> torch.Tensor:
+    new_tensor = torch.zeros(new_shape,dtype=torch.float64,device=tensor.device)
+    new_tensor[:tensor.shape[0], :tensor.shape[1]] = tensor
+    return new_tensor
 
 def torch_compute_derivative(X):
     diff = (X[1:,:] - X[:-1,:])

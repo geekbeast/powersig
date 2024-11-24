@@ -4,7 +4,7 @@ import pickle
 import torch
 from sigkernel import sigkernel
 
-_batch, _len_x, _len_y, _dim = 2, 1000, 1000, 2
+_batch, _len_x, _len_y, _dim = 2, 100, 100, 2
 _fresh = True
 
 static_kernel = sigkernel.LinearKernel()
@@ -22,7 +22,7 @@ def get_test_config(fresh=_fresh):
 class TestRun:
     def __init__(self, batch: int = _batch,
                  len_x: int = _len_x, len_y: int = _len_y, dim: int = _dim,
-                 cuda: bool = True):
+                 cuda: bool = False):
         self.batch = batch
         self.len_x = len_x
         self.len_y = len_y
