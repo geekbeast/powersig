@@ -77,7 +77,11 @@ def compute_gram_matrix_entry(params: ParallelParameters) -> (int, int, float):
 def build_tile_power_series(left_bc_ps: MatrixPowerSeries, bottom_bc_ps: MatrixPowerSeries, rho: float,
                             s_min: float, t_min: float, ic: float) -> MatrixPowerSeries:
     # Gather the constants into a new power series
-    u = left_bc_ps + bottom_bc_ps - ic
+    if torch.cuda.is_available():
+        u = MatrixPowerSeries((left_bc_ps + bottom_bc_ps - ic).coefficients.cuda())
+    else:
+        u = left_bc_ps + bottom_bc_ps - ic
+        
     u_n = u.deep_clone()
     IminusG1 = build_integration_gather_matrix_s(s_min, u_n.coefficients.shape[1],u_n.coefficients.device)
     IminusG2 = build_integration_gather_matrix_t(t_min, u_n.coefficients.shape[0],u_n.coefficients.device)
