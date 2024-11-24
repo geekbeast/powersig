@@ -78,7 +78,8 @@ def build_tile_power_series(left_bc_ps: MatrixPowerSeries, bottom_bc_ps: MatrixP
                             s_min: float, t_min: float, ic: float) -> MatrixPowerSeries:
     # Gather the constants into a new power series
     if torch.cuda.is_available():
-        u = MatrixPowerSeries((left_bc_ps + bottom_bc_ps - ic).coefficients.cuda())
+        u = MatrixPowerSeries(left_bc_ps.coefficients.cuda())
+        u += MatrixPowerSeries(bottom_bc_ps.coefficients.cuda()) - ic
     else:
         u = left_bc_ps + bottom_bc_ps - ic
 
