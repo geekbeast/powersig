@@ -171,14 +171,22 @@ class MatrixPowerSeries:
     def __add__(self, other: int | float | Self) -> Self:
         if isinstance(other, int) or isinstance(other, float):
             result = MatrixPowerSeries(torch.clone(self.coefficients))
-            result.coefficients[0, 0] += other
+            add_indices = torch.tensor([[0], [0]])  # Indices of values to subtract
+            add_values = torch.tensor([other], dtype=torch.float)  # Values to subtract
+            add_tensor = torch.sparse_coo_tensor(add_indices, add_values, size=self.coefficients.shape,
+                                                      device=self.coefficients.device)
+            result.coefficients += add_tensor
             return result
         # Deliberately omitting check to make sure they are on the same device.
         return MatrixPowerSeries(self.coefficients + other.coefficients)
 
     def __iadd__(self, other: int | float | Self) -> Self:
         if isinstance(other, int) or isinstance(other, float):
-            self.coefficients[0, 0] += other
+            add_indices = torch.tensor([[0], [0]])  # Indices of values to subtract
+            add_values = torch.tensor([other], dtype=torch.float)  # Values to subtract
+            add_tensor = torch.sparse_coo_tensor(add_indices, add_values, size=self.coefficients.shape,
+                                                      device=self.coefficients.device)
+            self.coefficients += add_tensor
         else:
             self.coefficients += other.coefficients
 
@@ -204,7 +212,11 @@ class MatrixPowerSeries:
 
     def __isub__(self, other: int | float | Self) -> Self:
         if isinstance(other, int) or isinstance(other, float):
-            self.coefficients[0, 0] += other
+            subtract_indices = torch.tensor([[0], [0]])  # Indices of values to subtract
+            subtract_values = torch.tensor([other], dtype=torch.float)  # Values to subtract
+            subtract_tensor = torch.sparse_coo_tensor(subtract_indices, subtract_values, size=self.coefficients.shape,
+                                                      device=self.coefficients.device)
+            self.coefficients -= subtract_tensor
         else:
             self.coefficients -= other.coefficients
 
@@ -227,7 +239,7 @@ class MatrixPowerSeries:
 
 def build_G1_s(s: float, columns: int, device: torch.device):
     if math.isclose(s, 0.0, rel_tol=0.0, abs_tol=1e-15):
-        return torch.zeros((columns, 1), dtype=torch.float64, device=device)
+        return torch.zeros((columns, 1), dtype=torch.float64, device=device).to_sparse()
 
     gs = torch.arange(columns, dtype=torch.float64, device=device).reshape(columns, 1)
 
@@ -236,7 +248,7 @@ def build_G1_s(s: float, columns: int, device: torch.device):
 
 def build_G2_t(t: float, rows: int, device: torch.device):
     if math.isclose(t, 0.0, rel_tol=0.0, abs_tol=1e-15):
-        return torch.zeros((1, rows), dtype=torch.float64, device=device)
+        return torch.zeros((1, rows), dtype=torch.float64, device=device).to_sparse()
 
     gt = torch.arange(rows, dtype=torch.float64, device=device).reshape(1, rows)
 

@@ -12,7 +12,6 @@ setuptools
 datasets
 transformers
 sentencepiece==0.2.0
-cupy-cuda12x==13.3.0
 iisignature
 git+https://github.com/crispitagorico/sigkernel.git
 aeon
