@@ -28,7 +28,7 @@ class TestRun:
         self.len_y = len_y
         self.dim = dim
         self.cuda = cuda
-        self.X = torch.rand((batch, len_x, dim), dtype=torch.float64)*3  # shape (batch,len_x,dim)
+        self.X = torch.rand((batch, len_x, dim), dtype=torch.float64)*2  # shape (batch,len_x,dim)
         self.Y = torch.rand((batch, len_y, dim), dtype=torch.float64)  # shape (batch,len_y,dim)
         self.Z = torch.rand((batch, len_x, dim), dtype=torch.float64)  # shape
 
