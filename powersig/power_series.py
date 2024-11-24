@@ -130,13 +130,16 @@ class MatrixPowerSeries:
         return self.bind_t_with_matrix(self.build_gather_t(t))
 
     def bind_s_with_matrix(self, G1: torch.Tensor) -> Self:
-        self.coefficients[:, :1] = torch.matmul(self.coefficients, G1)
-        self.coefficients[:, 1:] = 0
+
+        # self.coefficients[:, :1] = torch.matmul(self.coefficients, G1)
+        self.coefficients = torch.matmul(self.coefficients, G1).to_sparse().resize_as_sparse_(self.coefficients)
+        # self.coefficients[:, 1:] = 0
         return self
 
     def bind_t_with_matrix(self, G2: torch.Tensor) -> Self:
-        self.coefficients[:1, :] = torch.matmul(G2, self.coefficients)
-        self.coefficients[1:, :] = 0
+        # self.coefficients[:1, :] = torch.matmul(G2, self.coefficients)
+        self.coefficients = torch.matmul(G2, self.coefficients).to_sparse().resize_as_sparse_(self.coefficients).to_sparse()
+        # self.coefficients[1:, :] = 0
         return self
 
     def build_A1(self):
@@ -189,7 +192,12 @@ class MatrixPowerSeries:
             # size = self.coefficients.shape
             # sparse_tensor = torch.sparse_coo_tensor(indices, values, size).cuda()
             # result.coefficients -= sparse_tensor
-            result.coefficients[0, 0] -= other
+
+            # For example, subtract 3 from the entry at index [1, 2]
+            subtract_indices = torch.tensor([[0], [0]])  # Indices of values to subtract
+            subtract_values = torch.tensor([other], dtype=torch.float)  # Values to subtract
+            subtract_tensor = torch.sparse_coo_tensor(subtract_indices, subtract_values, size=self.coefficients.shape, device=self.coefficients.device)
+            result.coefficients -= subtract_tensor
             return result
 
         return MatrixPowerSeries(self.coefficients - other.coefficients)

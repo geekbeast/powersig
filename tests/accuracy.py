@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from sigkernel import sigkernel
 
+from powersig.matrixsig import MatrixSig
 from powersig.power_series import SimplePowerSeries
 from powersig.simpesig import SimpleSig
 from tests.configuration import TestRun, signature_kernel
@@ -16,6 +17,10 @@ from tests.utils import setup_torch
 
 class TestSimplePowerSeriesAccuracy(unittest.TestCase):
     configuration = TestRun()
+
+    @classmethod
+    def setUpClass(cls):
+        setup_torch()
 
     def test_power_series_add_and_multiply(self):
         coeffs = [1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
@@ -75,36 +80,38 @@ class TestSimplePowerSeriesAccuracy(unittest.TestCase):
         mse = torch.mean((sk.cpu() - simple.cpu()) ** 2)
         print(f"MSE SimpleSig versus SigKernel: {mse}")
 
+        start = time.time()
+        m = MatrixSig(config.X, config.X).compute_gram_matrix()
+        print(f"Matrix Sig computation took: {time.time() - start}s")
+        print(f"Matrix Sig computation of gram Matrix: \n {m.tolist()}")
+        mse = torch.mean((sk.cpu() - m.cpu()) ** 2)
+        print(f"MSE MatrixSig versus SigKernel: {mse}")
 
-    def test_upper(self):
-        self.assertEqual('foo'.upper(), 'FOO')
-
-    def test_isupper(self):
-        self.assertTrue('FOO'.isupper())
-        self.assertFalse('Foo'.isupper())
-
-    def test_split(self):
-        s = 'hello world'
-        self.assertEqual(s.split(), ['hello', 'world'])
-        # check that s.split fails when the separator is not a string
-        with self.assertRaises(TypeError):
-            s.split(2)
 
 class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
+    configuration = TestRun()
 
-    def test_upper(self):
-        self.assertEqual('foo'.upper(), 'FOO')
+    @classmethod
+    def setUpClass(cls):
+        setup_torch()
 
-    def test_isupper(self):
-        self.assertTrue('FOO'.isupper())
-        self.assertFalse('Foo'.isupper())
+    def setUp(self):
+        print(f"Data shape: {self.__class__.configuration.X.shape}")
 
-    def test_split(self):
-        s = 'hello world'
-        self.assertEqual(s.split(), ['hello', 'world'])
-        # check that s.split fails when the separator is not a string
-        with self.assertRaises(TypeError):
-            s.split(2)
+    def test_build_gram_matrix(self):
+        config = self.__class__.configuration
+        max_batch = 10
+        start = time.time()
+        sk = signature_kernel.compute_Gram(config.X.cpu(), config.X.cpu(), max_batch)
+        print(f"SigKernel computation took: {time.time() - start}s")
+        print(f"SigKernel Gram Matrix: \n {sk.tolist()}")
+        start = time.time()
+        m = MatrixSig(config.X, config.X).compute_gram_matrix()
+        print(f"Matrix Sig computation took: {time.time() - start}s")
+        print(f"Matrix Sig computation of gram Matrix: \n {m.tolist()}")
+        mse = torch.mean((sk.cpu() - m.cpu()) ** 2)
+        print(f"MSE MatrixSig versus SigKernel: {mse}")
+
 
 if __name__== '__main__':
     setup_torch()

@@ -21,6 +21,12 @@ class FrontierParameters:
     def is_ready(self) -> bool:
         return self.left_bc_ps is not None and self.bottom_bc_ps is not None and self.ic is not None
 
+class ParallelParameters:
+    def __init__(self, i: int, j: int, dX_i: torch.Tensor, dY_j: torch.Tensor):
+        self.i = i
+        self.j = j
+        self.dX_i = dX_i
+        self.dY_j = dY_j
 
 class MatrixSig:
     def __init__(self, X: torch.Tensor, Y: torch.Tensor):
@@ -39,7 +45,7 @@ class MatrixSig:
         entries = []
         for i in range(self.dX.shape[0]):
             for j in range(self.dY.shape[0]):
-                entries.append(FrontierParameters(i, j, self.dX[i].to(device=devices[device_index]),
+                entries.append(ParallelParameters(i, j, self.dX[i].to(device=devices[device_index]),
                                                        self.dY[j].to(device=devices[device_index])))
                 device_index = (device_index + 1) % len(devices)
         for i, j, entry in self.executor.map(compute_gram_matrix_entry, entries):
@@ -51,11 +57,11 @@ class MatrixSig:
         return torch.matmul(self.dX[i], torch.t(self.dY[j]))
 
 
-def compute_gram_matrix_entry(params: FrontierParameters) -> (int, int, float):
+def compute_gram_matrix_entry(params: ParallelParameters) -> (int, int, float):
     return (
         params.i,
         params.j,
-        compute_it(params.dX_i, params.dY_j)
+        compute_gram_entry(params.dX_i, params.dY_j)
     )
 
 def build_tile_power_series(left_bc_ps: MatrixPowerSeries, bottom_bc_ps: MatrixPowerSeries, rho: float,
@@ -87,9 +93,9 @@ def compute_gram_entry(dX_i, dY_j) -> float:
     dt = 1 / dY_j.shape[0]
 
     # Initial boundary conditions
-    ocs = torch.zeros([256, 256], device=dX_i.device, dtype=torch.float64)  # Hard coded truncation order
+    ocs = torch.zeros([2048, 2048], device=dX_i.device, dtype=torch.float64)  # Hard coded truncation order
     ocs[0, 0] = 1
-    one = MatrixPowerSeries(ocs)
+    one = MatrixPowerSeries(ocs.to_sparse())
 
     initial_left_bc_ps = one.deep_clone()
     initial_bottom_bc_ps = one.deep_clone()
