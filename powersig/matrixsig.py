@@ -116,7 +116,7 @@ def build_tile_power_series(left_bc_ps: MatrixPowerSeries, bottom_bc_ps: MatrixP
 
     print(f"Final size of coefficient matrix: {u.coefficients.shape}")
     # Return the resulting power series
-    return u.cpu()
+    return MatrixPowerSeries(u.coefficients.cpu())
 
 
 
