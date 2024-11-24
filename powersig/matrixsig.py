@@ -49,7 +49,7 @@ class MatrixSig:
         entries = []
         for i in range(self.dX.shape[0]):
             for j in range(self.dY.shape[0]):
-                if len(devices) > 0:
+                if len(devices) and self.dX.is_cuda > 0:
                     entries.append(ParallelParameters(i, j,
                                                       self.dX[i].to(device=devices[device_index]),
                                                       self.dY[j].to(device=devices[device_index])))
