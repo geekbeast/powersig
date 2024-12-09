@@ -4,9 +4,9 @@ import pickle
 import torch
 from sigkernel import sigkernel
 
-_batch, _len_x, _len_y, _dim = 5, 500, 500, 5
+_batch, _len_x, _len_y, _dim = 5, 1000, 1000, 20
 _fresh = True
-
+torch.random.manual_seed(0)
 static_kernel = sigkernel.LinearKernel()
 dyadic_order = 5
 signature_kernel = sigkernel.SigKernel(static_kernel, dyadic_order)
@@ -28,7 +28,7 @@ class TestRun:
         self.len_y = len_y
         self.dim = dim
         self.cuda = cuda
-        self.X = torch.rand((batch, len_x, dim), dtype=torch.float64)  # shape (batch,len_x,dim)
+        self.X = torch.rand((batch, len_x, dim), dtype=torch.float64) / 1000  # shape (batch,len_x,dim)
         self.Y = torch.rand((batch, len_y, dim), dtype=torch.float64)  # shape (batch,len_y,dim)
         self.Z = torch.rand((batch, len_x, dim), dtype=torch.float64)  # shape
 

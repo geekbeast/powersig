@@ -29,7 +29,7 @@ class TileSolutionPowerSeries:
         # Polynomial order can be increase by truncation order each step.
         order = left_boundary.shape[1] + truncation_order
         self.initial_condition = torch.zeros([1, order], dtype=torch.float64, device=device)
-        self.initial_condition[0,0] = initial_condition
+        self.initial_condition[0, 0] = initial_condition
         bottom_integration_matrix = build_asymmetric_integration_matrix(rho, s_base, t_base, order, device)
         left_integration_matrix = build_asymmetric_integration_matrix(rho, t_base, s_base, order, device)
         symmetric_integration_matrix = build_symmetric_integration_matrix(rho, s_base, t_base, order, device)
@@ -38,17 +38,24 @@ class TileSolutionPowerSeries:
         self.central_series = torch.matmul(self.initial_condition, symmetric_integration_matrix)
 
     def __call__(self, s: float, t: float):
-        st = torch.pow(s, torch.arange(start=0, end=self.central_series.shape[1], dtype=torch.float64, device=self.central_series.device))*torch.pow(t, torch.arange(start=0, end=self.central_series.shape[1], dtype=torch.float64, device=self.central_series.device))
+        st = torch.pow(s, torch.arange(start=0, end=self.central_series.shape[1], dtype=torch.float64,
+                                       device=self.central_series.device)) * torch.pow(t, torch.arange(start=0, end=
+        self.central_series.shape[1], dtype=torch.float64, device=self.central_series.device))
         return torch.dot(self.central_series, st)
 
     def bind_s(self, s: float) -> torch.Tensor:
-        s_from_left = self.left_boundary_series * torch.pow(s, torch.arange(start=0, end=self.central_series.shape[1], dtype=torch.float64,device=self.central_series.device))
-        s_from_bottom = self.bottom_boundary_series * torch.pow(s, torch.arange(start=0, end=self.central_series.shape[1], dtype=torch.float64,device=self.central_series.device))
-
-
+        s_from_left = self.left_boundary_series * torch.pow(s, torch.arange(start=0, end=self.central_series.shape[1],
+                                                                            dtype=torch.float64,
+                                                                            device=self.central_series.device))
+        s_from_bottom = self.bottom_boundary_series * torch.pow(s,
+                                                                torch.arange(start=0, end=self.central_series.shape[1],
+                                                                             dtype=torch.float64,
+                                                                             device=self.central_series.device))
 
     def bind_t(self, t: float) -> torch.Tensor:
-        self.left_boundary_series * torch.pow(t, torch.arange(start=0, end=self.central_series.shape[1],dtype=torch.float64, device=self.central_series.device))
+        self.left_boundary_series * torch.pow(t, torch.arange(start=0, end=self.central_series.shape[1],
+                                                              dtype=torch.float64, device=self.central_series.device))
+
 
 def build_gather_matrices(g_1: float, g_2: float, order: int, device: torch.device) -> tuple[Tensor, Tensor]:
     G1 = torch.eye(order, dtype=torch.float64, device=device).to_sparse()
@@ -86,6 +93,7 @@ def matrix_geometric_series(A: torch.Tensor, truncation_order: int = 10):
     I = torch.eye(A.shape[0], dtype=A.dtype, device=A.device)
     return torch.matmul(torch.inverse(I - A), I - torch.matrix_power(A, truncation_order + 1))
 
+
 class MatrixPowerSeries:
     """
     This class represents a general power series in two integer variables by storing the coefficients of the
@@ -95,11 +103,12 @@ class MatrixPowerSeries:
     def __init__(self, coefficients: torch.Tensor):
         assert len(coefficients.shape) == 2, "Coefficients must be a matrix."
         self.coefficients = coefficients
-        self.A1 = self.build_A1()
-        self.A2 = self.build_A2()
 
     def __call__(self, s: float, t: float) -> torch.Tensor:
-        return torch.matmul(torch.matmul(self.build_gather_t(t), self.coefficients), self.build_gather_s(s))
+        return self.evaluate(self.build_gather_s(s), self.build_gather_t(t))
+
+    def evaluate(self, g1: torch.Tensor, g2: torch.Tensor) -> torch.Tensor:
+        return torch.matmul(torch.matmul(g2, self.coefficients), g1)
 
     def build_gather_s(self, s: float) -> torch.Tensor:
         return build_G1_s(s, self.coefficients.shape[1], self.coefficients.device)
@@ -107,8 +116,8 @@ class MatrixPowerSeries:
     def build_gather_t(self, t: float):
         return build_G2_t(t, self.coefficients.shape[0], self.coefficients.device)
 
-    def inplace_matrix_integrate(self, IminusG1: torch.Tensor, IminusG2: torch.Tensor) -> Self:
-        indefinite_integral = torch.matmul(self.A2, torch.matmul(self.coefficients, self.A1))
+    def inplace_matrix_integrate(self, IminusG1: torch.Tensor, IminusG2: torch.Tensor, A1, A2) -> Self:
+        indefinite_integral = torch.matmul(A2, torch.matmul(self.coefficients, A1))
         self.coefficients = torch.matmul(torch.matmul(IminusG2, indefinite_integral), IminusG1)
         return self
 
@@ -140,16 +149,6 @@ class MatrixPowerSeries:
         self.coefficients[1:, :] = 0
         return self
 
-    def build_A1(self):
-        return torch.diag_embed(
-            1 / torch.arange(start=1, end=self.coefficients.shape[1], dtype=torch.float64, device=self.get_device()),
-            offset=1).to_sparse()
-
-    def build_A2(self):
-        return torch.diag_embed(
-            1 / torch.arange(start=1, end=self.coefficients.shape[1], dtype=torch.float64, device=self.get_device()),
-            offset=-1).to_sparse()
-
     def get_device(self):
         return self.coefficients.device
 
@@ -169,7 +168,7 @@ class MatrixPowerSeries:
     def __add__(self, other: int | float | Self) -> Self:
         if isinstance(other, int) or isinstance(other, float):
             result = MatrixPowerSeries(torch.clone(self.coefficients))
-            result.coefficients[0,0] += other
+            result.coefficients[0, 0] += other
             return result
 
         # Deliberately omitting check to make sure they are on the same device.
@@ -182,7 +181,6 @@ class MatrixPowerSeries:
             result = MatrixPowerSeries(resize(self.coefficients, other.coefficients.shape))
             return result.__iadd__(other)
 
-
     def __iadd__(self, other: int | float | Self) -> Self:
         if isinstance(other, int) or isinstance(other, float):
             self.coefficients += other
@@ -194,14 +192,14 @@ class MatrixPowerSeries:
     def __sub__(self, other: int | float | Self) -> Self:
         if isinstance(other, int) or isinstance(other, float):
             result = MatrixPowerSeries(torch.clone(self.coefficients))
-            result.coefficients[0,0] -= other
+            result.coefficients[0, 0] -= other
             return result
 
         return MatrixPowerSeries(self.coefficients - other.coefficients)
 
     def __isub__(self, other: int | float | Self) -> Self:
         if isinstance(other, int) or isinstance(other, float):
-            self.coefficients[0,0] -= other
+            self.coefficients[0, 0] -= other
         else:
             self.coefficients -= other.coefficients
 
@@ -221,14 +219,20 @@ class MatrixPowerSeries:
     def deep_clone(self) -> Self:
         return MatrixPowerSeries(torch.clone(self.coefficients))
 
-    def is_converged(self, tol: float = 1e-10) -> bool:
+    def is_converged(self, prev: float, g1: torch.Tensor, g2: torch.Tensor, tol: float = 1e-10) -> (bool, float):
         """
         This function checks to see if coefficients have dropped off far enough for it to be safe to truncate.
         """
-        return math.isclose(0,
-                     torch.max(torch.max(self.coefficients[-1, :]), torch.max(self.coefficients[0, :])).item(),
-                     rel_tol=0,
-                     abs_tol=tol)
+
+        tile_sol = self.evaluate(g1, g2).item()
+        l2d = (tile_sol - prev) ** 2
+
+        if not math.isclose(0, l2d, rel_tol=0, abs_tol=tol):
+            print(f"Sequence diff: {l2d}")
+            return False, l2d
+        else:
+            return True, tile_sol
+
 
 class SparseMatrixPowerSeries:
     """
@@ -283,7 +287,8 @@ class SparseMatrixPowerSeries:
 
     def bind_t_with_matrix(self, G2: torch.Tensor) -> Self:
         # self.coefficients[:1, :] = torch.matmul(G2, self.coefficients)
-        self.coefficients = torch.matmul(G2, self.coefficients).to_sparse().resize_as_sparse_(self.coefficients).to_sparse()
+        self.coefficients = torch.matmul(G2, self.coefficients).to_sparse().resize_as_sparse_(
+            self.coefficients).to_sparse()
         # self.coefficients[1:, :] = 0
         return self
 
@@ -319,7 +324,7 @@ class SparseMatrixPowerSeries:
             add_indices = torch.tensor([[0], [0]])  # Indices of values to subtract
             add_values = torch.tensor([other], dtype=torch.float)  # Values to subtract
             add_tensor = torch.sparse_coo_tensor(add_indices, add_values, size=self.coefficients.shape,
-                                                      device=self.coefficients.device)
+                                                 device=self.coefficients.device)
             result.coefficients += add_tensor
             return result
         # Deliberately omitting check to make sure they are on the same device.
@@ -330,7 +335,7 @@ class SparseMatrixPowerSeries:
             add_indices = torch.tensor([[0], [0]])  # Indices of values to subtract
             add_values = torch.tensor([other], dtype=torch.float)  # Values to subtract
             add_tensor = torch.sparse_coo_tensor(add_indices, add_values, size=self.coefficients.shape,
-                                                      device=self.coefficients.device)
+                                                 device=self.coefficients.device)
             self.coefficients += add_tensor
         else:
             self.coefficients += other.coefficients
@@ -349,7 +354,8 @@ class SparseMatrixPowerSeries:
             # For example, subtract 3 from the entry at index [1, 2]
             subtract_indices = torch.tensor([[0], [0]])  # Indices of values to subtract
             subtract_values = torch.tensor([other], dtype=torch.float)  # Values to subtract
-            subtract_tensor = torch.sparse_coo_tensor(subtract_indices, subtract_values, size=self.coefficients.shape, device=self.coefficients.device)
+            subtract_tensor = torch.sparse_coo_tensor(subtract_indices, subtract_values, size=self.coefficients.shape,
+                                                      device=self.coefficients.device)
             result.coefficients -= subtract_tensor
             return result
 
@@ -383,8 +389,8 @@ class SparseMatrixPowerSeries:
 
 
 def build_G1_s(s: float, columns: int, device: torch.device):
-    if math.isclose(s, 0.0, rel_tol=0.0, abs_tol=1e-15):
-        return torch.zeros((columns, 1), dtype=torch.float64, device=device).to_sparse()
+    # if math.isclose(s, 0.0, rel_tol=0.0, abs_tol=1e-15):
+    #     return torch.zeros((columns, 1), dtype=torch.float64, device=device).to_sparse()
 
     gs = torch.arange(columns, dtype=torch.float64, device=device).reshape(columns, 1)
 
@@ -392,8 +398,8 @@ def build_G1_s(s: float, columns: int, device: torch.device):
 
 
 def build_G2_t(t: float, rows: int, device: torch.device):
-    if math.isclose(t, 0.0, rel_tol=0.0, abs_tol=1e-15):
-        return torch.zeros((1, rows), dtype=torch.float64, device=device).to_sparse()
+    # if math.isclose(t, 0.0, rel_tol=0.0, abs_tol=1e-15):
+    #     return torch.zeros((1, rows), dtype=torch.float64, device=device).to_sparse()
 
     gt = torch.arange(rows, dtype=torch.float64, device=device).reshape(1, rows)
 
@@ -410,6 +416,33 @@ def build_integration_gather_matrix_t(t: float, rows: int, device: torch.device)
     IminusG2 = torch.eye(rows, device=device, dtype=torch.float64)
     IminusG2[:1, :] -= build_G2_t(t, rows, device=device)  # Subtract out the first row
     return IminusG2.to_sparse()
+
+
+def build_integration_limit_matrix_s(s_min: float, s_max: float, columns: int, device: torch.device) -> torch.Tensor:
+    IminusG1 = torch.eye(columns, dtype=torch.float64, device=device)
+    IminusG1[:, :1] += (build_G1_s(s_max, columns, device) - build_G1_s(s_min, columns,
+                                                                        device))  # Subtract out the first column
+    return IminusG1.to_sparse()
+
+
+def build_integration_limit_matrix_t(t_min: float, t_max: float, rows: int, device: torch.device) -> torch.Tensor:
+    IminusG2 = torch.eye(rows, device=device, dtype=torch.float64)
+    IminusG2[:1, :] += (build_G2_t(t_max, rows, device=device) - build_G2_t(t_min, rows,
+                                                                            device=device))  # Subtract out the first row
+    return IminusG2.to_sparse()
+
+
+def build_A1(cols, device: torch.device):
+    return torch.diag_embed(
+        1 / torch.arange(start=1, end=cols, dtype=torch.float64, device=device),
+        offset=1).to_sparse()
+
+
+def build_A2(rows, device: torch.device):
+    return torch.diag_embed(
+        1 / torch.arange(start=1, end=rows, dtype=torch.float64, device=device),
+        offset=-1).to_sparse()
+
 
 class SimplePowerSeries:
     """

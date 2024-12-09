@@ -3,9 +3,10 @@ from concurrent.futures import ProcessPoolExecutor
 from typing import Optional
 
 import torch
+from math import isclose
 
 from powersig.power_series import build_integration_gather_matrix_t, build_integration_gather_matrix_s, \
-    MatrixPowerSeries
+    MatrixPowerSeries, build_A1, build_A2, build_integration_limit_matrix_s, build_integration_limit_matrix_t
 from powersig.util.series import torch_compute_dot_prod, torch_compute_derivative_batch, double_length
 
 
@@ -74,61 +75,165 @@ def compute_gram_matrix_entry(params: ParallelParameters) -> (int, int, float):
     )
 
 
+def compute_gram_matrix_entry_iteration(params: ParallelParameters) -> (int, int, float):
+    ds = 1 / params.dX_i.shape[0]
+    dt = 1 / params.dY_j.shape[0]
+
+    # Initial boundary conditions
+    ocs = torch.eye(64, device=params.dX_i.device, dtype=torch.float64)  # Hard coded truncation order
+    # ocs[0, 0] = 1
+    A1 = build_A1(ocs.shape[0], params.dX_i.device)
+    A2 = build_A2(ocs.shape[1], params.dY_j.device)
+
+    for i in range(10):
+        acc = torch.zeros((64, 64), device=params.dX_i.device, dtype=torch.float64)
+        for i in range(params.dX_i.shape[0]):
+            for j in range(params.dY_j.shape[0]):
+                L = None
+                R = None
+                if i == ocs.shape[0] - 1 and j == ocs.shape[1] - 1:
+                    L = torch.matmul(
+                        build_integration_gather_matrix_t(j / params.dY_j.shape[0], ocs.shape[1], ocs.device), A2)
+                    R = torch.matmul(A1, build_integration_gather_matrix_s(i / params.dX_i.shape[0], ocs.shape[1],
+                                                                           ocs.device))
+
+                elif i == ocs.shape[0] - 1:
+                    R = torch.matmul(A1, build_integration_gather_matrix_s(i / params.dX_i.shape[0], ocs.shape[1],
+                                                                           ocs.device))
+                    L = torch.matmul(
+                        build_integration_limit_matrix_t(j / params.dY_j.shape[0], (j + 1) / params.dY_j.shape[0],
+                                                         ocs.shape[1], ocs.device), A2)
+
+                elif j == ocs.shape[1] - 1:
+                    R = torch.matmul(A1,
+                                     build_integration_limit_matrix_s(i / params.dX_i.shape[0],
+                                                                      (i + 1) / params.dX_i.shape[0],
+                                                                      ocs.shape[1],
+                                                                      ocs.device))
+                    L = torch.matmul(
+                        build_integration_gather_matrix_t(j / params.dY_j.shape[0], ocs.shape[1], ocs.device), A2)
+
+                else:
+                    R = torch.matmul(A1,
+                                     build_integration_limit_matrix_s(i / params.dX_i.shape[0],
+                                                                      (i + 1) / params.dX_i.shape[0],
+                                                                      ocs.shape[1],
+                                                                      ocs.device))
+                    L = torch.matmul(
+                        build_integration_limit_matrix_t(j / params.dY_j.shape[0], (j + 1) / params.dY_j.shape[0],
+                                                         ocs.shape[1],
+                                                         ocs.device), A2)
+                acc += torch_compute_dot_prod(params.dX_i[i], params.dY_j[j]) * torch.matmul(torch.matmul(L, ocs), R)
+            ocs = acc
+    one = MatrixPowerSeries(ocs)
+    return params.i, params.j, one(1, 1)
+
+
 def build_tile_power_series(left_bc_ps: MatrixPowerSeries, bottom_bc_ps: MatrixPowerSeries, rho: float,
-                            s_min: float, t_min: float, ic: float) -> MatrixPowerSeries:
+                            s_min: float, t_min: float, ic: float,
+                            ds: float, dt: float,
+                            a: dict[tuple[int, int], tuple[torch.Tensor, torch.Tensor]]) -> MatrixPowerSeries:
     # Gather the constants into a new power series
     if torch.cuda.is_available():
-        u = MatrixPowerSeries(left_bc_ps.coefficients.cuda()) + MatrixPowerSeries(bottom_bc_ps.coefficients.cuda()) - ic
+        u = MatrixPowerSeries(left_bc_ps.coefficients.cuda()) + MatrixPowerSeries(
+            bottom_bc_ps.coefficients.cuda()) - ic
     else:
         u = left_bc_ps + bottom_bc_ps - ic
 
     u_n = u.deep_clone()
-    IminusG1 = build_integration_gather_matrix_s(s_min, u_n.coefficients.shape[1],u_n.coefficients.device)
-    IminusG2 = build_integration_gather_matrix_t(t_min, u_n.coefficients.shape[0],u_n.coefficients.device)
+    IminusG1 = build_integration_gather_matrix_s(s_min, u_n.coefficients.shape[1], u_n.coefficients.device)
+    IminusG2 = build_integration_gather_matrix_t(t_min, u_n.coefficients.shape[0], u_n.coefficients.device)
+    g1 = u.build_gather_s(s_min + ds)
+    g2 = u.build_gather_t(t_min + dt)
+
+    A1 = None
+    A2 = None
+
+    if u_n.coefficients.shape[0] not in a:
+        A1 = build_A1(u_n.coefficients.shape[1], u_n.coefficients.device)
+        A2 = build_A2(u_n.coefficients.shape[0], u_n.coefficients.device)
+        a[(u_n.coefficients.shape[0], u_n.coefficients.shape[1])] = (A1, A2)
+
+    A1, A2 = a[(u_n.coefficients.shape[0], u_n.coefficients.shape[1])]
 
     if torch.cuda.is_available():
         IminusG1 = IminusG1.cuda()
         IminusG2 = IminusG2.cuda()
+
+    # estimate = None
+    # if not isclose(0, s_min, rel_tol=0, abs_tol=1e-10) > 0 and not isclose(0, t_min, rel_tol=0, abs_tol=1e-10):
+    #     L = torch.matmul(IminusG2, A2)
+    #     R = torch.matmul(A1, IminusG1)
+    # print(f"L={L.to_dense()}")
+    # print(f"R={R.to_dense()}")
+    # IminusLR = torch.eye(L.shape[0], dtype=torch.float64, device=IminusG1.device) - rho * torch.matmul(L, R)
+    # print(f"IminusLR={IminusLR.to_dense()}")
+    # estimate = torch.matmul(torch.linalg.inv(IminusLR), u.coefficients)
+
     # print(f"u_0={u}")
     # Repeatedly integrate to generate the new power series
     # Truncate if necessary using tbd utility functions to eliminate terms with really small coefficients.
-
+    prev = u.evaluate(g1, g2).item()
+    # print(f"Initial power series solution for tile @ ({s_min},{t_min}): {prev}")
     while True:
         for step in range(1, 16):
-            u_n.inplace_matrix_integrate(IminusG1, IminusG2)
+            prev = u.evaluate(g1, g2).item()
+            u_n.inplace_matrix_integrate(IminusG1, IminusG2, A1, A2)
             # u_n = u_n.integrate(s_base=s_min, t_base=t_min)
             u_n *= rho
             # print(f"u_{step}={u_n}")
             u += u_n
             # print(f"u={u}")
 
-        if u_n.is_converged():
+
+        is_converged, prev = u.is_converged(prev, g1, g2, 1e-2)
+
+        if is_converged:
             break
         else:
+            print(f"Rho on resize: {rho}")
             u_n = MatrixPowerSeries(double_length(u_n.coefficients))
             u = MatrixPowerSeries(double_length(u.coefficients))
-            IminusG1 = build_integration_gather_matrix_s(s_min, u_n.coefficients.shape[1],u_n.coefficients.device)
-            IminusG2 = build_integration_gather_matrix_t(t_min, u_n.coefficients.shape[0],u_n.coefficients.device)
-            # print(f"Resized coefficient matrix to {u_n.coefficients.shape} for convergence.")
+            A1 = build_A1(u_n.coefficients.shape[1], u_n.coefficients.device)
+            A2 = build_A2(u_n.coefficients.shape[0], u_n.coefficients.device)
+            a[(u_n.coefficients.shape[0], u_n.coefficients.shape[1])] = (A1, A2)
+            IminusG1 = build_integration_gather_matrix_s(s_min, u_n.coefficients.shape[1], u_n.coefficients.device)
+            IminusG2 = build_integration_gather_matrix_t(t_min, u_n.coefficients.shape[0], u_n.coefficients.device)
+            g1 = u.build_gather_s(s_min + ds)
+            g2 = u.build_gather_t(t_min + dt)
+            # L = torch.matmul(IminusG2, A2)
+            # R = torch.matmul(A1, IminusG1)
+            # print(f"L={L.to_dense()}")
+            # print(f"R={R.to_dense()}")
+            # IminusLR = torch.eye(L.shape[0], dtype=torch.float64, device=IminusG1.device) - rho * torch.matmul(L, R)
+            # print(f"IminusLR={IminusLR.to_dense()}")
+            # estimate = torch.matmul(torch.linalg.inv(IminusLR), u_n.coefficients)
+            print(f"Resized coefficient matrix to {u_n.coefficients.shape} for convergence.")
             if torch.cuda.is_available():
                 IminusG1 = IminusG1.cuda()
                 IminusG2 = IminusG2.cuda()
 
-    print(f"Final size of coefficient matrix: {u.coefficients.shape}")
+    # print(f"Final size of coefficient matrix: {u.coefficients.shape}")
     # Return the resulting power series
+
+    # if estimate is not None:
+    #     mse = torch.mean((u.coefficients[:estimate.shape[0], :estimate.shape[1]].cpu() - estimate) ** 2)
+    #     # print(f"Estimate: {estimate}")
+    #     # print(f"u = {u}")
+    #     print(f"MSE for estimate = {mse}")
+
     return MatrixPowerSeries(u.coefficients.cpu())
-
-
 
 
 def compute_gram_entry(dX_i, dY_j) -> float:
     ds = 1 / dX_i.shape[0]
     dt = 1 / dY_j.shape[0]
 
-    # Initial boundary conditions
-    ocs = torch.zeros([64, 64], device=dX_i.device, dtype=torch.float64)  # Hard coded truncation order
+    # Initial boundarey conditions
+    ocs = torch.zeros([32, 32], device=dX_i.device, dtype=torch.float64)  # Hard coded truncation order
     ocs[0, 0] = 1
     one = MatrixPowerSeries(ocs)
+    Amap = {(ocs.shape[0], ocs.shape[1]): (build_A1(ocs.shape[1], ocs.device), build_A2(ocs.shape[0], ocs.device))}
 
     initial_left_bc_ps = one.deep_clone()
     initial_bottom_bc_ps = one.deep_clone()
@@ -154,7 +259,8 @@ def compute_gram_entry(dX_i, dY_j) -> float:
             start = time.time()
             ps = build_tile_power_series(frontier.left_bc_ps, frontier.bottom_bc_ps,
                                          torch_compute_dot_prod(dX_i[s_i], dY_j[t_i]).item(),
-                                         s_base, t_base, kg[s_i, t_i].item())
+                                         s_base, t_base, kg[s_i, t_i].item(),
+                                         ds, dt, Amap)
             # print(f"Solving one tile took {time.time() - start:.2f}s")
             # print(f"Series for {s_i},{t_i} = {ps.human_readable()}")
             if frontier.lb_samples is not None:
