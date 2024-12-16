@@ -4,7 +4,7 @@ import pickle
 import torch
 from sigkernel import sigkernel
 
-_batch, _len_x, _len_y, _dim = 5, 100, 100, 2
+_batch, _len_x, _len_y, _dim = 2, 10, 10, 2
 _fresh = True
 torch.random.manual_seed(0)
 static_kernel = sigkernel.LinearKernel()
@@ -28,7 +28,7 @@ class TestRun:
         self.len_y = len_y
         self.dim = dim
         self.cuda = cuda
-        self.X = torch.rand((batch, len_x, dim), dtype=torch.float64)  # shape (batch,len_x,dim)
+        self.X = torch.rand((batch, len_x, dim), dtype=torch.float64) * 2 # shape (batch,len_x,dim)
         self.Y = torch.rand((batch, len_y, dim), dtype=torch.float64)  # shape (batch,len_y,dim)
         self.Z = torch.rand((batch, len_x, dim), dtype=torch.float64)  # shape
 

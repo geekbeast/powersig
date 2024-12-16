@@ -2,6 +2,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 from typing import Optional
 
+import math
 import torch
 from math import isclose
 
@@ -11,7 +12,7 @@ from powersig.util.series import torch_compute_dot_prod, torch_compute_derivativ
 
 
 class FrontierParameters:
-    def __init__(self, left_bc_ps: Optional[MatrixPowerSeries], bottom_bc_ps: Optional[MatrixPowerSeries], ic,
+    def __init__(self, left_bc_ps: Optional[MatrixPowerSeries], bottom_bc_ps: Optional[MatrixPowerSeries], ic: float,
                  lb_samples=None, bb_samples=None):
         self.left_bc_ps = left_bc_ps
         self.bottom_bc_ps = bottom_bc_ps
@@ -23,7 +24,7 @@ class FrontierParameters:
         return self.left_bc_ps is not None and self.bottom_bc_ps is not None and self.ic is not None
 
 
-class ParallelParameters:
+class SignatureKernelParameters:
     def __init__(self, i: int, j: int, dX_i: torch.Tensor, dY_j: torch.Tensor):
         self.i = i
         self.j = j
@@ -37,26 +38,26 @@ class MatrixSig:
 
         self.dX = torch_compute_derivative_batch(X)
         self.dY = torch_compute_derivative_batch(Y)
-
         # Hard coding for now.
         self.executor = ProcessPoolExecutor(2 * torch.cuda.device_count() if X.is_cuda else 8)
+        self.devices = [torch.device(f"cuda:{i}") for i in range(torch.cuda.device_count())]
 
     def compute_gram_matrix(self) -> torch.Tensor:
-        devices = [torch.device(f"cuda:{i}") for i in range(torch.cuda.device_count())]
         gram_matrix = torch.zeros((self.dX.shape[0], self.dY.shape[0]), dtype=torch.float64)
-
         device_index = 0
 
         entries = []
         for i in range(self.dX.shape[0]):
             for j in range(self.dY.shape[0]):
-                if len(devices) and self.dX.is_cuda > 0:
-                    entries.append(ParallelParameters(i, j,
-                                                      self.dX[i].to(device=devices[device_index]),
-                                                      self.dY[j].to(device=devices[device_index])))
-                    device_index = (device_index + 1) % len(devices)
+                print(f"rho = {torch.exp(torch.matmul(self.dX[i], torch.t(self.dY[j])).sum()/(self.dX[i].shape[0]*self.dY[j].shape[0])).item()}")
+                # gram_matrix[i, j] = compute_gram_entry( self.dX[i], self.dY[j])
+                if len(self.devices) > 0 and self.dX.is_cuda:
+                    entries.append(SignatureKernelParameters(i, j,
+                                                      self.dX[i].to(device=self.devices[device_index]),
+                                                      self.dY[j].to(device=self.devices[device_index])))
+                    device_index = (device_index + 1) % len(self.devices)
                 else:
-                    entries.append(ParallelParameters(i, j, self.dX[i], self.dY[j]))
+                    entries.append(SignatureKernelParameters(i, j, self.dX[i], self.dY[j]))
 
         for i, j, entry in self.executor.map(compute_gram_matrix_entry, entries):
             gram_matrix[i, j] = entry  # entry.item()
@@ -67,7 +68,7 @@ class MatrixSig:
         return torch.matmul(self.dX[i], torch.t(self.dY[j]))
 
 
-def compute_gram_matrix_entry(params: ParallelParameters) -> (int, int, float):
+def compute_gram_matrix_entry(params: SignatureKernelParameters) -> (int, int, float):
     return (
         params.i,
         params.j,
@@ -75,7 +76,7 @@ def compute_gram_matrix_entry(params: ParallelParameters) -> (int, int, float):
     )
 
 
-def compute_gram_matrix_entry_iteration(params: ParallelParameters) -> (int, int, float):
+def compute_gram_matrix_entry_iteration(params: SignatureKernelParameters) -> (int, int, float):
     ds = 1 / params.dX_i.shape[0]
     dt = 1 / params.dY_j.shape[0]
 
@@ -173,22 +174,30 @@ def build_tile_power_series(left_bc_ps: MatrixPowerSeries, bottom_bc_ps: MatrixP
     # print(f"u_0={u}")
     # Repeatedly integrate to generate the new power series
     # Truncate if necessary using tbd utility functions to eliminate terms with really small coefficients.
-    prev = u.evaluate(g1, g2).item()
+    # prev = u.evaluate(g1, g2).item()
     # print(f"Initial power series solution for tile @ ({s_min},{t_min}): {prev}")
+    truncation_order = 0
+    prev = u_n.evaluate(g1, g2).item()
+    converged = False
     while True:
-        for step in range(1, 16):
-            prev = u.evaluate(g1, g2).item()
+        while not converged and truncation_order < (u.coefficients.shape[0]-1):
             u_n.inplace_matrix_integrate(IminusG1, IminusG2, A1, A2)
-            # u_n = u_n.integrate(s_base=s_min, t_base=t_min)
             u_n *= rho
+            next = u_n.evaluate(g1, g2).item()
             # print(f"u_{step}={u_n}")
             u += u_n
+            truncation_order += 1
+            if math.isclose(0, next-prev,rel_tol = 0.0, abs_tol = 1e-5):
+                converged = True
+                prev = next
+                break
+            prev = next
             # print(f"u={u}")
 
 
-        is_converged, prev = u.is_converged(prev, g1, g2, 1e-2)
+        # is_converged, prev = u.is_converged(prev, g1, g2, 1e-2)
 
-        if is_converged:
+        if converged:
             break
         else:
             print(f"Rho on resize: {rho}")
@@ -228,9 +237,8 @@ def build_tile_power_series(left_bc_ps: MatrixPowerSeries, bottom_bc_ps: MatrixP
 def compute_gram_entry(dX_i, dY_j) -> float:
     ds = 1 / dX_i.shape[0]
     dt = 1 / dY_j.shape[0]
-
     # Initial boundarey conditions
-    ocs = torch.zeros([32, 32], device=dX_i.device, dtype=torch.float64)  # Hard coded truncation order
+    ocs = torch.zeros([32, 32], device=dX_i.device, dtype=torch.float64)  # Hard coded initial truncation order
     ocs[0, 0] = 1
     one = MatrixPowerSeries(ocs)
     Amap = {(ocs.shape[0], ocs.shape[1]): (build_A1(ocs.shape[1], ocs.device), build_A2(ocs.shape[0], ocs.device))}
@@ -244,9 +252,11 @@ def compute_gram_entry(dX_i, dY_j) -> float:
                                                     bb_samples=(1 / (2 * dY_j.shape[0]), 1)))
     next_frontiers = {}
     diagonal_count = dX_i.shape[0] + dY_j.shape[0] - 1
+    
     kg = torch.zeros([dX_i.shape[0], dY_j.shape[0]], device=dX_i.device, dtype=torch.float64)
     kg[:, 0] = 1
     kg[0, :] = 1
+
     for d_i in range(diagonal_count):
         for grid_point in frontiers:
             frontier = frontiers[grid_point]
@@ -257,6 +267,7 @@ def compute_gram_entry(dX_i, dY_j) -> float:
             # print(f"Left initial: {frontier.left_bc_ps(s_base, t_base)}, Right initial: {frontier.bottom_bc_ps(s_base, t_base)}")
             # print(f"Sum check: {frontier.left_bc_ps(s_base, t_base) + frontier.bottom_bc_ps(s_base, t_base)} == { (frontier.left_bc_ps+frontier.bottom_bc_ps)(s_base,t_base)}")
             start = time.time()
+
             ps = build_tile_power_series(frontier.left_bc_ps, frontier.bottom_bc_ps,
                                          torch_compute_dot_prod(dX_i[s_i], dY_j[t_i]).item(),
                                          s_base, t_base, kg[s_i, t_i].item(),
@@ -284,7 +295,8 @@ def compute_gram_entry(dX_i, dY_j) -> float:
             # Sample points for testing
             # lb_sample_point = t_base + dt * random.uniform(0, 1)
             # bb_sample_point = s_base + ds * random.uniform(0, 1)
-
+            
+            
             if next_s_i < dX_i.shape[0]:
                 # k_lb = ps(next_s_base, lb_sample_point)
                 nf = next_frontiers.setdefault((next_s_i, t_i), FrontierParameters(None, None, None))

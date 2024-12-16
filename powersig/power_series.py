@@ -219,7 +219,7 @@ class MatrixPowerSeries:
     def deep_clone(self) -> Self:
         return MatrixPowerSeries(torch.clone(self.coefficients))
 
-    def is_converged(self, prev: float, g1: torch.Tensor, g2: torch.Tensor, tol: float = 1e-10) -> (bool, float):
+    def is_converged(self, prev: float, g1: torch.Tensor, g2: torch.Tensor, tol: float = 1e-10) -> tuple[bool, float]:
         """
         This function checks to see if coefficients have dropped off far enough for it to be safe to truncate.
         """
