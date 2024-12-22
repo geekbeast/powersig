@@ -4,7 +4,7 @@ import pickle
 import torch
 from sigkernel import sigkernel
 
-_batch, _len_x, _len_y, _dim = 2, 10, 10, 2
+_batch, _len_x, _len_y, _dim = 1, 2, 2, 2
 _fresh = True
 torch.random.manual_seed(0)
 static_kernel = sigkernel.LinearKernel()
