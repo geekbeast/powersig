@@ -2,7 +2,7 @@ Cython==3.0.11
 tokenizers
 numpy
 scipy
-torch>=2.2.2
+torch>=2.2.2,<=2.50
 torchvision
 torchaudio
 scikit-learn
@@ -16,3 +16,4 @@ iisignature
 git+https://github.com/crispitagorico/sigkernel.git
 aeon
 numba==0.60.0
+

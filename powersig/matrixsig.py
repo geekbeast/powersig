@@ -6,6 +6,7 @@ import math
 import torch
 from math import isclose
 
+
 from powersig.power_series import build_integration_gather_matrix_t, build_integration_gather_matrix_s, \
     MatrixPowerSeries, build_A1, build_A2, build_integration_limit_matrix_s, build_integration_limit_matrix_t
 from powersig.util.series import torch_compute_dot_prod, torch_compute_derivative_batch, double_length
@@ -130,12 +131,26 @@ def compute_gram_matrix_entry_iteration(params: SignatureKernelParameters) -> (i
     one = MatrixPowerSeries(ocs)
     return params.i, params.j, one(1, 1)
 
+def build_tile_power_series_stencil(shape: torch.Size, device: torch.device):
+    i_vals = torch.arange(start=1, end=shape[0], dtype=torch.int32, device=device)
+    j_vals = torch.arange(start=1, end=shape[1], dtype=torch.int32, device=device)
+    fact_i = torch.lgamma(i_vals + 1)  # shape [N]
+    fact_j = torch.lgamma(j_vals + 1)  # shape [M]
+
+
+    # Create 2D mesh: i_grid[i,j] = i, j_grid[i,j] = j
+    i_grid, j_grid = torch.meshgrid(i_vals, j_vals, indexing='ij')
+    fact_grid_i, fact_grid_j = torch.meshgrid(fact_i, fact_j, indexing='ij')
+    # min(i,j) in a 2D tensor determines the power of row based off
+    min_ij = torch.minimum(i_grid, j_grid)
+    denominator = fact_grid_i + fact_grid_j
+
+    return min_ij, denominator
 
 def build_tile_power_series(left_bc_ps: MatrixPowerSeries, bottom_bc_ps: MatrixPowerSeries, rho: float,
                             s_min: float, t_min: float, ic: float,
                             ds: float, dt: float,
-                            a: dict[int, torch.Tensor],
-                            streams: list[torch.Stream]) -> MatrixPowerSeries:
+                            a: dict[int, torch.Tensor]) -> MatrixPowerSeries:
     # Gather the constants into a new power series
     if torch.cuda.is_available():
         u = MatrixPowerSeries(left_bc_ps.coefficients.cuda()) + MatrixPowerSeries(
@@ -143,28 +158,50 @@ def build_tile_power_series(left_bc_ps: MatrixPowerSeries, bottom_bc_ps: MatrixP
     else:
         u = left_bc_ps + bottom_bc_ps - ic
 
+    print(f"u_0 = {u}")
     start = time.time()
+    g1 = u.build_gather_s(s_min)
+    g2 = u.build_gather_t(t_min)
     C = u.coefficients
 
-    # Let's do naive thing first which is handle each element in a stream with a scatter add
-    s_index = 0
-    for i in range(1, C.shape[0]):
-        for j in range(1, C.shape[1]):
-            with streams[s_index]:
-                C[i, j] = rho * C[i-1, j-1] / (i*j)
-            s_index += 1
+    i_vals = torch.arange(start=1, end=C.shape[0], dtype=C.dtype, device=C.device)
+    j_vals = torch.arange(start=1, end=C.shape[1], dtype=C.dtype, device=C.device)
 
-    s_index = 0
+    # factorial(i) = gamma(i+1)
+    fact_i = torch.lgamma(i_vals + 1)  # shape [N]
+    fact_j = torch.lgamma(j_vals + 1)  # shape [M]
+    fact_grid_i, fact_grid_j = torch.meshgrid(fact_i, fact_j, indexing = 'ij')
+    # Create 2D mesh: i_grid[i,j] = i, j_grid[i,j] = j
+    i_grid, j_grid = torch.meshgrid(i_vals, j_vals, indexing='ij')
 
-    for i in range(1, C.shape[0]):
-        for j in range(1, C.shape[1]):
-            with streams[s_index]:
-                C[i, 0] -= (C[i, :] * math.pow(t_min, i)).sum()
-                C[0, j] -= (C[i, j] * math.pow(s_min, j)).sum()
-            s_index += 1
+    # min(i,j) in a 2D tensor
+    min_ij = torch.minimum(i_grid, j_grid)
 
-    print( f"Elapsed time: {time.time() - start}")
-    print( f"u = {u}")
+    # min(i,j) * log(rho)
+    min_ij_log_rho = min_ij * math.log(rho)
+
+    # factor(i)*factor(j) in broadcast form
+    denom = fact_grid_i + fact_grid_j #fact_i[i_grid.long()] + fact_j[j_grid.long()]
+    print(f"denom shape = {denom.shape}")
+    print(f"min_ij_log_rho shape = {min_ij_log_rho.shape}")
+    new_entries = torch.exp(min_ij_log_rho - denom)
+
+    new_entries.diagonal().__imul__(C[0,0])
+
+    for i in range(1,new_entries.shape[0]):
+        # print(f"C[0,{i}] = {C[0,i]}")
+        new_entries.diagonal(i).__imul__(C[0,i])
+    for j in range(1,new_entries.shape[0]):
+        new_entries.diagonal(-j).__imul__(C[j,0])
+
+    print(f"new_entries = {new_entries.tolist()}")
+
+    C[1:,1:] = new_entries
+    C[1:, :1] -= torch.mm(new_entries, g1[1:,:])
+    C[:1, 1:] -= torch.mm(g2[:,1:],new_entries)
+
+    print(f"Elapsed time: {time.time() - start}")
+    print(f"u = {u}")
 
     return MatrixPowerSeries(u.coefficients.cpu())
     # u_n = u.deep_clone()
@@ -298,7 +335,7 @@ def compute_gram_entry(dX_i, dY_j) -> float:
             ps = build_tile_power_series(frontier.left_bc_ps, frontier.bottom_bc_ps,
                                          torch_compute_dot_prod(dX_i[s_i], dY_j[t_i]).item(),
                                          s_base, t_base, kg[s_i, t_i].item(),
-                                         ds, dt, {}, streams )
+                                         ds, dt, {})
             # print(f"Solving one tile took {time.time() - start:.2f}s")
             # print(f"Series for {s_i},{t_i} = {ps.human_readable()}")
             if frontier.lb_samples is not None:
