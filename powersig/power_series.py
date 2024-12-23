@@ -117,8 +117,8 @@ class MatrixPowerSeries:
         return build_G2_t(t, self.coefficients.shape[0], self.coefficients.device)
 
     def inplace_matrix_integrate(self, IminusG1: torch.Tensor, IminusG2: torch.Tensor, A1, A2) -> Self:
-        indefinite_integral = torch.matmul(A2, torch.matmul(self.coefficients, A1))
-        self.coefficients = torch.matmul(torch.matmul(IminusG2, indefinite_integral), IminusG1)
+        indefinite_integral = torch.mm(A2, torch.mm(self.coefficients, A1))
+        self.coefficients = torch.mm(torch.mm(IminusG2, indefinite_integral), IminusG1)
         return self
 
     def inplace_integrate(self, s_base: float, t_base: float) -> Self:

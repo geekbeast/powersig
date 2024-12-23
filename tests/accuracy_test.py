@@ -87,6 +87,11 @@ class TestSimplePowerSeriesAccuracy(unittest.TestCase):
         mse = torch.mean((sk.cpu() - m.cpu()) ** 2)
         print(f"MSE MatrixSig versus SigKernel: {mse}")
 
+        start = time.time()
+        sk = signature_kernel.compute_Gram(config.X.cpu(), config.X.cpu(), max_batch)
+        print(f"SigKernel computation took: {time.time() - start}s")
+        print(f"SigKernel Gram Matrix: \n {sk.tolist()}")
+
 
 class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
     configuration = TestRun()
@@ -106,7 +111,7 @@ class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
         print(f"SigKernel computation took: {time.time() - start}s")
         print(f"SigKernel Gram Matrix: \n {sk.tolist()}")
         start = time.time()
-        m = MatrixSig(config.X, config.X).compute_gram_matrix()
+        m = MatrixSig(config.X.cuda(), config.X.cuda()).compute_gram_matrix()
         print(f"Matrix Sig computation took: {time.time() - start}s")
         print(f"Matrix Sig computation of gram Matrix: \n {m.tolist()}")
         # mse = torch.mean((sk.cpu() - m.cpu()) ** 2)
