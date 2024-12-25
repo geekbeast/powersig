@@ -117,8 +117,10 @@ class MatrixPowerSeries:
         return build_G2_t(t, self.coefficients.shape[0], self.coefficients.device)
 
     def inplace_matrix_integrate(self, IminusG1: torch.Tensor, IminusG2: torch.Tensor, A1, A2) -> Self:
-        indefinite_integral = torch.mm(A2, torch.mm(self.coefficients, A1))
-        self.coefficients = torch.mm(torch.mm(IminusG2, indefinite_integral), IminusG1)
+        indefinite_integral = torch.mm(torch.mm(self.coefficients, A1),IminusG1)
+        self.coefficients = torch.mm(IminusG2, torch.mm(A2,indefinite_integral))
+        # indefinite_integral = torch.mm(A2, torch.mm(self.coefficients, A1))
+        # self.coefficients = torch.mm(torch.mm(IminusG2, indefinite_integral), IminusG1)
         return self
 
     def inplace_integrate(self, s_base: float, t_base: float) -> Self:
@@ -157,11 +159,11 @@ class MatrixPowerSeries:
         for i in range(self.coefficients.shape[0]):
             for j in range(self.coefficients.shape[1]):
                 c = self.coefficients[i, j].item()
-                if c > 0:
+                if abs(c) > 0:
                     if ps == "":
-                        ps += f"{c}*s^{i}*t^{j} "
+                        ps += f"{c}*s^{j}*t^{i} "
                     else:
-                        ps += f"+ {c}*s^{i}*t^{j} "
+                        ps += f"+ {c}*s^{j}*t^{i} "
 
         return ps
 

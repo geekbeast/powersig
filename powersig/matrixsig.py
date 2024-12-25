@@ -135,8 +135,7 @@ def build_tile_power_series_stencil(shape: torch.Size, device: torch.device):
     i_vals = torch.arange(start=1, end=shape[0], dtype=torch.int64, device=device)
     j_vals = torch.arange(start=1, end=shape[1], dtype=torch.int64, device=device)
     fact_i = torch.lgamma(i_vals + 1)  # shape [N]
-    fact_j = torch.lgamma(j_vals + 1)  # shape [M]
-
+    fact_j = torch.lgamma(j_vals + 1)  # shape [M]3
 
     # Create 2D mesh: i_grid[i,j] = i, j_grid[i,j] = j
     i_grid, j_grid = torch.meshgrid(i_vals, j_vals, indexing='ij')
