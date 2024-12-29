@@ -6,7 +6,6 @@ import math
 import torch
 from math import isclose
 
-
 from powersig.power_series import build_integration_gather_matrix_t, build_integration_gather_matrix_s, \
     MatrixPowerSeries, build_A1, build_A2, build_integration_limit_matrix_s, build_integration_limit_matrix_t
 from powersig.util.series import torch_compute_dot_prod, torch_compute_derivative_batch, double_length
@@ -131,6 +130,7 @@ def compute_gram_matrix_entry_iteration(params: SignatureKernelParameters) -> (i
     one = MatrixPowerSeries(ocs)
     return params.i, params.j, one(1, 1)
 
+
 def build_tile_power_series_stencil(shape: torch.Size, device: torch.device):
     i_vals = torch.arange(start=1, end=shape[0], dtype=torch.int64, device=device)
     j_vals = torch.arange(start=1, end=shape[1], dtype=torch.int64, device=device)
@@ -145,6 +145,7 @@ def build_tile_power_series_stencil(shape: torch.Size, device: torch.device):
     denominator = fact_grid_i + fact_grid_j
 
     return min_ij, denominator
+
 
 def build_tile_power_series(left_bc_ps: MatrixPowerSeries, bottom_bc_ps: MatrixPowerSeries, rho: float,
                             s_min: float, t_min: float, ic: float,
@@ -224,20 +225,19 @@ def build_tile_power_series(left_bc_ps: MatrixPowerSeries, bottom_bc_ps: MatrixP
     prev = u_n.evaluate(g1, g2).item()
     converged = False
     while True:
-        while not converged and truncation_order < (u.coefficients.shape[0]-1):
+        while not converged and truncation_order < (u.coefficients.shape[0] - 1):
             u_n.inplace_matrix_integrate(IminusG1, IminusG2, A1, A2)
             u_n *= rho
             next = u_n.evaluate(g1, g2).item()
             # print(f"u_{step}={u_n}")
             u += u_n
             truncation_order += 1
-            if math.isclose(0, next-prev,rel_tol = 0.0, abs_tol = 1e-5):
+            if math.isclose(0, next - prev, rel_tol=0.0, abs_tol=1e-5):
                 converged = True
                 prev = next
                 break
             prev = next
             # print(f"u={u}")
-
 
         # is_converged, prev = u.is_converged(prev, g1, g2, 1e-2)
 
@@ -281,7 +281,7 @@ def build_tile_power_series(left_bc_ps: MatrixPowerSeries, bottom_bc_ps: MatrixP
 def compute_gram_entry(dX_i, dY_j) -> float:
     ds = 1 / dX_i.shape[0]
     dt = 1 / dY_j.shape[0]
-    # Initial boundarey conditions
+    # Initial boundary conditions
     ocs = torch.zeros([32, 32], device=dX_i.device, dtype=torch.float64)  # Hard coded initial truncation order
     ocs[0, 0] = 1
     one = MatrixPowerSeries(ocs)
@@ -368,3 +368,114 @@ def compute_gram_entry(dX_i, dY_j) -> float:
         next_frontiers = {}
 
     raise RuntimeError("Unable to compute gram matrix")
+
+
+def tensor_compute_gram_entry(dX_i, dY_j) -> float:
+    ds = 1 / dX_i.shape[0]
+    dt = 1 / dY_j.shape[0]
+    # Initial boundary conditions
+    ocs = torch.zeros([32, 32], device=dX_i.device, dtype=torch.float64)  # Hard coded initial truncation order
+    ocs[0, 0] = 1
+    one = MatrixPowerSeries(ocs)
+    Amap = {(ocs.shape[0], ocs.shape[1]): (build_A1(ocs.shape[1], ocs.device), build_A2(ocs.shape[0], ocs.device))}
+    min_ij, denom = build_tile_power_series_stencil(ocs.shape, dX_i.device)
+
+    initial_left_bc_ps = one.deep_clone()
+    initial_bottom_bc_ps = one.deep_clone()
+
+    frontiers = {}
+    frontiers.setdefault((0, 0), FrontierParameters(initial_left_bc_ps, initial_bottom_bc_ps, None,
+                                                    lb_samples=(1 / (2 * dX_i.shape[0]), 1),
+                                                    bb_samples=(1 / (2 * dY_j.shape[0]), 1)))
+    next_frontiers = {}
+
+    diagonal_count = dX_i.shape[0] + dY_j.shape[0] - 1
+    max_diagonal_length = min(dX_i.shape[0], dY_j.shape[0])
+
+    kg = torch.zeros([dX_i.shape[0], dY_j.shape[0]], device=dX_i.device, dtype=torch.float64)
+    kg[:, 0] = 1
+    kg[0, :] = 1
+
+    diagonal_ps_tiles = torch.zeros([max_diagonal_length], device=dX_i.device, dtype=dX_i.dtype)
+
+    s_i = 0
+    t_i = 0
+
+    for d_i in range(diagonal_count):
+        solve_diagonal(diagonal_ps_tiles, )
+    while s_i < dX_i.shape[0] or t_i < dY_j.shape[0]:
+        solve_diagonal(diagonal_ps_tiles, d, dX_i, dY_j)
+
+    for d_i in range(diagonal_count):
+        for grid_point in frontiers:
+            frontier = frontiers[grid_point]
+            s_i, t_i = grid_point
+            s_base = s_i * ds
+            t_base = t_i * dt
+            # print(f"Processing tile {s_i}, {t_i} with rho = {rho[s_i, t_i]} and kg[{s_i}][{t_i}] = {kg[s_i, t_i]}")
+            # print(f"Left initial: {frontier.left_bc_ps(s_base, t_base)}, Right initial: {frontier.bottom_bc_ps(s_base, t_base)}")
+            # print(f"Sum check: {frontier.left_bc_ps(s_base, t_base) + frontier.bottom_bc_ps(s_base, t_base)} == { (frontier.left_bc_ps+frontier.bottom_bc_ps)(s_base,t_base)}")
+            streams = []
+            start = time.time()
+
+            ps = build_tile_power_series(frontier.left_bc_ps, frontier.bottom_bc_ps,
+                                         torch_compute_dot_prod(dX_i[s_i], dY_j[t_i]).item(),
+                                         s_base, t_base, kg[s_i, t_i].item(),
+                                         ds, dt,
+                                         min_ij, denom,
+                                         {})
+            # print(f"Solving one tile took {time.time() - start:.2f}s")
+            # print(f"Series for {s_i},{t_i} = {ps.human_readable()}")
+            if frontier.lb_samples is not None:
+                lbsp, k_lb = frontier.lb_samples
+                # print(f"Left Boundary({s_base},{lbsp}) = {k_lb}")
+                # print(f"Left Solution({s_base},{lbsp}) = {ps(s_base, lbsp)}")
+
+            if frontier.bb_samples is not None:
+                bbsp, k_bb = frontier.bb_samples
+                # print(f"Bottom Boundary({bbsp},{t_base}) = {k_bb}")
+                # print(f"Bottom Solution({bbsp},{t_base}) = {ps(bbsp, t_base)}")
+
+            if s_i == (dX_i.shape[0] - 1) and t_i == (dY_j.shape[0] - 1):
+                return ps(1, 1)
+
+            # Register boundary conditions with tiles to the right and above, if they need computing
+            next_s_i = s_i + 1
+            next_s_base = s_base + ds
+            next_t_base = t_base + dt
+            next_t_i = t_i + 1
+            # Sample points for testing
+            # lb_sample_point = t_base + dt * random.uniform(0, 1)
+            # bb_sample_point = s_base + ds * random.uniform(0, 1)
+
+            if next_s_i < dX_i.shape[0]:
+                # k_lb = ps(next_s_base, lb_sample_point)
+                nf = next_frontiers.setdefault((next_s_i, t_i), FrontierParameters(None, None, None))
+                if t_i == 0:
+                    nf.bottom_bc_ps = one.deep_clone()
+                nf.left_bc_ps = ps.deep_clone().bind_s(next_s_base)
+                # nf.lb_samples = (lb_sample_point, k_lb)
+
+            if next_t_i < dY_j.shape[0]:
+                # k_bb = ps(bb_sample_point, next_t_base)
+                nf = next_frontiers.setdefault((s_i, next_t_i), FrontierParameters(None, None, None))
+                if s_i == 0:
+                    nf.left_bc_ps = one.deep_clone()
+                nf.bottom_bc_ps = ps.bind_t(next_t_base)
+                # nf.bb_samples = (bb_sample_point, k_bb)
+
+            # Use most accurate value for ic
+            if next_s_i < dX_i.shape[0] and next_t_i < dY_j.shape[0]:
+                kg[next_s_i, next_t_i] = ps(next_s3_base, next_t_base)
+
+        frontiers = next_frontiers
+        next_frontiers = {}
+
+    raise RuntimeError("Unable to compute gram matrix")
+
+
+def solve_diagonal(diagonal_ps_tiles: torch.Tensor, d: int, dX_i: torch.Tensor, dY_j: torch.Tensor):
+    s_i = min(d, dX_i.shape[0] - 1)
+    t_i = d - (dX_i.shape[0] - 1) if d >= dX_i.shape[0] else 0
+
+    rho = torch.matmul(dX_i[0:s_i], dY_j[0]

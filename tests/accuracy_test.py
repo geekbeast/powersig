@@ -128,7 +128,7 @@ class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
         # Derive stencil
         min_ij, denominator = build_tile_power_series_stencil(initial.shape,initial.device)
 
-        
+
         g1 = u.build_gather_s(s_min)
         g2 = u.build_gather_t(t_min)
         C = u.coefficients
