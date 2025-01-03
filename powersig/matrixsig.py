@@ -377,13 +377,16 @@ def build_scaling_for_integration(order: int, device: torch.device, dtype: torch
     return torch.mm(scales.view(-1,1), scales.view(1,-1))
 
 
-def build_vandermonde_matrix_s(s:torch.Tensor, order: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
-    powers = torch.arange(1,order+1, device=device, dtype=dtype)
+def build_vandermonde_matrix_s(s:torch.Tensor, order: int, device: torch.device, dtype: torch.dtype, shift:int = 0) -> torch.Tensor:
+    powers = torch.arange(shift,order+shift, device=device, dtype=dtype)
     return s.unsqueeze(1).pow(powers).unsqueeze(-1)
 
-def build_vandermonde_matrix_t(t:torch.Tensor, order: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
-    powers = torch.arange(1,order+1, device=device, dtype=dtype)
+def build_vandermonde_matrix_t(t:torch.Tensor, order: int, device: torch.device, dtype: torch.dtype, shift:int = 0) -> torch.Tensor:
+    powers = torch.arange(shift,order+shift, device=device, dtype=dtype)
     return t.unsqueeze(1).pow(powers).unsqueeze(1)
+
+def get_diagonal_length(d: int, rows: int, cols: int):
+    return min(d + 1, rows + cols - d - 1)
 
 def diagonal_to_string(v: torch.Tensor):
     for d in range(v.shape[0]):
