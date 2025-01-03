@@ -374,20 +374,7 @@ def tensor_compute_gram_entry(dX_i, dY_j) -> float:
     ds = 1 / dX_i.shape[0]
     dt = 1 / dY_j.shape[0]
     # Initial boundary conditions
-    ocs = torch.zeros([32, 32], device=dX_i.device, dtype=torch.float64)  # Hard coded initial truncation order
-    ocs[0, 0] = 1
-    one = MatrixPowerSeries(ocs)
     Amap = {(ocs.shape[0], ocs.shape[1]): (build_A1(ocs.shape[1], ocs.device), build_A2(ocs.shape[0], ocs.device))}
-    min_ij, denom = build_tile_power_series_stencil(ocs.shape, dX_i.device)
-
-    initial_left_bc_ps = one.deep_clone()
-    initial_bottom_bc_ps = one.deep_clone()
-
-    frontiers = {}
-    frontiers.setdefault((0, 0), FrontierParameters(initial_left_bc_ps, initial_bottom_bc_ps, None,
-                                                    lb_samples=(1 / (2 * dX_i.shape[0]), 1),
-                                                    bb_samples=(1 / (2 * dY_j.shape[0]), 1)))
-    next_frontiers = {}
 
     diagonal_count = dX_i.shape[0] + dY_j.shape[0] - 1
     max_diagonal_length = min(dX_i.shape[0], dY_j.shape[0])
@@ -396,13 +383,19 @@ def tensor_compute_gram_entry(dX_i, dY_j) -> float:
     kg[:, 0] = 1
     kg[0, :] = 1
 
-    diagonal_ps_tiles = torch.zeros([max_diagonal_length], device=dX_i.device, dtype=dX_i.dtype)
+    tiles = torch.zeros([max_diagonal_length, 32, 32], device=dX_i.device, dtype=dX_i.dtype)
+    A_s = build_A1(tiles.shape[1], tiles.device)
+    A_t = build_A2(tiles.shape[0], tiles.device)
+
+    initial_tile[0,0] = 1
 
     s_i = 0
     t_i = 0
 
     for d_i in range(diagonal_count):
-        solve_diagonal(diagonal_ps_tiles, )
+        L_t = torch.matmul(A_s)
+        R_s =
+        solve_diagonal(tiles,d_i,dX_i, dY_j,  )
     while s_i < dX_i.shape[0] or t_i < dY_j.shape[0]:
         solve_diagonal(diagonal_ps_tiles, d, dX_i, dY_j)
 
@@ -466,7 +459,7 @@ def tensor_compute_gram_entry(dX_i, dY_j) -> float:
 
             # Use most accurate value for ic
             if next_s_i < dX_i.shape[0] and next_t_i < dY_j.shape[0]:
-                kg[next_s_i, next_t_i] = ps(next_s3_base, next_t_base)
+                kg[next_s_i, next_t_i] = ps(next_s_base, next_t_base)
 
         frontiers = next_frontiers
         next_frontiers = {}
@@ -474,8 +467,40 @@ def tensor_compute_gram_entry(dX_i, dY_j) -> float:
     raise RuntimeError("Unable to compute gram matrix")
 
 
-def solve_diagonal(diagonal_ps_tiles: torch.Tensor, d: int, dX_i: torch.Tensor, dY_j: torch.Tensor):
-    s_i = min(d, dX_i.shape[0] - 1)
-    t_i = d - (dX_i.shape[0] - 1) if d >= dX_i.shape[0] else 0
+def solve_diagonal(u: torch.Tensor, d: int, ds:float, dX_i: torch.Tensor, dY_j: torch.Tensor, stencil, g_s: torch.Tensor, g_t: torch.Tensor) -> torch.Tensor:
 
-    rho = torch.matmul(dX_i[0:s_i], dY_j[0]
+    vectorized_integrate = torch.compile(torch.vmap(inplace_integrate))
+    vectorized_bind_s = torch.compile(torch.vmap(bind_s))
+    vectorized_bind_t = torch.compile(torch.vmap(bind_t))
+    next_diagonal = torch.zeros((u.shape[0] + 1, u.shape[1], u.shape[2]), device=u.device, dtype=u.dtype)
+    # We need to climb from the s-axis to the t-axis along the diagonal.
+    s_i = min(d, dX_i.shape[0] - 1)
+    t_j = 0 if d < dX_i.shape[0] else d - (dX_i.shape[0] - 1)
+    # This computes the inner product along the diagonals.
+    rho = torch.sum(dX_i[range(s_i, -1, -1)] * dY_j[range(t_j, dY_j.shape[0])], 1)
+
+    # Now we iterate across tiles
+    for i in range(u.shape[1]):
+        u_n = torch.clone(u[0:d, :, :])
+        ind_int_s_u_n = u_n * (1.0/powers)
+        u_n[:, 1:] = ind_int_s_u_n[:,:-1]
+        u_n[:, 0] = -torch.mv(ind_int_s_u_n, torch.pow(ds,powers))
+        ind_int_st_u_n = u_n * (1.0 / powers)
+
+    if d >= dX_i.shape[0] - 1:
+        # Don't bottom left tile propagate to the right
+        next_diagonal += vectorized_bind_s(u[1:,:,:], g_s)
+    if d >= dY_j.shape[0] - 1:
+        # Don't propagate the top left tile up
+        next_diagonal += vectorized_bind_t(u[:-1,:,:], g_t)
+
+    return next_diagonal
+
+def bind_s(u: torch.Tensor, g_s: torch.Tensor) -> torch.Tensor:
+    return torch.matvec(u, g_s)
+
+def bind_t(u:torch.Tensor, g_t: torch.Tensor) -> torch.Tensor:
+    return torch.matmul(g_t, u)
+
+def inplace_integrate(L: torch.Tensor, u_n: torch.Tensor, R: torch.Tensor) -> torch.Tensor:
+    return torch.matmul(L, torch.matmul(u_n, R))
