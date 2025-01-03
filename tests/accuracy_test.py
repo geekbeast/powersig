@@ -9,7 +9,8 @@ import torch
 from numba.cpython.setobj import set_len
 from sigkernel import sigkernel
 
-from powersig.matrixsig import MatrixSig, build_tile_power_series_stencil
+from powersig.matrixsig import MatrixSig, build_tile_power_series_stencil, build_scaling_for_integration, \
+    build_vandermonde_matrix_s, build_vandermonde_matrix_t, diagonal_to_string
 from powersig.power_series import SimplePowerSeries, MatrixPowerSeries, build_A1, build_A2, \
     build_integration_gather_matrix_s, build_integration_gather_matrix_t
 from powersig.simpesig import SimpleSig
@@ -104,6 +105,55 @@ class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
 
     def setUp(self):
         print(f"Data shape: {self.__class__.configuration.X.shape}")
+
+    def test_integration_scaling(self):
+        '''
+        This test just makes sure that matrix that will be broadcast for computing the s,t integral is constructed properly.
+        '''
+        rho = 16
+        s_len = 3
+        t_len = 3
+
+        u = torch.zeros([1, 5, 5], dtype=torch.float64)
+        u[0, 0, 0] = 1
+
+        s = torch.linspace(0, 1, s_len, dtype=u.dtype, device=u.device)
+        t = torch.linspace(0, 1, t_len, dtype=u.dtype, device=u.device)
+
+        print(f"s = {s}")
+        print(f"t = {t}")
+
+        scales = build_scaling_for_integration(5,u.device, u.dtype)
+        print(f"scales = {scales}")
+
+        print("anti-diagonal starting at 0,0")
+        v_s = build_vandermonde_matrix_s(s[:1], 5, u.device, u.dtype)
+        v_t = build_vandermonde_matrix_t(t[:1], 5, u.device, u.dtype)
+        print(f"vandermonde matrix s: {v_s}")
+        print(f"vandermonde matrix t: {v_t}")
+
+        u_n = torch.clone(u)
+
+        for i in range(5):
+            u_step = rho*u_n*scales
+
+            u_n[:, 1:, 1:] = u_step[:,:-1, :-1]
+            u_n[:,:1,:] = torch.bmm(v_t, u_step)
+            u_n[:,:,:1] = torch.bmm(u_step, v_s)
+            u_n[:,:1,:1] = torch.bmm(v_t, u_n[:,:,:1])
+            print(f"u_n = {u_n}")
+            u+=u_n
+
+        print(f"u = {diagonal_to_string(u)}")
+
+        print("anti-diagonal starting at  1,0")
+        v_s = build_vandermonde_matrix_s(s[range(1,-1,-1)],5,u.device, u.dtype)
+        v_t = build_vandermonde_matrix_s(t[:2], 5, u.device, u.dtype)
+        print(f"vandermonde matrix s: {v_s}")
+        print(f"vandermonde matrix t: {v_t}")
+
+
+
 
     def test_integration(self):
         rho = 16
