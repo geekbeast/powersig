@@ -1,7 +1,7 @@
 import string
 import time
 from concurrent.futures import ProcessPoolExecutor
-from typing import Optional
+from typing import Optional, Tuple
 
 import math
 import torch
@@ -385,8 +385,15 @@ def build_vandermonde_matrix_t(t:torch.Tensor, order: int, device: torch.device,
     powers = torch.arange(shift,order+shift, device=device, dtype=dtype)
     return t.unsqueeze(1).pow(powers).unsqueeze(1)
 
-def get_diagonal_length(d: int, rows: int, cols: int):
-    return min(d + 1, rows + cols - d - 1)
+def get_diagonal_range(d: int, rows: int, cols: int) -> Tuple[int, int, int]:
+    if d < rows:
+        t_start = 0
+        s_start = d
+    else:
+        t_start = d - rows + 1
+        s_start = rows - 1
+
+    return s_start, t_start, min(rows - t_start, s_start + 1)
 
 def diagonal_to_string(v: torch.Tensor):
     for d in range(v.shape[0]):

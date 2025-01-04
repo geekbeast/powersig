@@ -10,7 +10,7 @@ from numba.cpython.setobj import set_len
 from sigkernel import sigkernel
 
 from powersig.matrixsig import MatrixSig, build_tile_power_series_stencil, build_scaling_for_integration, \
-    build_vandermonde_matrix_s, build_vandermonde_matrix_t, diagonal_to_string, get_diagonal_length
+    build_vandermonde_matrix_s, build_vandermonde_matrix_t, diagonal_to_string, get_diagonal_range
 from powersig.power_series import SimplePowerSeries, MatrixPowerSeries, build_A1, build_A2, \
     build_integration_gather_matrix_s, build_integration_gather_matrix_t
 from powersig.simpesig import SimpleSig
@@ -106,9 +106,21 @@ class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
     def setUp(self):
         print(f"Data shape: {self.__class__.configuration.X.shape}")
 
-    def test_diagonal_length(self):
+    def test_diagonal_range(self):
+        # Test a sub diagonal below
         d, rows, cols = 3, 5, 5
-        assert get_diagonal_length(d, rows, cols) == 3
+        (s_start, t_start, dlen) = get_diagonal_range(d, rows, cols)
+        assert dlen == 4, f"Expected dlen = 3, actual dlen = {dlen}"
+
+        # Test the main diagonal
+        d, rows, cols = 4, 5, 5
+        (s_start, t_start, dlen) = get_diagonal_range(d, rows, cols)
+        assert dlen == 5, f"Expected dlen = 3, actual dlen = {dlen}"
+
+        # Test a sub diagonal above
+        d, rows, cols = 6, 5, 5
+        (s_start, t_start, dlen) = get_diagonal_range(d, rows, cols)
+        assert dlen == 3, f"Expected dlen = 3, actual dlen = {dlen}"
 
     def test_integration_scaling(self):
         '''
