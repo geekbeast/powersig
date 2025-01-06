@@ -21,6 +21,9 @@ def torch_compute_dot_prod(X,Y):
     assert X.shape == Y.shape, "X and Y must have the same shape."
     return (X*Y).sum()
 
+def torch_compute_dot_prod_batch(X,Y):
+    return torch.einsum("bd,bd->b", X, Y)
+
 def torch_compute_derivative_batch(X) -> torch.Tensor:
     # X = [1, 2, 3, 5, 7, 11, 13, 17, 19]
     # |X| = 9

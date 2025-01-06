@@ -397,7 +397,7 @@ def get_diagonal_range(d: int, rows: int, cols: int) -> Tuple[int, int, int]:
 
 def diagonal_to_string(v: torch.Tensor):
     for d in range(v.shape[0]):
-        print("Diagonal index: {d}")
+        print(f"Diagonal index: {d}")
         ps = ""
         for i in range(v.shape[1]):
             for j in range(v.shape[2]):
@@ -409,140 +409,69 @@ def diagonal_to_string(v: torch.Tensor):
                         ps += f"+ {c}*s^{j}*t^{i} "
         print(ps)
 
+def tensor_compute_gram_entry(dX_i:torch.Tensor, dY_j:torch.Tensor, scales: torch.Tensor, order: int = 32) -> float:
+    # Initial tile
+    u = torch.zeros([1, order, order], dtype=dX_i.dtype, device=dX_i.device)
 
-#
-#
-# def tensor_compute_gram_entry(dX_i, dY_j) -> float:
-#     ds = 1 / dX_i.shape[0]
-#     dt = 1 / dY_j.shape[0]
-#     # Initial boundary conditions
-#     Amap = {(ocs.shape[0], ocs.shape[1]): (build_A1(ocs.shape[1], ocs.device), build_A2(ocs.shape[0], ocs.device))}
-#
-#     diagonal_count = dX_i.shape[0] + dY_j.shape[0] - 1
-#     max_diagonal_length = min(dX_i.shape[0], dY_j.shape[0])
-#
-#     kg = torch.zeros([dX_i.shape[0], dY_j.shape[0]], device=dX_i.device, dtype=torch.float64)
-#     kg[:, 0] = 1
-#     kg[0, :] = 1
-#
-#     tiles = torch.zeros([max_diagonal_length, 32, 32], device=dX_i.device, dtype=dX_i.dtype)
-#     A_s = build_A1(tiles.shape[1], tiles.device)
-#     A_t = build_A2(tiles.shape[0], tiles.device)
-#
-#     initial_tile[0,0] = 1
-#
-#     s_i = 0
-#     t_i = 0
-#
-#     for d_i in range(diagonal_count):
-#         L_t = torch.matmul(A_s)
-#         R_s =
-#         solve_diagonal(tiles,d_i,dX_i, dY_j,  )
-#     while s_i < dX_i.shape[0] or t_i < dY_j.shape[0]:
-#         solve_diagonal(diagonal_ps_tiles, d, dX_i, dY_j)
-#
-#     for d_i in range(diagonal_count):
-#         for grid_point in frontiers:
-#             frontier = frontiers[grid_point]
-#             s_i, t_i = grid_point
-#             s_base = s_i * ds
-#             t_base = t_i * dt
-#             # print(f"Processing tile {s_i}, {t_i} with rho = {rho[s_i, t_i]} and kg[{s_i}][{t_i}] = {kg[s_i, t_i]}")
-#             # print(f"Left initial: {frontier.left_bc_ps(s_base, t_base)}, Right initial: {frontier.bottom_bc_ps(s_base, t_base)}")
-#             # print(f"Sum check: {frontier.left_bc_ps(s_base, t_base) + frontier.bottom_bc_ps(s_base, t_base)} == { (frontier.left_bc_ps+frontier.bottom_bc_ps)(s_base,t_base)}")
-#             streams = []
-#             start = time.time()
-#
-#             ps = build_tile_power_series(frontier.left_bc_ps, frontier.bottom_bc_ps,
-#                                          torch_compute_dot_prod(dX_i[s_i], dY_j[t_i]).item(),
-#                                          s_base, t_base, kg[s_i, t_i].item(),
-#                                          ds, dt,
-#                                          min_ij, denom,
-#                                          {})
-#             # print(f"Solving one tile took {time.time() - start:.2f}s")
-#             # print(f"Series for {s_i},{t_i} = {ps.human_readable()}")
-#             if frontier.lb_samples is not None:
-#                 lbsp, k_lb = frontier.lb_samples
-#                 # print(f"Left Boundary({s_base},{lbsp}) = {k_lb}")
-#                 # print(f"Left Solution({s_base},{lbsp}) = {ps(s_base, lbsp)}")
-#
-#             if frontier.bb_samples is not None:
-#                 bbsp, k_bb = frontier.bb_samples
-#                 # print(f"Bottom Boundary({bbsp},{t_base}) = {k_bb}")
-#                 # print(f"Bottom Solution({bbsp},{t_base}) = {ps(bbsp, t_base)}")
-#
-#             if s_i == (dX_i.shape[0] - 1) and t_i == (dY_j.shape[0] - 1):
-#                 return ps(1, 1)
-#
-#             # Register boundary conditions with tiles to the right and above, if they need computing
-#             next_s_i = s_i + 1
-#             next_s_base = s_base + ds
-#             next_t_base = t_base + dt
-#             next_t_i = t_i + 1
-#             # Sample points for testing
-#             # lb_sample_point = t_base + dt * random.uniform(0, 1)
-#             # bb_sample_point = s_base + ds * random.uniform(0, 1)
-#
-#             if next_s_i < dX_i.shape[0]:
-#                 # k_lb = ps(next_s_base, lb_sample_point)
-#                 nf = next_frontiers.setdefault((next_s_i, t_i), FrontierParameters(None, None, None))
-#                 if t_i == 0:
-#                     nf.bottom_bc_ps = one.deep_clone()
-#                 nf.left_bc_ps = ps.deep_clone().bind_s(next_s_base)
-#                 # nf.lb_samples = (lb_sample_point, k_lb)
-#
-#             if next_t_i < dY_j.shape[0]:
-#                 # k_bb = ps(bb_sample_point, next_t_base)
-#                 nf = next_frontiers.setdefault((s_i, next_t_i), FrontierParameters(None, None, None))
-#                 if s_i == 0:
-#                     nf.left_bc_ps = one.deep_clone()
-#                 nf.bottom_bc_ps = ps.bind_t(next_t_base)
-#                 # nf.bb_samples = (bb_sample_point, k_bb)
-#
-#             # Use most accurate value for ic
-#             if next_s_i < dX_i.shape[0] and next_t_i < dY_j.shape[0]:
-#                 kg[next_s_i, next_t_i] = ps(next_s_base, next_t_base)
-#
-#         frontiers = next_frontiers
-#         next_frontiers = {}
-#
-#     raise RuntimeError("Unable to compute gram matrix")
-#
-#
-# def solve_diagonal(u: torch.Tensor, d: int, ds:float, dX_i: torch.Tensor, dY_j: torch.Tensor, stencil, g_s: torch.Tensor, g_t: torch.Tensor) -> torch.Tensor:
-#
-#     vectorized_integrate = torch.compile(torch.vmap(inplace_integrate))
-#     vectorized_bind_s = torch.compile(torch.vmap(bind_s))
-#     vectorized_bind_t = torch.compile(torch.vmap(bind_t))
-#     next_diagonal = torch.zeros((u.shape[0] + 1, u.shape[1], u.shape[2]), device=u.device, dtype=u.dtype)
-#     # We need to climb from the s-axis to the t-axis along the diagonal.
-#     s_i = min(d, dX_i.shape[0] - 1)
-#     t_j = 0 if d < dX_i.shape[0] else d - (dX_i.shape[0] - 1)
-#     # This computes the inner product along the diagonals.
-#     rho = torch.sum(dX_i[range(s_i, -1, -1)] * dY_j[range(t_j, dY_j.shape[0])], 1)
-#
-#     # Now we iterate across tiles
-#     for i in range(u.shape[1]):
-#         u_n = torch.clone(u[0:d, :, :])
-#         ind_int_s_u_n = u_n * (1.0/powers)
-#         u_n[:, 1:] = ind_int_s_u_n[:,:-1]
-#         u_n[:, 0] = -torch.mv(ind_int_s_u_n, torch.pow(ds,powers))
-#         ind_int_st_u_n = u_n * (1.0 / powers)
-#
-#     if d >= dX_i.shape[0] - 1:
-#         # Don't bottom left tile propagate to the right
-#         next_diagonal += vectorized_bind_s(u[1:,:,:], g_s)
-#     if d >= dY_j.shape[0] - 1:
-#         # Don't propagate the top left tile up
-#         next_diagonal += vectorized_bind_t(u[:-1,:,:], g_t)
-#
-#     return next_diagonal
-#
-# def bind_s(u: torch.Tensor, g_s: torch.Tensor) -> torch.Tensor:
-#     return torch.matvec(u, g_s)
-#
-# def bind_t(u:torch.Tensor, g_t: torch.Tensor) -> torch.Tensor:
-#     return torch.matmul(g_t, u)
-#
-# def inplace_integrate(L: torch.Tensor, u_n: torch.Tensor, R: torch.Tensor) -> torch.Tensor:
-#     return torch.matmul(L, torch.matmul(u_n, R))
+    s = torch.linspace(0, 1, dX_i.shape[0], dtype=u.dtype, device=u.device)
+    t = torch.linspace(0, 1, dY_j.shape[0], dtype=u.dtype, device=u.device)
+
+    diagonal_count = dX_i.shape[0] + dY_j.shape[0] - 1
+
+    for d in range(diagonal_count):
+        s_start, t_start, dlen = get_diagonal_range(d, order, order)
+        u = torch.zeros([dlen, order, order], dtype=dX_i.dtype, device=dX_i.device)
+        if d == 0:
+            u[0, 0, 0] = 1
+        else:
+            # Build the next diagonal. We will only use the boundaries for computational efficiency reasons.
+            # While we could directly use the top right corner of each tile to compute the initial condition,
+            # This would require us storing values for diagonals we aren't directly working on at the moment.
+            # We can instead use either of the boundaries for a tile to compute the initial value.
+
+            s0 = build_vandermonde_matrix_s(s[(s_start - dlen):s_start].flip(), order, u.device, u.dtype)
+            t0 = build_vandermonde_matrix_t(t[:t_start + dlen], order, u.device, u.dtype)
+
+            if d < dX_i.shape[0]:
+                torch.bmm(u[1:,:,:], s0, out=u[:,:,:1])
+            else:
+                torch.bmm(u, s0, out=u[:,:,:1])
+
+            if t_start + dlen < dY_j.shape[0]:
+                # Don't need to propagate contribution to top boundary.
+                torch.bmm(t0, u[dlen-1:,:,:], out=u[:, :1, :])
+            else:
+                torch.bmm(t0, u, out=u[:, :1, :])
+
+            # top = torch.bmm(t0, u)
+            # u[:, :, :1] = right  # This is polynomial in t for the right boundary.
+            # u[1, :1, :] = top  # This is polynomial in s for the left boundary.
+
+            print(f"u_0 = {u}")
+            diagonal_to_string(u)
+
+        v_s = build_vandermonde_matrix_s(s[:s_start+1].flip(), order, u.device, u.dtype, 1)
+        v_t = build_vandermonde_matrix_t(t[:t_start], order, u.device, u.dtype, 1)
+
+        print(f"vandermonde matrix s: {v_s}")
+        print(f"vandermonde matrix t: {v_t}")
+
+        rho  = torch_compute_dot_prod(dX_i[:s_start+1].flip(), dY_j[:t_start])
+
+        u_n = torch.clone(u)
+
+        for i in range(order-1):
+            u_step = (rho * u_n) * scales
+            # print(f"u_step = {u_step}")
+            u_n[:, 1:, 1:] = u_step[:, :-1, :-1]
+            u_n[:, :1, 1:] = -torch.bmm(v_t, u_step)[:,:,:-1]
+            u_step_s = torch.bmm(u_step, v_s)
+            u_n[:, 1:, :1] = -u_step_s[:,:-1,:]
+            # print(f"(v_t . u_n[:, :, :1]) = {torch.bmm(v_t, u_n[:, :, :1])}")
+            u_n[:, :1, :1] = torch.bmm(v_t, u_step_s)
+            print(f"u_n = {u_n}")
+            u += u_n
+            print(f"u = {u}")
+
+
+    return u.sum().item()

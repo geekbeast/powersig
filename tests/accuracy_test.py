@@ -122,6 +122,7 @@ class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
         (s_start, t_start, dlen) = get_diagonal_range(d, rows, cols)
         assert dlen == 3, f"Expected dlen = 3, actual dlen = {dlen}"
 
+
     def test_integration_scaling(self):
         '''
         This test just makes sure that matrix that will be broadcast for computing the s,t integral is constructed properly.
@@ -152,41 +153,55 @@ class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
 
         for i in range(5):
             u_step = rho*u_n*scales
-
             u_n[:, 1:, 1:] = u_step[:,:-1, :-1]
-            u_n[:,:1,:] = torch.bmm(v_t, u_step)
-            u_n[:,:,:1] = torch.bmm(u_step, v_s)
+            u_n[:, :1, 1:] = -torch.bmm(v_t, u_step)[:,:,:-1]
+            u_n[:, 1:, :1] = -torch.bmm(u_step, v_s)[:,:-1,:]
             u_n[:,:1,:1] = torch.bmm(v_t, u_n[:,:,:1])
             print(f"u_n = {u_n}")
             u+=u_n
-
-        print(f"u = {diagonal_to_string(u)}")
+        print(f"u = ")
+        diagonal_to_string(u)
+        s_start, t_start, dlen = get_diagonal_range(1, 5, 5)
+        u_next = torch.zeros([dlen, 5, 5], dtype=torch.float64)
 
         # Build the next diagonal
-        s0 = build_vandermonde_matrix_s(s[:1], 5, u.device, u.dtype)
-        t0 = build_vandermonde_matrix_t(t[:1], 5, u.device, u.dtype)
-        # u_next =
+        s0 = build_vandermonde_matrix_s(s[1:2], 5, u.device, u.dtype)
+        t0 = build_vandermonde_matrix_t(t[1:2], 5, u.device, u.dtype)
+
+        right = torch.bmm(u, s0)
+        top = torch.bmm(t0, u)
+        u_next[0,:,:1] = right # This is polynomial in t for the right boundary.
+        u_next[1,:1,:] = top   # This is polynomial in s for the left boundary.
+
+        print("u_next = ")
+        diagonal_to_string(u_next)
+
+        u = u_next
+        u_n = torch.clone(u)
 
         print("anti-diagonal starting at  1,0")
         v_s = build_vandermonde_matrix_s(s[range(1,-1,-1)],5,u.device, u.dtype,1)
-        v_t = build_vandermonde_matrix_s(t[:2], 5, u.device, u.dtype,1)
+        v_t = build_vandermonde_matrix_t(t[:2], 5, u.device, u.dtype,1)
         print(f"vandermonde matrix s: {v_s}")
         print(f"vandermonde matrix t: {v_t}")
 
-        for i in range(5):
-            u_step = rho * u_n * scales
+        print(f"u = {u}")
 
+        for i in range(4):
+            u_step = rho * u_n * scales
+            # print(f"u_step = {u_step}")
             u_n[:, 1:, 1:] = u_step[:, :-1, :-1]
-            u_n[:, :1, :] = torch.bmm(v_t, u_step)
-            u_n[:, :, :1] = torch.bmm(u_step, v_s)
-            u_n[:, :1, :1] = torch.bmm(v_t, u_n[:, :, :1])
+            u_n[:, :1, 1:] = -torch.bmm(v_t, u_step)[:,:,:-1]
+            u_step_s = torch.bmm(u_step, v_s)
+            u_n[:, 1:, :1] = -u_step_s[:,:-1,:]
+            # print(f"(v_t . u_n[:, :, :1]) = {torch.bmm(v_t, u_n[:, :, :1])}")
+            u_n[:, :1, :1] = torch.bmm(v_t, u_step_s)
             print(f"u_n = {u_n}")
             u += u_n
+            print(f"u = {u}")
 
-        print(f"u = {diagonal_to_string(u)}")
-
-
-
+        print(f"u = {u}")
+        diagonal_to_string(u)
 
     def test_integration(self):
         rho = 16
