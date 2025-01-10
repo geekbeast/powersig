@@ -1,7 +1,9 @@
+import random
 import time
 import unittest
 from math import factorial
 from multiprocessing import set_start_method
+from random import randint
 
 import numpy
 import numpy as np
@@ -10,7 +12,8 @@ from numba.cpython.setobj import set_len
 from sigkernel import sigkernel
 
 from powersig.matrixsig import MatrixSig, build_tile_power_series_stencil, build_scaling_for_integration, \
-    build_vandermonde_matrix_s, build_vandermonde_matrix_t, diagonal_to_string, get_diagonal_range
+    build_vandermonde_matrix_s, build_vandermonde_matrix_t, diagonal_to_string, get_diagonal_range, \
+    tensor_compute_gram_entry, reverse_linspace_0_1
 from powersig.power_series import SimplePowerSeries, MatrixPowerSeries, build_A1, build_A2, \
     build_integration_gather_matrix_s, build_integration_gather_matrix_t
 from powersig.simpesig import SimpleSig
@@ -106,22 +109,72 @@ class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
     def setUp(self):
         print(f"Data shape: {self.__class__.configuration.X.shape}")
 
+    def test_reverse_indexing(self):
+        s = reverse_linspace_0_1(6, dtype=torch.float64, device=torch.device("cpu"))
+        print(f"s = {s}")
+
+        d, rows, cols = 3, 5, 5
+        (s_start, t_start, dlen) = get_diagonal_range(d, rows, cols)
+        print(f"s[{-(s_start)}:] = {s[-(s_start+1):]}")
+
+        # Test a sub diagonal above
+        d, rows, cols = 6, 5, 5
+        (s_start, t_start, dlen) = get_diagonal_range(d, rows, cols)
+
+
+        # Test a non-square matrix
+        d, rows, cols = 5, 3, 5
+        (s_start, t_start, dlen) = get_diagonal_range(d, rows, cols)
+
+
+    def test_reverse_linspace(self):
+        start = 0  # randint(0, 100)
+        end = 1  # start + randint(1, 100)
+        numpoints = randint(10, 100)
+        print(f"Start = {start}, end = {end}, numpoints = {numpoints}")
+        expected = torch.linspace(start, end, numpoints, dtype=torch.float64).flip(0)
+        actual = reverse_linspace_0_1(numpoints, dtype=expected.dtype, device=expected.device)
+        print(f"Expected shape: {expected.shape}")
+        print(f"Actual shape: {actual.shape}")
+        print(f"Expected: {expected}\nActual: {actual}")
+        print(f"Error: {actual - expected}")
+        assert torch.allclose(actual, expected, rtol=0,
+                              atol=1e-10), "Difference between expected and actual is too large"
+
     def test_diagonal_range(self):
         # Test a sub diagonal below
         d, rows, cols = 3, 5, 5
         (s_start, t_start, dlen) = get_diagonal_range(d, rows, cols)
         assert dlen == 4, f"Expected dlen = 3, actual dlen = {dlen}"
+        assert s_start == 3, f"Expected s_start = 2, actual s_start = {s_start}"
+        assert t_start == 0, f"Expected t_start = 0, actual t_start = {t_start}"
 
         # Test the main diagonal
         d, rows, cols = 4, 5, 5
         (s_start, t_start, dlen) = get_diagonal_range(d, rows, cols)
-        assert dlen == 5, f"Expected dlen = 3, actual dlen = {dlen}"
+        assert dlen == 5, f"Expected dlen = 5, actual dlen = {dlen}"
+        assert s_start == 4, f"Expected s_start = 2, actual s_start = {s_start}"
+        assert t_start == 0, f"Expected t_start = 0, actual t_start = {t_start}"
 
         # Test a sub diagonal above
         d, rows, cols = 6, 5, 5
         (s_start, t_start, dlen) = get_diagonal_range(d, rows, cols)
         assert dlen == 3, f"Expected dlen = 3, actual dlen = {dlen}"
+        assert s_start == 4, f"Expected s_start = 2, actual s_start = {s_start}"
+        assert t_start == 2, f"Expected t_start = 0, actual t_start = {t_start}"
 
+        # Test a non-square matrix
+        d, rows, cols = 5, 3, 5
+        (s_start, t_start, dlen) = get_diagonal_range(d, rows, cols)
+        assert dlen == 2, f"Expected dlen = 2, actual dlen = {dlen}"
+        assert s_start == 4, f"Expected s_start = 2, actual s_start = {s_start}"
+        assert t_start == 1, f"Expected t_start = 0, actual t_start = {t_start}"
+
+    def test_batched_matrix_sigma(self):
+        dX_i = torch.tensor([4, 4], device="cuda", dtype=torch.float64)
+        dY_j = torch.tensor([4, 4], device="cuda", dtype=torch.float64)
+        scales = build_scaling_for_integration(5, dX_i.device, dX_i.dtype)
+        tensor_compute_gram_entry(dX_i, dY_j, scales, 5)
 
     def test_integration_scaling(self):
         '''
@@ -134,44 +187,51 @@ class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
         u = torch.zeros([1, 5, 5], dtype=torch.float64)
         u[0, 0, 0] = 1
 
-        s = torch.linspace(0, 1, s_len, dtype=u.dtype, device=u.device)
+        s = reverse_linspace_0_1(3,dtype=u.dtype, device=u.device)
         t = torch.linspace(0, 1, t_len, dtype=u.dtype, device=u.device)
 
         print(f"s = {s}")
         print(f"t = {t}")
 
-        scales = build_scaling_for_integration(5,u.device, u.dtype)
+        scales = build_scaling_for_integration(5, u.device, u.dtype)
         print(f"scales = {scales}")
 
         print("anti-diagonal starting at 0,0")
-        v_s = build_vandermonde_matrix_s(s[:1], 5, u.device, u.dtype,1)
-        v_t = build_vandermonde_matrix_t(t[:1], 5, u.device, u.dtype,1)
+        v_s = build_vandermonde_matrix_s(s[-1:], 5, u.device, u.dtype, 1)
+        v_t = build_vandermonde_matrix_t(t[:1], 5, u.device, u.dtype, 1)
         print(f"vandermonde matrix s: {v_s}")
         print(f"vandermonde matrix t: {v_t}")
 
         u_n = torch.clone(u)
 
         for i in range(5):
-            u_step = rho*u_n*scales
-            u_n[:, 1:, 1:] = u_step[:,:-1, :-1]
-            u_n[:, :1, 1:] = -torch.bmm(v_t, u_step)[:,:,:-1]
-            u_n[:, 1:, :1] = -torch.bmm(u_step, v_s)[:,:-1,:]
-            u_n[:,:1,:1] = torch.bmm(v_t, u_n[:,:,:1])
+            u_step = rho * u_n * scales
+            u_n[:, 1:, 1:] = u_step[:, :-1, :-1]
+            u_n[:, :1, 1:] = -torch.bmm(v_t, u_step)[:, :, :-1]
+            u_n[:, 1:, :1] = -torch.bmm(u_step, v_s)[:, :-1, :]
+            u_n[:, :1, :1] = torch.bmm(v_t, u_n[:, :, :1])
             print(f"u_n = {u_n}")
-            u+=u_n
+            u += u_n
         print(f"u = ")
         diagonal_to_string(u)
+        expected = torch.tensor([[1, 0, 0, 0, 0], [0, 16, 0, 0, 0], [0, 0, 64, 0, 0], [0, 0, 0, 1024 /
+                                                                                       9, 0], [0, 0, 0, 0, 1024 / 9]],
+                                dtype=u.dtype, device=u.device)
+        assert torch.allclose(u[0, :, :], expected, rtol=0,
+                              atol=1e-10), "Difference between expected and actual is too large"
+
         s_start, t_start, dlen = get_diagonal_range(1, 5, 5)
         u_next = torch.zeros([dlen, 5, 5], dtype=torch.float64)
-
+        0,1,2,3,4
+        4,3,2,1,0
         # Build the next diagonal
         s0 = build_vandermonde_matrix_s(s[1:2], 5, u.device, u.dtype)
         t0 = build_vandermonde_matrix_t(t[1:2], 5, u.device, u.dtype)
 
         right = torch.bmm(u, s0)
         top = torch.bmm(t0, u)
-        u_next[0,:,:1] = right # This is polynomial in t for the right boundary.
-        u_next[1,:1,:] = top   # This is polynomial in s for the left boundary.
+        u_next[0, :, :1] = right  # This is polynomial in t for the right boundary.
+        u_next[1, :1, :] = top  # This is polynomial in s for the left boundary.
 
         print("u_next = ")
         diagonal_to_string(u_next)
@@ -180,8 +240,8 @@ class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
         u_n = torch.clone(u)
 
         print("anti-diagonal starting at  1,0")
-        v_s = build_vandermonde_matrix_s(s[range(1,-1,-1)],5,u.device, u.dtype,1)
-        v_t = build_vandermonde_matrix_t(t[:2], 5, u.device, u.dtype,1)
+        v_s = build_vandermonde_matrix_s(s[-2:], 5, u.device, u.dtype, 1)
+        v_t = build_vandermonde_matrix_t(t[:2], 5, u.device, u.dtype, 1)
         print(f"vandermonde matrix s: {v_s}")
         print(f"vandermonde matrix t: {v_t}")
 
@@ -191,17 +251,22 @@ class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
             u_step = rho * u_n * scales
             # print(f"u_step = {u_step}")
             u_n[:, 1:, 1:] = u_step[:, :-1, :-1]
-            u_n[:, :1, 1:] = -torch.bmm(v_t, u_step)[:,:,:-1]
+            u_n[:, :1, 1:] = -torch.bmm(v_t, u_step)[:, :, :-1]
             u_step_s = torch.bmm(u_step, v_s)
-            u_n[:, 1:, :1] = -u_step_s[:,:-1,:]
+            u_n[:, 1:, :1] = -u_step_s[:, :-1, :]
             # print(f"(v_t . u_n[:, :, :1]) = {torch.bmm(v_t, u_n[:, :, :1])}")
             u_n[:, :1, :1] = torch.bmm(v_t, u_step_s)
             print(f"u_n = {u_n}")
             u += u_n
             print(f"u = {u}")
-
+        expected = torch.tensor([[1, 0, 0, 0, 0], [0, 16, 0, 0, 0], [0, 0, 64, 0, 0], [0, 0, 0, 1024 /
+                                                                                       9, 0], [0, 0, 0, 0, 1024 / 9]],dtype=u.dtype, device=u.device)
         print(f"u = {u}")
         diagonal_to_string(u)
+        assert torch.allclose(u[0, :, :], expected, rtol=0,
+                              atol=1e-10), "Difference between expected and actual is too large"
+        assert torch.allclose(u[1, :, :], expected, rtol=0,
+                              atol=1e-10), "Difference between expected and actual is too large"
 
     def test_integration(self):
         rho = 16
@@ -224,8 +289,7 @@ class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
         print(f"u_0 = {u}")
 
         # Derive stencil
-        min_ij, denominator = build_tile_power_series_stencil(initial.shape,initial.device)
-
+        min_ij, denominator = build_tile_power_series_stencil(initial.shape, initial.device)
 
         g1 = u.build_gather_s(s_min)
         g2 = u.build_gather_t(t_min)
@@ -234,19 +298,19 @@ class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
         min_ij_log_rho = min_ij * math.log(rho)
         new_entries = torch.exp(min_ij_log_rho - denom)
 
-        new_entries.diagonal().__imul__(C[0,0])
+        new_entries.diagonal().__imul__(C[0, 0])
 
-        for i in range(1,new_entries.shape[0]):
+        for i in range(1, new_entries.shape[0]):
             # print(f"C[0,{i}] = {C[0,i]}")
-            new_entries.diagonal(i).__imul__(C[0,i])
-        for j in range(1,new_entries.shape[1]):
-            new_entries.diagonal(-j).__imul__(C[j,0])
+            new_entries.diagonal(i).__imul__(C[0, i])
+        for j in range(1, new_entries.shape[1]):
+            new_entries.diagonal(-j).__imul__(C[j, 0])
 
         print(f"new_entries = {new_entries.tolist()}")
 
-        C[1:,1:] = new_entries
-        C[1:, :1] -= torch.mm(new_entries, g1[1:,:])
-        C[:1, 1:] -= torch.mm(g2[:,1:],new_entries)
+        C[1:, 1:] = new_entries
+        C[1:, :1] -= torch.mm(new_entries, g1[1:, :])
+        C[:1, 1:] -= torch.mm(g2[:, 1:], new_entries)
 
         print(f"Elapsed time: {time.time() - start}")
         print(f"u = {u}")

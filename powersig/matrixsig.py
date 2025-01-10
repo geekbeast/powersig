@@ -11,7 +11,8 @@ from torch.onnx.symbolic_opset9 import unsqueeze
 
 from powersig.power_series import build_integration_gather_matrix_t, build_integration_gather_matrix_s, \
     MatrixPowerSeries, build_A1, build_A2, build_integration_limit_matrix_s, build_integration_limit_matrix_t
-from powersig.util.series import torch_compute_dot_prod, torch_compute_derivative_batch, double_length
+from powersig.util.series import torch_compute_dot_prod, torch_compute_derivative_batch, double_length, \
+    torch_compute_dot_prod_batch
 
 
 class FrontierParameters:
@@ -372,28 +373,45 @@ def compute_gram_entry(dX_i, dY_j) -> float:
 
     raise RuntimeError("Unable to compute gram matrix")
 
+
 def build_scaling_for_integration(order: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
-    scales  = torch.arange(1, order+1, device=device, dtype=dtype) ** -1
-    return torch.mm(scales.view(-1,1), scales.view(1,-1))
+    scales = torch.arange(1, order + 1, device=device, dtype=dtype) ** -1
+    return torch.mm(scales.view(-1, 1), scales.view(1, -1))
 
 
-def build_vandermonde_matrix_s(s:torch.Tensor, order: int, device: torch.device, dtype: torch.dtype, shift:int = 0) -> torch.Tensor:
-    powers = torch.arange(shift,order+shift, device=device, dtype=dtype)
+def build_vandermonde_matrix_s(s: torch.Tensor, order: int, device: torch.device, dtype: torch.dtype,
+                               shift: int = 0) -> torch.Tensor:
+    powers = torch.arange(shift, order + shift, device=device, dtype=dtype)
     return s.unsqueeze(1).pow(powers).unsqueeze(-1)
 
-def build_vandermonde_matrix_t(t:torch.Tensor, order: int, device: torch.device, dtype: torch.dtype, shift:int = 0) -> torch.Tensor:
-    powers = torch.arange(shift,order+shift, device=device, dtype=dtype)
+
+def build_vandermonde_matrix_t(t: torch.Tensor, order: int, device: torch.device, dtype: torch.dtype,
+                               shift: int = 0) -> torch.Tensor:
+    powers = torch.arange(shift, order + shift, device=device, dtype=dtype)
     return t.unsqueeze(1).pow(powers).unsqueeze(1)
 
+
 def get_diagonal_range(d: int, rows: int, cols: int) -> Tuple[int, int, int]:
-    if d < rows:
+    # d, s_start, t_start are 0 based indexes while rows/cols are shapes.
+
+    if d < cols:
+        # if d < cols, then we haven't hit the right edge of the grid
         t_start = 0
         s_start = d
     else:
-        t_start = d - rows + 1
-        s_start = rows - 1
+        # if d >= cols then we have the right edge and wrapped around the corner
+        t_start = d - cols + 1  # diag index - cols + 1
+        s_start = cols - 1
 
     return s_start, t_start, min(rows - t_start, s_start + 1)
+
+
+def reverse_linspace_0_1(steps: int, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+    inbetween_count = steps - 1
+    s = torch.arange(inbetween_count, -1, -1, device=device, dtype=dtype)
+    s /= inbetween_count
+    return s
+
 
 def diagonal_to_string(v: torch.Tensor):
     for d in range(v.shape[0]):
@@ -409,11 +427,12 @@ def diagonal_to_string(v: torch.Tensor):
                         ps += f"+ {c}*s^{j}*t^{i} "
         print(ps)
 
-def tensor_compute_gram_entry(dX_i:torch.Tensor, dY_j:torch.Tensor, scales: torch.Tensor, order: int = 32) -> float:
+def tensor_compute_gram_entry(dX_i: torch.Tensor, dY_j: torch.Tensor, scales: torch.Tensor, order: int = 32) -> float:
     # Initial tile
     u = torch.zeros([1, order, order], dtype=dX_i.dtype, device=dX_i.device)
+    prev_u = None
 
-    s = torch.linspace(0, 1, dX_i.shape[0], dtype=u.dtype, device=u.device)
+    s = reverse_linspace_0_1(dX_i.shape[0], dtype=u.dtype, device=u.device)
     t = torch.linspace(0, 1, dY_j.shape[0], dtype=u.dtype, device=u.device)
 
     diagonal_count = dX_i.shape[0] + dY_j.shape[0] - 1
@@ -421,6 +440,14 @@ def tensor_compute_gram_entry(dX_i:torch.Tensor, dY_j:torch.Tensor, scales: torc
     for d in range(diagonal_count):
         s_start, t_start, dlen = get_diagonal_range(d, order, order)
         u = torch.zeros([dlen, order, order], dtype=dX_i.dtype, device=dX_i.device)
+
+        # This is for the left / bottom boundaries of the current set of diagonals
+        v_s = build_vandermonde_matrix_s(s[-(s_start + 1):], order, u.device, u.dtype, 1)
+        v_t = build_vandermonde_matrix_t(t[:(t_start+1)], order, u.device, u.dtype, 1)
+
+        print(f"vandermonde matrix s: {v_s}")
+        print(f"vandermonde matrix t: {v_t}")
+
         if d == 0:
             u[0, 0, 0] = 1
         else:
@@ -429,19 +456,26 @@ def tensor_compute_gram_entry(dX_i:torch.Tensor, dY_j:torch.Tensor, scales: torc
             # This would require us storing values for diagonals we aren't directly working on at the moment.
             # We can instead use either of the boundaries for a tile to compute the initial value.
 
-            s0 = build_vandermonde_matrix_s(s[(s_start - dlen):s_start].flip(), order, u.device, u.dtype)
-            t0 = build_vandermonde_matrix_t(t[:t_start + dlen], order, u.device, u.dtype)
+            # Use the left / bottom boundaries to set the initial conditions based on previous solution for u
+            # This is for the left / bottom boundaries of the current set of diagonals
+            s_b = build_vandermonde_matrix_s(s[-(s_start+1):], order, u.device, u.dtype)
+            t_b = build_vandermonde_matrix_t(t[t_start:], order, u.device, u.dtype)
 
-            if d < dX_i.shape[0]:
-                torch.bmm(u[1:,:,:], s0, out=u[:,:,:1])
+            if d < (dX_i.shape[0]-2):
+                torch.bmm(prev_u, s_b[ :prev_u.shape[0],:,:], out=u[:prev_u.shape[0], :, :1])
             else:
-                torch.bmm(u, s0, out=u[:,:,:1])
+                torch.bmm(prev_u, s_b[1:,:,:], out=u[1:, :, :1])
+
 
             if t_start + dlen < dY_j.shape[0]:
                 # Don't need to propagate contribution to top boundary.
-                torch.bmm(t0, u[dlen-1:,:,:], out=u[:, :1, :])
+                torch.bmm(t_b, prev_u[dlen - 1:, :, :], out=u[:, :1, :])
             else:
-                torch.bmm(t0, u, out=u[:, :1, :])
+                torch.bmm(t_b[1:], prev_u, out=u[1:, :1, :])
+
+            to_delete = prev_u
+            prev_u = None
+            del to_delete
 
             # top = torch.bmm(t0, u)
             # u[:, :, :1] = right  # This is polynomial in t for the right boundary.
@@ -450,28 +484,23 @@ def tensor_compute_gram_entry(dX_i:torch.Tensor, dY_j:torch.Tensor, scales: torc
             print(f"u_0 = {u}")
             diagonal_to_string(u)
 
-        v_s = build_vandermonde_matrix_s(s[:s_start+1].flip(), order, u.device, u.dtype, 1)
-        v_t = build_vandermonde_matrix_t(t[:t_start], order, u.device, u.dtype, 1)
-
-        print(f"vandermonde matrix s: {v_s}")
-        print(f"vandermonde matrix t: {v_t}")
-
-        rho  = torch_compute_dot_prod(dX_i[:s_start+1].flip(), dY_j[:t_start])
+        rho = torch_compute_dot_prod_batch(dX_i[:s_start+1].flip(0).unsqueeze(1), dY_j[:t_start+1].unsqueeze(1))
 
         u_n = torch.clone(u)
 
-        for i in range(order-1):
-            u_step = (rho * u_n) * scales
+        for i in range(order - 1):
+            u_step = (rho.view(-1,1,1) * u_n) * scales
             # print(f"u_step = {u_step}")
             u_n[:, 1:, 1:] = u_step[:, :-1, :-1]
-            u_n[:, :1, 1:] = -torch.bmm(v_t, u_step)[:,:,:-1]
+            u_n[:, :1, 1:] = -torch.bmm(v_t, u_step)[:, :, :-1]
             u_step_s = torch.bmm(u_step, v_s)
-            u_n[:, 1:, :1] = -u_step_s[:,:-1,:]
+            u_n[:, 1:, :1] = -u_step_s[:, :-1, :]
             # print(f"(v_t . u_n[:, :, :1]) = {torch.bmm(v_t, u_n[:, :, :1])}")
             u_n[:, :1, :1] = torch.bmm(v_t, u_step_s)
             print(f"u_n = {u_n}")
             u += u_n
             print(f"u = {u}")
 
+        prev_u = u
 
     return u.sum().item()
