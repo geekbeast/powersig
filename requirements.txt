@@ -16,4 +16,5 @@ iisignature
 git+https://github.com/crispitagorico/sigkernel.git
 aeon
 numba==0.60.0
+psutil
 

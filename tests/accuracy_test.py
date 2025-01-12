@@ -1,12 +1,15 @@
+import os
 import random
 import time
 import unittest
+from contextlib import contextmanager
 from math import factorial
 from multiprocessing import set_start_method
 from random import randint
 
 import numpy
 import numpy as np
+import psutil
 import torch
 from numba.cpython.setobj import set_len
 from sigkernel import sigkernel
@@ -17,9 +20,19 @@ from powersig.matrixsig import MatrixSig, build_tile_power_series_stencil, build
 from powersig.power_series import SimplePowerSeries, MatrixPowerSeries, build_A1, build_A2, \
     build_integration_gather_matrix_s, build_integration_gather_matrix_t
 from powersig.simpesig import SimpleSig
+from powersig.util.series import torch_compute_derivative_batch
 from tests.configuration import TestRun, signature_kernel
 from tests.utils import setup_torch
 
+@contextmanager
+def track_peak_memory():
+    process = psutil.Process(os.getpid())
+    peak_mem = 0
+    try:
+        yield
+    finally:
+        peak_mem = process.memory_info().rss / (1024 * 1024)  # MB
+        print(f"Peak memory usage: {peak_mem:.1f} MB")
 
 class TestSimplePowerSeriesAccuracy(unittest.TestCase):
     configuration = TestRun()
@@ -174,7 +187,8 @@ class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
         dX_i = torch.tensor([4, 4], device="cuda", dtype=torch.float64)
         dY_j = torch.tensor([4, 4], device="cuda", dtype=torch.float64)
         scales = build_scaling_for_integration(5, dX_i.device, dX_i.dtype)
-        tensor_compute_gram_entry(dX_i, dY_j, scales, 5)
+        result = tensor_compute_gram_entry(dX_i, dY_j, scales, 5)
+        print(f"result = {result}")
 
     def test_integration_scaling(self):
         '''
@@ -478,6 +492,46 @@ class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
         # mse = torch.mean((sk.cpu() - m.cpu()) ** 2)
         # print(f"MSE MatrixSig versus SigKernel: {mse}")
 
+    def test_sigkernel_vs_ps(self):
+        config = self.__class__.configuration
+        max_batch = 10
+
+        dX_i = torch_compute_derivative_batch(config.X)
+        print(f"dX_i = {dX_i}")
+        dX_i = dX_i.reshape([ dX_i.shape[1] ])
+        # dY_j = torch_compute_derivative_batch(config.Y)
+
+        start = time.time()
+        sk = signature_kernel.compute_Gram(config.X, config.X, max_batch)
+        print(f"SigKernel computation took: {time.time() - start}s")
+        print(f"SigKernel Gram Matrix: \n {sk.tolist()}")
+
+        start = time.time()
+        scales = build_scaling_for_integration(8, dX_i.device, dX_i.dtype)
+        result = tensor_compute_gram_entry(dX_i, torch.clone(dX_i), scales, 8)
+        print(f"Matrix Sig computation took: {time.time() - start}s")
+        print(f"Matrix Sig computation of gram Matrix: \n {result}")
+
+
+
+    def test_sigkernel_accuracy(self):
+        """Context manager to track peak GPU memory usage"""
+        torch.cuda.reset_peak_memory_stats()
+        torch.cuda.synchronize()
+
+        print(f"X = {self.__class__.configuration.X}")
+        X = torch.tensor([[[0],[4],[8]]], device='cpu',dtype=torch.float64)
+        max_batch = 10
+        start = time.time()
+
+        with track_peak_memory():
+            sk = signature_kernel.compute_Gram(X, X)
+
+        print(f"SigKernel computation took: {time.time() - start}s")
+        print(f"SigKernel: \n {sk.tolist()}")
+        torch.cuda.synchronize()
+        peak_memory = torch.cuda.max_memory_allocated() / (1024 ** 2)  # Convert to MB
+        print(f"Peak GPU memory usage: {peak_memory:.2f} MB")
 
 if __name__ == '__main__':
     setup_torch()
