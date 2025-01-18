@@ -507,7 +507,7 @@ def tensor_compute_gram_entry(dX_i: torch.Tensor, dY_j: torch.Tensor, scales: to
             # We need to subtract out all the boundary conditions.
             # prev_u
 
-            print(f"u_0 = {u}")
+            # print(f"u_0 = {u}")
             # diagonal_to_string(u)
 
             # Some clean  up
@@ -516,11 +516,11 @@ def tensor_compute_gram_entry(dX_i: torch.Tensor, dY_j: torch.Tensor, scales: to
             del to_delete
 
         dX_L = dX_i.shape[0] - (s_start + 1)
-        print(f"dX_L = {dX_L}")
-        print(f"s_start = {s_start}")
+        # print(f"dX_L = {dX_L}")
+        # print(f"s_start = {s_start}")
         rho = torch_compute_dot_prod_batch(dX_i[dX_L:dX_L + dlen].unsqueeze(1), dY_j[t_start:(t_start+dlen)].unsqueeze(1))
 
-        print(f"rho = {rho}")
+        # print(f"rho = {rho}")
 
         u_n = torch.clone(u)
 
@@ -533,9 +533,9 @@ def tensor_compute_gram_entry(dX_i: torch.Tensor, dY_j: torch.Tensor, scales: to
             u_n[:, 1:, :1] = -u_step_s[:, :-1, :]
             # print(f"(v_t . u_n[:, :, :1]) = {torch.bmm(v_t, u_n[:, :, :1])}")
             u_n[:, :1, :1] = torch.bmm(v_t, u_step_s)
-            print(f"u_n = {u_n}")
+            # print(f"u_n = {u_n}")
             u += u_n
-            print(f"u = {u}")
+            # print(f"u = {u}")
 
         prev_u = u
 

@@ -496,9 +496,9 @@ class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
         config = self.__class__.configuration
         max_batch = 10
 
-        dX_i = torch_compute_derivative_batch(config.X)
+        dX_i = torch_compute_derivative_batch(config.X).squeeze()
         print(f"dX_i = {dX_i[0].tolist()}")
-        dX_i = dX_i.reshape([ dX_i.shape[1] ])
+        # dX_i = dX_i.reshape([ dX_i.shape[1] ])
         # dY_j = torch_compute_derivative_batch(config.Y)
 
         start = time.time()
@@ -507,8 +507,8 @@ class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
         print(f"SigKernel Gram Matrix: \n {sk.tolist()}")
 
         start = time.time()
-        scales = build_scaling_for_integration(8, dX_i.device, dX_i.dtype)
-        result = tensor_compute_gram_entry(dX_i, torch.clone(dX_i), scales, 8)
+        scales = build_scaling_for_integration(32, dX_i.device, dX_i.dtype)
+        result = tensor_compute_gram_entry(dX_i, torch.clone(dX_i), scales, 32)
         print(f"Matrix Sig computation took: {time.time() - start}s")
         print(f"Matrix Sig computation of gram Matrix: \n {result}")
 
