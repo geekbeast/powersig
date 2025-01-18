@@ -497,7 +497,7 @@ class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
         max_batch = 10
 
         dX_i = torch_compute_derivative_batch(config.X)
-        print(f"dX_i = {dX_i}")
+        print(f"dX_i = {dX_i[0].tolist()}")
         dX_i = dX_i.reshape([ dX_i.shape[1] ])
         # dY_j = torch_compute_derivative_batch(config.Y)
 
@@ -516,11 +516,11 @@ class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
 
     def test_sigkernel_accuracy(self):
         """Context manager to track peak GPU memory usage"""
-        torch.cuda.reset_peak_memory_stats()
-        torch.cuda.synchronize()
+        # torch.cuda.reset_peak_memory_stats()
+        # torch.cuda.synchronize()
 
-        print(f"X = {self.__class__.configuration.X}")
         X = torch.tensor([[[0],[4],[8]]], device='cpu',dtype=torch.float64)
+        print(f"X = {X}")
         max_batch = 10
         start = time.time()
 
@@ -529,9 +529,9 @@ class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
 
         print(f"SigKernel computation took: {time.time() - start}s")
         print(f"SigKernel: \n {sk.tolist()}")
-        torch.cuda.synchronize()
-        peak_memory = torch.cuda.max_memory_allocated() / (1024 ** 2)  # Convert to MB
-        print(f"Peak GPU memory usage: {peak_memory:.2f} MB")
+        # torch.cuda.synchronize()
+        # peak_memory = torch.cuda.max_memory_allocated() / (1024 ** 2)  # Convert to MB
+        # print(f"Peak GPU memory usage: {peak_memory:.2f} MB")
 
 if __name__ == '__main__':
     setup_torch()

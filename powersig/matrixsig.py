@@ -487,7 +487,7 @@ def tensor_compute_gram_entry(dX_i: torch.Tensor, dY_j: torch.Tensor, scales: to
             if s_start - dlen + 1 == 0:
                 stop_offset = 1
             if start_offset + stop_offset < dlen:
-                u[start_offset:(start_offset+dlen-stop_offset),:1, :1] -= torch.bmm(v_t[start_offset:(start_offset+dlen-stop_offset)]*dY_j.shape[0],u[start_offset:(start_offset+dlen-stop_offset), :, :1])
+                u[start_offset:(start_offset+dlen-stop_offset),:1, :1] -= torch.bmm(t_b[start_offset:(start_offset+dlen-stop_offset)],u[start_offset:(start_offset+dlen-stop_offset), :, :1])
 
             # We can't do these in place since we are adding
             if d < dY_j.shape[0]:
