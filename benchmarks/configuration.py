@@ -1,0 +1,63 @@
+import os
+import pickle
+
+import ksig
+import torch
+from sigkernel import sigkernel
+
+_batch, _len_x, _len_y, _dim = 1, 100000, 100, 2
+_fresh = True
+torch.random.manual_seed(1)
+static_kernel = sigkernel.LinearKernel()
+dyadic_order = 0
+signature_kernel = sigkernel.SigKernel(static_kernel, dyadic_order)
+
+ksig_static_kernel = ksig.static.kernels.LinearKernel()
+
+# Instantiate the signature kernel, which takes as input the static kernel.
+ksig_kernel = ksig.kernels.SignaturePDEKernel(normalize = False, static_kernel=ksig_static_kernel)
+
+
+GPU_MEMORY = "gpu_memory"
+CPU_MEMORY = "cpu_memory"
+SIGNATURE_KERNEL = "signature_kernel"
+DURATION = "duration"
+LENGTH = "length"
+ORDER = "order"
+DYADIC_ORDER = "dyadic_order"
+CSV_FIELDS = [GPU_MEMORY, CPU_MEMORY, SIGNATURE_KERNEL, DURATION, ORDER, DYADIC_ORDER, LENGTH]
+
+MAX_LENGTH = 1<<20
+POWERSIG_MAX_LENGTH = 1<<16
+SIG_KERNEL_MAX_LENGTH = 1022
+KSIG_MAX_LENGTH = 1<<14
+
+POWERSIG_MAX_LENGTH = 1000000
+KSIG_PDE_MAX_LENGTH = 50000
+ORDER = 32
+
+def get_benchmark_config(fresh=_fresh):
+    if os.path.exists("tests.run"):
+        return pickle.load(open("tests.run", "rb"))
+    else:
+        config = BenchmarkRun()
+        pickle.dump(config, open("tests.run", "wb"))
+        return config
+
+class BenchmarkRun:
+    def __init__(self, batch: int = _batch,
+                 len_x: int = _len_x, len_y: int = _len_y, dim: int = _dim,
+                 cuda: bool = False):
+        self.batch = batch
+        self.len_x = len_x
+        self.len_y = len_y
+        self.dim = dim
+        self.cuda = cuda
+        self.X = torch.rand((batch, len_x, dim), dtype=torch.float64) / 50000 # shape (batch,len_x,dim)
+        self.Y = torch.rand((batch, len_y, dim), dtype=torch.float64)  # shape (batch,len_y,dim)
+        self.Z = torch.rand((batch, len_x, dim), dtype=torch.float64)  # shape
+
+        if self.cuda:
+            self.X = self.X.cuda()
+            self.Y = self.Y.cuda()
+            self.Z = self.Z.cuda()

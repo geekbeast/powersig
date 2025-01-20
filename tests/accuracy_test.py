@@ -1,4 +1,8 @@
 import os
+
+import ksig.static.kernels
+
+import ksig
 import random
 import time
 import unittest
@@ -14,6 +18,7 @@ import torch
 from numba.cpython.setobj import set_len
 from sigkernel import sigkernel
 
+from benchmarks.util import generate_brownian_motion
 from powersig.matrixsig import MatrixSig, build_tile_power_series_stencil, build_scaling_for_integration, \
     build_vandermonde_matrix_s, build_vandermonde_matrix_t, diagonal_to_string, get_diagonal_range, \
     tensor_compute_gram_entry, reverse_linspace_0_1
@@ -35,7 +40,7 @@ def track_peak_memory():
         print(f"Peak memory usage: {peak_mem:.1f} MB")
 
 class TestSimplePowerSeriesAccuracy(unittest.TestCase):
-    configuration = TestRun()
+    configuration = TestRun(cuda=True)
 
     @classmethod
     def setUpClass(cls):
@@ -113,7 +118,7 @@ class TestSimplePowerSeriesAccuracy(unittest.TestCase):
 
 
 class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
-    configuration = TestRun()
+    configuration = TestRun(cuda=True)
 
     @classmethod
     def setUpClass(cls):
@@ -496,13 +501,13 @@ class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
         config = self.__class__.configuration
         max_batch = 10
 
-        dX_i = torch_compute_derivative_batch(config.X).squeeze()
+        dX_i = torch_compute_derivative_batch(config.Y).squeeze()
         # print(f"dX_i = {dX_i.tolist()}")
         # dX_i = dX_i.reshape([ dX_i.shape[1] ])
         # dY_j = torch_compute_derivative_batch(config.Y)
 
         start = time.time()
-        sk = signature_kernel.compute_Gram(config.X, config.X, max_batch)
+        sk = signature_kernel.compute_Gram(config.Y, config.Y, max_batch)
         print(f"SigKernel computation took: {time.time() - start}s")
         print(f"SigKernel Gram Matrix: \n {sk.tolist()}")
 
@@ -514,7 +519,8 @@ class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
 
     def test_ps_length(self):
         config = self.__class__.configuration
-        dX_i = torch_compute_derivative_batch(config.X).squeeze()
+        X, dt = generate_brownian_motion(1<<5, cuda = True)
+        dX_i = torch_compute_derivative_batch(X.unsqueeze(2),dt).squeeze()
 
         start = time.time()
         scales = build_scaling_for_integration(32, dX_i.device, dX_i.dtype)
@@ -522,7 +528,44 @@ class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
         print(f"Matrix Sig computation took: {time.time() - start}s")
         print(f"Matrix Sig computation of gram Matrix: \n {result}")
 
+    def test_ksig_vs_sigkernel(self):
+        static_kernel = ksig.static.kernels.LinearKernel()
 
+        # Instantiate the signature kernel, which takes as input the static kernel.
+        sig_kernel = ksig.kernels.SignaturePDEKernel(normalize = False, static_kernel=static_kernel)
+
+        config = self.__class__.configuration
+        X = config.X
+        max_batch = 10
+
+        # print(f"X = {X}")
+        start = time.time()
+        sk = signature_kernel.compute_Gram(config.X, config.X, max_batch)
+        print(f"SigKernel computation took: {time.time() - start}s")
+        print(f"SigKernel Gram Matrix: \n {sk.tolist()}")
+
+        # print(f"X = {X}")
+        start = time.time()
+        result = sig_kernel(X,X)
+        print(f"KSigPDESignatureKernel computation took: {time.time() - start}s")
+        print(f"KSigPDESignatureKernelKSigPDE computation of gram Matrix: \n {result}")
+
+    def test_ksig_accuracy(self):
+        # Use the RBF kernel for vector-valued data as static (base) kernel.
+        static_kernel = ksig.static.kernels.LinearKernel()
+
+        # Instantiate the signature kernel, which takes as input the static kernel.
+        sig_kernel = ksig.kernels.SignaturePDEKernel(static_kernel=static_kernel)
+        X = torch.tensor([[0],[4],[8]], device='cpu',dtype=torch.float64)
+        print(f"X = {X}")
+        max_batch = 10
+        start = time.time()
+
+        with track_peak_memory():
+            sk = sig_kernel(X,X)
+
+        print(f"KSigPDE computation took: {time.time() - start}s")
+        print(f"KSigPDEKernel: \n {sk}")
 
     def test_sigkernel_accuracy(self):
         """Context manager to track peak GPU memory usage"""

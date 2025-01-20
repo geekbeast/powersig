@@ -1,6 +1,6 @@
 Cython==3.0.11
 tokenizers
-numpy
+numpy==1.26.4
 scipy
 torch>=2.2.2,<=2.50
 torchvision
@@ -14,7 +14,10 @@ transformers
 sentencepiece==0.2.0
 iisignature
 git+https://github.com/crispitagorico/sigkernel.git
+git+https://github.com/geekbeast/KSig.git
 aeon
 numba==0.60.0
+cupy-cuda12x==13.3.0
 psutil
+tqdm==4.66.3
 
