@@ -18,19 +18,20 @@ ksig_static_kernel = ksig.static.kernels.LinearKernel()
 ksig_kernel = ksig.kernels.SignaturePDEKernel(normalize = False, static_kernel=ksig_static_kernel)
 
 
-GPU_MEMORY = "gpu_memory"
+PYTORCH_MEMORY = "pytorch_memory"
+CUPY_MEMORY = "cupy_memory"
 CPU_MEMORY = "cpu_memory"
 SIGNATURE_KERNEL = "signature_kernel"
 DURATION = "duration"
 LENGTH = "length"
 ORDER = "order"
 DYADIC_ORDER = "dyadic_order"
-CSV_FIELDS = [GPU_MEMORY, CPU_MEMORY, SIGNATURE_KERNEL, DURATION, ORDER, DYADIC_ORDER, LENGTH]
+CSV_FIELDS = [LENGTH, DURATION, PYTORCH_MEMORY, CUPY_MEMORY, CPU_MEMORY, ORDER, DYADIC_ORDER, SIGNATURE_KERNEL ]
 
 MAX_LENGTH = 1<<20
 POWERSIG_MAX_LENGTH = 1<<16
 SIG_KERNEL_MAX_LENGTH = 1022
-KSIG_MAX_LENGTH = 1<<14
+KSIG_MAX_LENGTH = 1<<15
 
 POWERSIG_MAX_LENGTH = 1000000
 KSIG_PDE_MAX_LENGTH = 50000
