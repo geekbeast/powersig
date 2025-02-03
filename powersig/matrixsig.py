@@ -427,6 +427,8 @@ def diagonal_to_string(v: torch.Tensor):
                         ps += f"+ {c}*s^{j}*t^{i} "
         print(ps)
 
+
+@torch.compile()
 def tensor_compute_gram_entry(dX_i: torch.Tensor, dY_j: torch.Tensor, scales: torch.Tensor, order: int = 32) -> float:
     dX_i[:] = dX_i.flip(0)
     # Initial tile
@@ -525,7 +527,8 @@ def tensor_compute_gram_entry(dX_i: torch.Tensor, dY_j: torch.Tensor, scales: to
         u_n = torch.clone(u)
 
         for i in range(order - 1):
-            u_step = (rho.view(-1,1,1) * u_n) * scales
+            u_step = rho.view(-1,1,1) * u_n
+            u_step *= scales
             # print(f"u_step = {u_step}")
             u_n[:, 1:, 1:] = u_step[:, :-1, :-1]
             u_n[:, :1, 1:] = -torch.bmm(v_t, u_step)[:, :, :-1]

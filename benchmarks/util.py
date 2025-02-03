@@ -29,7 +29,7 @@ def generate_brownian_motion(n_steps, n_paths=1, cuda: bool = True):
     """
 
 
-    dt = (4/n_steps)**2
+    dt = (3/n_steps)**2
     # Generate random increments
     dW = torch.normal(mean=0, std=torch.sqrt(torch.tensor(dt, device= 'cuda' if cuda else 'cpu', dtype=torch.float64)),
                       size=(n_paths, n_steps),device= 'cuda' if cuda else 'cpu', dtype=torch.float64)

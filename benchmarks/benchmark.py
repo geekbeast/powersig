@@ -98,11 +98,11 @@ def benchmark_powersig_on_length(X: torch.Tensor, scales: torch.Tensor) -> dict[
     stats = {"length": X.shape[1], "order": ORDER}
 
     print(f"Order: {ORDER}")
-
+    tcge = torch.compile(tensor_compute_gram_entry)
     """Context manager to track peak CPU memory usage"""
     with track_peak_memory("PowerSig", stats):
         dX_i = torch_compute_derivative_batch(X).squeeze()
-        result = tensor_compute_gram_entry(dX_i, torch.clone(dX_i), scales, ORDER)
+        result = tcge(dX_i, torch.clone(dX_i), scales, ORDER)
         stats[SIGNATURE_KERNEL] = result
 
         print(f"PowerSig computation of gram Matrix: \n {result}")
