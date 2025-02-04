@@ -112,15 +112,15 @@ def tensor_processing_kernel(dX, dY, output_grid):
                     scaled_val = shared_u_n[u_n_current_index, tx, ty] * scaling_matrix[tx, ty]
                     shared_u_n[u_n_next_index, tx + 1, ty + 1] = scaled_val
 
-                    # Apply limits of integration
-                    shared_u_n[u_n_next_index, 0, ty + 1] -= scaled_val * s_coeff
-                    shared_u_n[u_n_next_index, tx + 1, 0] -= scaled_val * t_coeff
-                    shared_u_n[u_n_next_index, 0, 0] += scaled_val * s_coeff * t_coeff
+                    # Apply limits of integration using atomic operations for accumulation.
+                    cuda.atomic.sub(shared_u_n[u_n_next_index], (0, ty + 1), scaled_val * s_coeff)
+                    cuda.atomic.sub(shared_u_n[u_n_next_index], (tx + 1, 0), scaled_val * t_coeff)
+                    cuda.atomic.add(shared_u_n[u_n_next_index], (0, 0), scaled_val * s_coeff * t_coeff)
 
                     cuda.syncthreads()
 
                 # u = u + u_n
-                output_grid[current_offset + bx, tx, ty] += rho*shared_u_n[u_n_next_index, tx, ty]
+                output_grid[current_offset + bx, tx, ty] += rho * shared_u_n[u_n_next_index, tx, ty]
                 cuda.syncthreads()
 
             # Need to compute propagation to other blocks
@@ -135,32 +135,31 @@ def tensor_processing_kernel(dX, dY, output_grid):
             bottom_offset = 0
             top_limit = step_length
             if step_length > next_step_length:
-                bottom_offset =  1 # skip propagating first bottom
-                top_limit = step_length - 1 # skip propagating last top
+                bottom_offset = 1  # skip propagating first bottom
+                top_limit = step_length - 1  # skip propagating last top
             elif step_length == next_step_length:
-                bottom_offset = 0 # propagate first bottom.
-                top_limit = step_length - 1 # skip propagating last top
+                bottom_offset = 0  # propagate first bottom.
+                top_limit = step_length - 1  # skip propagating last top
 
-
-            if s_idx < (N-1):
-                s = get_point(N, s_idx + 1)
+            # Next steps.
+            # 1) Make sure dots products are synchronized.
+            # 2) Make sure that
+            s_right = get_point(N, s_idx + 1)
+            t_above = get_point(M, t_idx + 1)
+            if s_idx < (N - 1):
                 if bx > bottom_offset and tx > 0:
-                    s_coeff = (s ** tx)
-                    # We're using shared_u_n buffer here for a different purpose.
-                    shared_u_n[0,0,ty] += output_grid[current_offset + bx, tx, ty] * s_coeff
-                    cuda.syncthreads()
-                    output_grid[next_offset + bx - bottom_offset, 0, ty] = output_grid[current_offset + bx, tx, ty] * s_coeff
+                    s_coeff = (s_right ** tx)
+                    cuda.atomic.add(output_grid[next_offset + bx - bottom_offset], (0, ty),
+                                    output_grid[current_offset + bx, tx, ty] * s_coeff)
+                    cuda.atomic.add(output_grid, (next_offset + bx, 0, 0),
+                                    output_grid[current_offset + bx, tx, ty])
 
-            if t_idx < (M-1):
-                t = get_point(M, t_idx + 1)
+            if t_idx < (M - 1):
                 if bx < top_limit and ty > 0:
-                    t_coeff = (t ** (ty + 1))
-                    output_grid[next_offset + bx, tx, 0] = output_grid[current_offset + bx , tx, ty] * t_coeff
+                    t_coeff = (t_above ** (ty + 1))
+                    cuda.atomic.add(output_grid[next_offset + bx], (tx, 0),
+                                    output_grid[current_offset + bx, tx, ty] * t_coeff)
 
-            if tx == 0 and ty == 0:
-                # For the (0,0) position, use atomic add to safely combine contributions
-                cuda.atomic.add(output_grid, (next_offset + bx, 0, 0),
-                                output_grid[current_offset + bx, 0, 0])
 
 
         # Synchronize all threads before next step
