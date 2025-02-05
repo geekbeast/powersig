@@ -221,8 +221,9 @@ def compute_signature(dX, dY) -> float:
     for i in range(total_diagonals):        
         dstart = time.time()
         blockspergrid = (current_length,)
+        
         # Compute the rho diagonal for the current step
-        compute_rho_diagonal(dX, dY, rho_diagonal, s_start, t_start, current_length)
+        compute_rho_diagonal[blockspergrid, threadsperblock](dX, dY, rho_diagonal, s_start, t_start, current_length)
         
         # Launch kernel
         tensor_processing_kernel[blockspergrid, threadsperblock](
