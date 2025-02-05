@@ -28,9 +28,35 @@ def get_step_length(d: int, rows: int, cols: int) -> Tuple[int, int, int]:
 
     return s_start, t_start, min(rows - t_start, s_start + 1)
 
+@cuda.jit
+def build_scaling_matrix(scaling_matrix: cuda.device_array, order: int = 32):
+    tx = cuda.threadIdx.x
+    ty = cuda.threadIdx.y
+    scaling_matrix[ty, tx] = 1.0 / ((ty + 1) * (tx + 1))
+    cuda.syncthreads()
+    return scaling_matrix
 
 @cuda.jit
-def tensor_processing_kernel(dX, dY, output_grid):
+def compute_rho_diagonal(dX : cuda.device_array, dY : cuda.device_array, rho : cuda.device_array, s_start: int, t_start: int, current_length: int):
+    """
+    CUDA kernel for computing the rho diagonal for the current step. Computes the dot product 
+    starting at s_start, t_start and going up to current_length.
+    """
+    _, d = dX.shape
+    tx = cuda.threadIdx.x
+    ty = cuda.threadIdx.y
+    bx = cuda.blockIdx.x
+    s_idx = s_start - bx
+    t_idx = t_start + bx
+    tid = tx * 32 + ty
+    
+    for i in range(0, d, 1024):
+        if tid + i < d:
+            cuda.atomic.add(rho, (bx), dX[s_idx, tid + i] * dY[t_idx, tid + i])
+
+    
+@cuda.jit
+def tensor_processing_kernel(dX, dY, global_scaling_matrix, rho_diagonal, input_diagonal, output_diagonal):
     """
     CUDA kernel for processing two input tensors with a scaling matrix.
 
@@ -45,15 +71,16 @@ def tensor_processing_kernel(dX, dY, output_grid):
     bx = cuda.blockIdx.x
     tid = tx * 32 + ty
 
-    # Shared memory for the 32x32 scaling matrix
+    # Shared memory for the 32x32 scaling matrix and the rotating buffer.
     scaling_matrix = cuda.shared.array(shape=(32, 32), dtype=np.float64)
     shared_u_n = cuda.shared.array(shape=(2, 32, 32), dtype=np.float64)
-    shared_rho = cuda.shared.array(shape=(1,), dtype=np.float64)
 
-    if cuda.blockIdx.x == 0:
-        # Initialize scaling matrix (only need to do this once per kernel launch)
-        # Only let first block initialize the matrix
-        scaling_matrix[ty, tx] = 1.0 / ((ty + 1) * (tx + 1))
+    # Only on thread per block needs to copy rho to shared memory
+    if tx == 0 and ty == 0:
+        rho = rho_diagonal[bx]
+
+    # Copy the scaling matrix to shared memory from global memory
+    scaling_matrix[tx, ty] = global_scaling_matrix[tx, ty]
 
     # Synchronize threads after initializing scaling matrix
     cuda.syncthreads()
@@ -61,113 +88,96 @@ def tensor_processing_kernel(dX, dY, output_grid):
     # Calculate dimensions
     N = dX.shape[0]
     M = dY.shape[0]
-    d = dX.shape[1]  # Feature dimension
-    min_NM = min(N, M)
-
-    # Function to compute result length for each step
-
-    # Total steps
-    total_steps = N + M - 1
-
+        
     # Main processing loop
-    for step in range(total_steps):
-        # Determine current and next state indices
-        current_offset = (step % 2) * min_NM
-        next_offset = ((step + 1) % 2) * min_NM
+    
+    # u_0 = current boundary conditions computed in last step
+    shared_u_n[0, tx, ty] = input_diagonal[bx, tx, ty]
+    
+    s = get_point(N, s_idx)
+    t = get_point(M, t_idx)
+    
+    cuda.syncthreads()
+    
+    # Scale for integration
+    for i in range(31):
+        # u_n = rho * double integral of u_{n-1} with correct limits
 
-        # Only process if thread is within valid range for this step
-        s_start, t_start, step_length = get_step_length(step, N, M)
+        u_n_current_index = i % 2
+        u_n_next_index = (i + 1) % 2
 
-        if bx < step_length:
-            # We need to scale and multiply by rho
-            s_idx = s_start - bx
-            t_idx = t_start + bx
-            rho = 0.0
+        # Truncate and only shift and scale necessary elements
+        if tx < 31 and ty < 31:
+            s_coeff = (s ** (tx + 1))
+            t_coeff = (t ** (ty + 1))
 
-            for i in range(0, d, 1024):
-                rho += dX[s_idx, tid + i] * dY[t_idx, tid]
-
-            shared_rho[0] = rho
-            # u_0 = current boundary conditions computed in last step
-            shared_u_n[0, tx, ty] = output_grid[current_offset + bx, tx, ty]
-
-            s = get_point(N, s_idx)
-            t = get_point(M, t_idx)
+            # Compute indefinite integral
+            scaled_val = shared_u_n[u_n_current_index, tx, ty] * scaling_matrix[tx, ty]
+            shared_u_n[u_n_next_index, tx + 1, ty + 1] = scaled_val
+            scaled_s = scaled_val * s_coeff
+            # Apply limits of integration using atomic operations for accumulation.
+            # cuda.atomic.sub(shared_u_n, (u_n_next_index, 0, ty + 1), scaled)
+            # cuda.atomic.sub(shared_u_n, (u_n_next_index, tx + 1, 0), scaled_val * t_coeff)
+            # cuda.atomic.add(shared_u_n, (u_n_next_index, 0, 0), scaled_s * t_coeff)
 
             cuda.syncthreads()
 
-            # Scale for integration
-            for i in range(31):
-                # u_n = rho * double integral of u_{n-1} with correct limits
-
-                u_n_current_index = i % 2
-                u_n_next_index = (i + 1) % 2
-
-                # Truncate and only shift and scale necessary elements
-                if tx < 31 and ty < 31:
-                    s_coeff = (s ** (tx + 1))
-                    t_coeff = (t ** (ty + 1))
-
-                    # Compute indefinite integral
-                    scaled_val = shared_u_n[u_n_current_index, tx, ty] * scaling_matrix[tx, ty]
-                    shared_u_n[u_n_next_index, tx + 1, ty + 1] = scaled_val
-
-                    # Apply limits of integration using atomic operations for accumulation.
-                    cuda.atomic.sub(shared_u_n[u_n_next_index], (0, ty + 1), scaled_val * s_coeff)
-                    cuda.atomic.sub(shared_u_n[u_n_next_index], (tx + 1, 0), scaled_val * t_coeff)
-                    cuda.atomic.add(shared_u_n[u_n_next_index], (0, 0), scaled_val * s_coeff * t_coeff)
-
-                    cuda.syncthreads()
-
-                # u = u + u_n
-                output_grid[current_offset + bx, tx, ty] += rho * shared_u_n[u_n_next_index, tx, ty]
-                cuda.syncthreads()
-
-            # Need to compute propagation to other blocks
-
-            next_s_start, next_t_start, next_step_length = get_step_length(step, N, M)
-            # If the length of the next diagonal is the same or shorter than the current diagonal
-            # then all blocks propagate to the right. Otherwise, skip propagating the first one and reduce first dimension by 1.
-
-            # If the length of the next diagonal is longer than the current diagonal
-            # then all blocks propagate up. Otherwise, skip propagating the last one, but do not adjust first dimension.
-
-            bottom_offset = 0
-            top_limit = step_length
-            if step_length > next_step_length:
-                bottom_offset = 1  # skip propagating first bottom
-                top_limit = step_length - 1  # skip propagating last top
-            elif step_length == next_step_length:
-                bottom_offset = 0  # propagate first bottom.
-                top_limit = step_length - 1  # skip propagating last top
-
-            # Next steps.
-            # 1) Make sure dots products are synchronized.
-            # 2) Make sure that
-            s_right = get_point(N, s_idx + 1)
-            t_above = get_point(M, t_idx + 1)
-            if s_idx < (N - 1):
-                if bx > bottom_offset and tx > 0:
-                    s_coeff = (s_right ** tx)
-                    cuda.atomic.add(output_grid[next_offset + bx - bottom_offset], (0, ty),
-                                    output_grid[current_offset + bx, tx, ty] * s_coeff)
-                    cuda.atomic.add(output_grid, (next_offset + bx, 0, 0),
-                                    output_grid[current_offset + bx, tx, ty])
-
-            if t_idx < (M - 1):
-                if bx < top_limit and ty > 0:
-                    t_coeff = (t_above ** (ty + 1))
-                    cuda.atomic.add(output_grid[next_offset + bx], (tx, 0),
-                                    output_grid[current_offset + bx, tx, ty] * t_coeff)
-
-
-
-        # Synchronize all threads before next step
+        # u = u + u_n, each thread accumulates its own value so no need to sync
+        input_diagonal[bx, tx, ty] += rho[bx] * shared_u_n[u_n_next_index, tx, ty]
         cuda.syncthreads()
+    
+    # Need to compute propagation to other blocks
+    # Only process if thread is within valid range for this step
+    s_start, t_start, step_length = get_step_length(step, N, M)
+    next_s_start, next_t_start, next_step_length = get_step_length(step, N, M)
 
+    # We need to compute the s, t indices for the current block
+    # assuming the 0th block corresponds to the diagonal starting at s_start, t_start
+    s_idx = s_start - bx
+    t_idx = t_start + bx
+    
+    # If the length of the next diagonal is the same or shorter than the current diagonal
+    # then all blocks propagate to the right. Otherwise, skip propagating the first one and reduce first dimension by 1.
+    
+    # If the length of the next diagonal is longer than the current diagonal
+    # then all blocks propagate up. Otherwise, skip propagating the last one, but do not adjust first dimension.
+    
+    bottom_offset = 0
+    top_limit = step_length
+
+    if step_length > next_step_length:
+        bottom_offset = 1  # skip propagating first bottom
+        top_limit = step_length - 1  # skip propagating last top
+    elif step_length == next_step_length:
+        bottom_offset = 0  # propagate first bottom.
+        top_limit = step_length - 1  # skip propagating last top
+    
+    # Next steps.
+    s_right = get_point(N, s_idx + 1)
+    t_above = get_point(M, t_idx + 1)
+    s_coeff = (s_right ** tx)
+    t_coeff = (t_above ** ty)
+    
+    # Propagate to the right
+    if bx > bottom_offset and tx > 0:
+        cuda.atomic.add(output_diagonal, (bx, 0, ty),input_diagonal[bx - bottom_offset, tx, ty] * s_coeff)
+        cuda.atomic.add(output_diagonal, (bx, 0, 0),input_diagonal[bx, tx, ty] * s_coeff * t_coeff)
+    
+    # Propagate to the top
+    if bx < top_limit and ty > 0:
+        cuda.atomic.add(output_grid[bx], (tx, 0),output_grid[bx, tx, ty] * t_coeff)
+
+    # Synchronize all threads before next step
+    cuda.syncthreads()
+
+def launch_scaling_matrix(order: int = 32):
+    assert order <= 32, "Order must be less than or equal to 32"
+    threadsperblock = (order, order)
+    blockspergrid = (1,)
+    return build_scaling_matrix[blockspergrid, threadsperblock](order)
 
 # Host function to set up and launch kernel
-def process_tensors(dX, dY):
+def compute_signature(dX, dY) -> float:
     """
     Host function to process two input tensors using the CUDA kernel.
 
@@ -178,35 +188,68 @@ def process_tensors(dX, dY):
     Returns:
         Processed output grid
     """
+
     N, d_x = dX.shape
     M, d_y = dY.shape
+
     assert d_x == d_y, "Input tensors must have same second dimension"
 
     min_NM = min(N, M)
+    
+    total_diagonals = N + M - 1
 
-    # Initialize output grid on device
-    output_grid = cuda.device_array((2 * min_NM, 32, 32), dtype=np.float64)
+    # Function to compute result length for each step
+
+    # Total steps
+    total_diagonals = N + M - 1    
 
     # Calculate grid and block dimensions
     threadsperblock = (32, 32)
-    blockspergrid = (min_NM,)
+    
+    start = time.time()
+    
+    scaling_matrix = launch_scaling_matrix()
+    
+    s_start, t_start, current_length = get_step_length(0, N, M)
+    s_next, t_next, next_length = get_step_length(1, N, M)
 
-    # Launch kernel
-    tensor_processing_kernel[blockspergrid, threadsperblock](
-        cuda.to_device(dX),
-        cuda.to_device(dY),
-        output_grid
-    )
+    # Initialize input and output diagonals on device
+    input_diagonal = cuda.device_array((min_NM, 32, 32), dtype=np.float64)
+    output_diagonal = cuda.device_array((min_NM, 32, 32), dtype=np.float64)    
+    rho_diagonal = cuda.device_array((min_NM), dtype=np.float64)
 
-    return output_grid.copy_to_host()
+    for i in range(total_diagonals):        
+        dstart = time.time()
+        blockspergrid = (current_length,)
+        # Compute the rho diagonal for the current step
+        compute_rho_diagonal(dX, dY, rho_diagonal, s_start, t_start, current_length)
+        
+        # Launch kernel
+        tensor_processing_kernel[blockspergrid, threadsperblock](
+            rho_diagonal,            
+            scaling_matrix,
+            input_diagonal[current_length,:,:],
+            output_diagonal[next_length,:,:]
+        )
+
+        # The output diagonal becomes the input diagonal for the next step
+        input_diagonal = output_diagonal
+        s_start, t_start, current_length = s_next, t_next, next_length
+        s_next, t_next, next_length = get_step_length(i + 1, N, M)
+        print(f"Processed {i}th diagonal in {(time.time() - dstart)} seconds")
+
+    print(f"Processed {dX.shape[0]}x{dY.shape[0]} grid in {(time.time() - start)} seconds")
+    print(f"Compute rho diagonal in {(time.time() - dstart)} seconds")
+
+    return output_diagonal.sum()
 
 
 # Example usage
 if __name__ == "__main__":
-    dX = np.random.random((1 << 14, 2)).astype(np.float64)
-    dY = np.random.random((1 << 14, 2)).astype(np.float64)
+    dX = np.random.random((1 << 2, 2)).astype(np.float64)
+    dY = np.random.random((1 << 2, 2)).astype(np.float64)
 
     # Process entire grid
-    start = time.time()
+
     result = process_tensors(dX, dY)
-    print(f"Processed {dX.shape[0]}x{dY.shape[0]} grid in {time.time() - start} seconds")
+
