@@ -158,14 +158,17 @@ def tensor_processing_kernel(dX, dY, global_scaling_matrix, rho_diagonal, input_
     s_coeff = (s_right ** tx)
     t_coeff = (t_above ** ty)
     
-    # Propagate to the right
+    # Only propagate to the right if we are not at the right limit
     if bx > bottom_offset and tx > 0:
-        cuda.atomic.add(output_diagonal, (bx, 0, ty),input_diagonal[bx - bottom_offset, tx, ty] * s_coeff)
+        # Propagate the right boundary condition resulting in a function of s
+        cuda.atomic.add(output_diagonal, (bx, 0, ty),input_diagonal[bx - bottom_offset, tx, ty] * t_coeff)
+        # Propagate the initial condition
         cuda.atomic.add(output_diagonal, (bx, 0, 0),input_diagonal[bx, tx, ty] * s_coeff * t_coeff)
     
-    # Propagate to the top
+    # Only propagate to the top if we are not at the top limit
     if bx < top_limit and ty > 0:
-        cuda.atomic.add(output_grid[bx], (tx, 0),output_grid[bx, tx, ty] * t_coeff)
+        # Propagate to the top boundary condition resulting in a function of t
+        cuda.atomic.add(output_diagonal, (bx, tx, 0),input_diagonal[bx, tx, ty] * s_coeff)
 
     # Synchronize all threads before next step
     cuda.syncthreads()
