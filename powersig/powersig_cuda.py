@@ -34,7 +34,6 @@ def build_scaling_matrix(scaling_matrix: cuda.device_array, order: int = 32):
     ty = cuda.threadIdx.y
     scaling_matrix[ty, tx] = 1.0 / ((ty + 1) * (tx + 1))
     cuda.syncthreads()
-    return scaling_matrix
 
 @cuda.jit
 def compute_rho_diagonal(dX : cuda.device_array, dY : cuda.device_array, rho : cuda.device_array, s_start: int, t_start: int, current_length: int):
@@ -177,7 +176,9 @@ def launch_scaling_matrix(order: int = 32):
     assert order <= 32, "Order must be less than or equal to 32"
     threadsperblock = (order, order)
     blockspergrid = (1,)
-    return build_scaling_matrix[blockspergrid, threadsperblock](order)
+    scaling_matrix = cuda.device_array((order, order), dtype=np.float64)
+    build_scaling_matrix[blockspergrid, threadsperblock](scaling_matrix, order)
+    return scaling_matrix
 
 # Host function to set up and launch kernel
 def compute_signature(dX, dY) -> float:
