@@ -2,6 +2,7 @@ import time
 from typing import Tuple
 
 import numpy as np
+import torch
 from numba import cuda
 import math
 
@@ -14,9 +15,20 @@ def get_point(num_points, idx):
 
 
 @cuda.jit(device=True)
+def cuda_get_step_length(d: int, rows:int, cols:int) -> Tuple[int, int, int]:
+    if d < cols:
+        # if d < cols, then we haven't hit the right edge of the grid
+        t_start = 0
+        s_start = d
+    else:
+        # if d >= cols then we have the right edge and wrapped around the corner
+        t_start = d - cols + 1  # diag index - cols + 1
+        s_start = cols - 1
+
+    return s_start, t_start, min(rows - t_start, s_start + 1)
+
 def get_step_length(d: int, rows: int, cols: int) -> Tuple[int, int, int]:
     # d, s_start, t_start are 0 based indexes while rows/cols are shapes.
-
     if d < cols:
         # if d < cols, then we haven't hit the right edge of the grid
         t_start = 0
@@ -48,14 +60,20 @@ def compute_rho_diagonal(dX : cuda.device_array, dY : cuda.device_array, rho : c
     s_idx = s_start - bx
     t_idx = t_start + bx
     tid = tx * 32 + ty
+    shared_dp = cuda.shared.array(shape=(32,), dtype=np.float64)
     
-    for i in range(0, d, 1024):
-        if tid + i < d:
-            cuda.atomic.add(rho, (bx), dX[s_idx, tid + i] * dY[t_idx, tid + i])
+    shared_dp[ty] = 0.0
+    cuda.syncthreads()
 
+    for i in range(0, d, 32):
+        if tx + i < d:
+            cuda.atomic.add(shared_dp, (ty), dX[s_idx, i + tx] * dY[t_idx, tx + i])
     
+    if ty == 0:
+        cuda.atomic.add(rho,(bx), shared_dp[tx]
+
 @cuda.jit
-def tensor_processing_kernel(dX, dY, global_scaling_matrix, rho_diagonal, input_diagonal, output_diagonal):
+def tensor_processing_kernel(N, M, step, global_scaling_matrix, rho_diagonal, input_diagonal, output_diagonal):
     """
     CUDA kernel for processing two input tensors with a scaling matrix.
 
@@ -84,14 +102,20 @@ def tensor_processing_kernel(dX, dY, global_scaling_matrix, rho_diagonal, input_
     # Synchronize threads after initializing scaling matrix
     cuda.syncthreads()
 
-    # Calculate dimensions
-    N = dX.shape[0]
-    M = dY.shape[0]
-        
     # Main processing loop
     
     # u_0 = current boundary conditions computed in last step
     shared_u_n[0, tx, ty] = input_diagonal[bx, tx, ty]
+    
+    # Need to compute propagation to other blocks
+    # Only process if thread is within valid range for this step
+    s_start, t_start, step_length = cuda_get_step_length(step, N, M)
+    _, _, next_step_length = cuda_get_step_length(step, N, M)
+    
+    # We need to compute the s, t indices for the current block
+    # assuming the 0th block corresponds to the diagonal starting at s_start, t_start
+    s_idx = s_start - bx
+    t_idx = t_start + bx
     
     s = get_point(N, s_idx)
     t = get_point(M, t_idx)
@@ -122,18 +146,11 @@ def tensor_processing_kernel(dX, dY, global_scaling_matrix, rho_diagonal, input_
             cuda.syncthreads()
 
         # u = u + u_n, each thread accumulates its own value so no need to sync
-        input_diagonal[bx, tx, ty] += rho[bx] * shared_u_n[u_n_next_index, tx, ty]
+        shared_u_n[u_n_next_index, tx, ty] *= rho
+        input_diagonal[bx, tx, ty] += shared_u_n[u_n_next_index, tx, ty]
         cuda.syncthreads()
     
-    # Need to compute propagation to other blocks
-    # Only process if thread is within valid range for this step
-    s_start, t_start, step_length = get_step_length(step, N, M)
-    next_s_start, next_t_start, next_step_length = get_step_length(step, N, M)
 
-    # We need to compute the s, t indices for the current block
-    # assuming the 0th block corresponds to the diagonal starting at s_start, t_start
-    s_idx = s_start - bx
-    t_idx = t_start + bx
     
     # If the length of the next diagonal is the same or shorter than the current diagonal
     # then all blocks propagate to the right. Otherwise, skip propagating the first one and reduce first dimension by 1.
@@ -150,24 +167,26 @@ def tensor_processing_kernel(dX, dY, global_scaling_matrix, rho_diagonal, input_
     elif step_length == next_step_length:
         bottom_offset = 0  # propagate first bottom.
         top_limit = step_length - 1  # skip propagating last top
-    
+
     # Next steps.
     s_right = get_point(N, s_idx + 1)
     t_above = get_point(M, t_idx + 1)
     s_coeff = (s_right ** tx)
     t_coeff = (t_above ** ty)
     
-    # Only propagate to the right if we are not at the right limit
+    # Only propagate to the right if we are not at the right limit. Should result in warp aggregate for each chunk of 32 threads.
     if bx > bottom_offset and tx > 0:
+        resolved_entry = input_diagonal[bx - bottom_offset, tx, ty] * t_coeff
         # Propagate the right boundary condition resulting in a function of s
-        cuda.atomic.add(output_diagonal, (bx, 0, ty),input_diagonal[bx - bottom_offset, tx, ty] * t_coeff)
+        cuda.atomic.add(output_diagonal, (bx, 0, ty),resolved_entry)
         # Propagate the initial condition
-        cuda.atomic.add(output_diagonal, (bx, 0, 0),input_diagonal[bx, tx, ty] * s_coeff * t_coeff)
+        cuda.atomic.add(output_diagonal, (bx, 0, 0),resolved_entry * s_coeff)
     
     # Only propagate to the top if we are not at the top limit
     if bx < top_limit and ty > 0:
-        # Propagate to the top boundary condition resulting in a function of t
-        cuda.atomic.add(output_diagonal, (bx, tx, 0),input_diagonal[bx, tx, ty] * s_coeff)
+        # Propagate to the top boundary condition resulting in a function of t. 
+        # Reverse tx and ty, so that we get warp aggregate for each chunk of 32 threads.
+        cuda.atomic.add(output_diagonal, (bx, ty, 0),input_diagonal[bx, ty, tx] * s_coeff)
 
     # Synchronize all threads before next step
     cuda.syncthreads()
@@ -220,7 +239,7 @@ def compute_signature(dX, dY) -> float:
     # Initialize input and output diagonals on device
     input_diagonal = cuda.device_array((min_NM, 32, 32), dtype=np.float64)
     output_diagonal = cuda.device_array((min_NM, 32, 32), dtype=np.float64)    
-    rho_diagonal = cuda.device_array((min_NM), dtype=np.float64)
+    rho_diagonal = cuda.device_array((min_NM,), dtype=np.float64)
 
     for i in range(total_diagonals):        
         dstart = time.time()
@@ -228,13 +247,20 @@ def compute_signature(dX, dY) -> float:
         
         # Compute the rho diagonal for the current step
         compute_rho_diagonal[blockspergrid, threadsperblock](dX, dY, rho_diagonal, s_start, t_start, current_length)
-        
+
+        # Calculate dimensions
+        N = dX.shape[0]
+        M = dY.shape[0]
+
         # Launch kernel
         tensor_processing_kernel[blockspergrid, threadsperblock](
-            rho_diagonal,            
+            N,
+            M,
+            i,
             scaling_matrix,
-            input_diagonal[current_length,:,:],
-            output_diagonal[next_length,:,:]
+            rho_diagonal[:current_length],
+            input_diagonal[:current_length,:,:],
+            output_diagonal[:next_length,:,:]
         )
 
         # The output diagonal becomes the input diagonal for the next step
@@ -242,6 +268,7 @@ def compute_signature(dX, dY) -> float:
         s_start, t_start, current_length = s_next, t_next, next_length
         s_next, t_next, next_length = get_step_length(i + 1, N, M)
         print(f"Processed {i}th diagonal in {(time.time() - dstart)} seconds")
+        print(f"Output diagonal: {output_diagonal.copy_to_host().numpy()}")
 
     print(f"Processed {dX.shape[0]}x{dY.shape[0]} grid in {(time.time() - start)} seconds")
     print(f"Compute rho diagonal in {(time.time() - dstart)} seconds")
@@ -256,5 +283,5 @@ if __name__ == "__main__":
 
     # Process entire grid
 
-    result = process_tensors(dX, dY)
+    result = compute_signature(dX, dY)
 
