@@ -59,18 +59,21 @@ def compute_rho_diagonal(dX : cuda.device_array, dY : cuda.device_array, rho : c
     bx = cuda.blockIdx.x
     s_idx = s_start - bx
     t_idx = t_start + bx
-    tid = tx * 32 + ty
     shared_dp = cuda.shared.array(shape=(32,), dtype=np.float64)
     
     shared_dp[ty] = 0.0
     cuda.syncthreads()
 
+    local_sum = 0.0
     for i in range(0, d, 32):
         if tx + i < d:
-            cuda.atomic.add(shared_dp, (ty), dX[s_idx, i + tx] * dY[t_idx, tx + i])
+            local_sum += dX[s_idx, i + tx] * dY[t_idx, tx + i]
+    
+    cuda.atomic.add(shared_dp, (ty), local_sum)
     
     if ty == 0:
-        cuda.atomic.add(rho,(bx), shared_dp[tx]
+        rho[bx] = 0
+        cuda.atomic.add(rho,(bx), shared_dp[tx])
 
 @cuda.jit
 def tensor_processing_kernel(N, M, step, global_scaling_matrix, rho_diagonal, input_diagonal, output_diagonal):
