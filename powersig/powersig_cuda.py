@@ -6,7 +6,7 @@ import torch
 from numba import cuda
 import math
 
-from util.cuda import print_shared_matrix, get_number_threads
+from powersig.util.cuda import print_shared_matrix, get_number_threads
 
 
 @cuda.jit(device=True)
