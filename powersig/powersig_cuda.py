@@ -6,6 +6,8 @@ import torch
 from numba import cuda
 import math
 
+from util.cuda import print_shared_matrix, get_number_threads
+
 
 @cuda.jit(device=True)
 def get_point(num_points, idx):
@@ -51,30 +53,47 @@ def build_scaling_matrix(scaling_matrix: cuda.device_array, order: int = 32):
 def compute_rho_diagonal(dX : cuda.device_array, dY : cuda.device_array, rho : cuda.device_array):
     """
     CUDA kernel for computing the rho diagonal for the current step. Computes the dot product 
-    starting at s_start, t_start and going up to current_length.
+    starting at s_start, t_start and progressing up current_length steps from the bottom of the diagonal.
+
+    :param dX: Input tensor of shape [R, d]
+    :param dY: Input tensor of shape [R, d]
+    :param rho: Output tensor of shape [R]
+
+    This function expects `dX` and `dY` to be sliced to be of the same shape with the same leading dimension as `rho`.
+
     """
     _, d = dX.shape
+    step = cuda.blockDim.x * cuda.blockDim.y
     tx = cuda.threadIdx.x
     ty = cuda.threadIdx.y
     bx = cuda.blockIdx.x
+    # We may not use all 32 entries if there aren't 32 threads for dimensions.
     shared_dp = cuda.shared.array(shape=(32,), dtype=np.float64)
     
-    shared_dp[ty] = 0.0
+    if tx == 0:
+        if ty == 0:
+            rho[bx] = 0.0
+        shared_dp[ty] = 0.0
+    
     cuda.syncthreads()
 
+    # Using a local sum doesn't work since you end up with tx x ty registers that then need to be accumulated.
     local_sum = 0.0
-    for i in range(0, d, 32):
-        if tx + i < d:
-            local_sum += dX[bx, i + tx] * dY[bx, tx + i]
-    
+    for i in range(0, d, step):
+        d_idx = i + tx + 32*ty 
+        if d_idx < d:
+            local_sum += dX[bx, d_idx] * dY[bx, d_idx]
+
+    # Add in the local_sum using a warp aggregate
     cuda.atomic.add(shared_dp, (ty), local_sum)
+
+    cuda.syncthreads()
     
-    if ty == 0:
-        rho[bx] = 0
-        cuda.atomic.add(rho,(bx), shared_dp[tx])
+    if tx == 0:    
+        cuda.atomic.add(rho, (bx), shared_dp[ty])
 
 @cuda.jit
-def tensor_processing_kernel(N, M, step, global_scaling_matrix, rho_diagonal, input_diagonal, output_diagonal):
+def compute_sigkernel_diagonal(N, M, step, global_scaling_matrix, rho_diagonal, input_diagonal, output_diagonal):
     """
     CUDA kernel for processing two input tensors with a scaling matrix.
 
@@ -95,8 +114,9 @@ def tensor_processing_kernel(N, M, step, global_scaling_matrix, rho_diagonal, in
     u_n_partial = cuda.shared.array(shape=(32,), dtype=np.float64)
 
     # Only one thread per block needs to copy rho to shared memory
-    if tx == 0 and ty == 0:
-        rho = rho_diagonal[bx]
+    # if tx == 0 and ty == 0:
+    # This stores rho in a local register.
+    rho = rho_diagonal[bx]
 
     # Copy the scaling matrix to shared memory from global memory
     scaling_matrix[tx, ty] = global_scaling_matrix[tx, ty]
@@ -149,10 +169,11 @@ def tensor_processing_kernel(N, M, step, global_scaling_matrix, rho_diagonal, in
             cuda.atomic.add(u_n, (u_n_next_index, 0, ty + 1), next_s_coeff) # Warp aggregate accumulating local scaled_val
             cuda.atomic.add(u_n, (u_n_next_index, ty + 1, 0), scaled_val_tx * s_tx) # Warp aggregate accumulating local scaled_val * t_coeff
             cuda.atomic.add(u_n_partial, (ty+1), next_s_coeff * t_ty) # Warp aggregate accumulating local scaled_s * t_coeff
-        
+
         cuda.syncthreads()
         if ty == 0 and tx > 0:
             cuda.atomic.add(u_n, (u_n_next_index, 0, 0), u_n_partial[tx])
+            print_shared_matrix(u_n[u_n_next_index,:,:])
 
         # # u = u + u_n, each thread accumulates its own value so no need to sync        
         u[tx, ty] += u_n[u_n_next_index, tx, ty]
@@ -216,7 +237,7 @@ def compute_signature(dX, dY) -> float:
     Returns:
         Processed output grid
     """
-    cuda.select_device(1)
+    # cuda.select_device(1)
     N, d_x = dX.shape
     M, d_y = dY.shape
 
@@ -236,7 +257,7 @@ def compute_signature(dX, dY) -> float:
 
     # Calculate grid and block dimensions
     threadsperblock = (32, 32)
-    
+    rho_threadsperblock = (32, get_number_threads(dX.shape[1]))
     start = time.time()
     
     scaling_matrix = launch_scaling_matrix()
@@ -251,20 +272,29 @@ def compute_signature(dX, dY) -> float:
 
     for i in range(total_diagonals):        
         print(f"Processing {i}th diagonal with s_start={s_start}, t_start={t_start}, current_length={current_length}, next_length={next_length}")
-        blockspergrid = (current_length,)
+        rho_blockspergrid = (current_length)
+        blockspergrid = (current_length, 32,32)
+
+        print(f"Rho blocks per grid: {rho_blockspergrid}")
+        print(f"Rho threads per block: {rho_threadsperblock}")
+        print(f"Blocks per grid: {blockspergrid}")
+        print(f"Threads per block: {threadsperblock}")
+
         dstart = time.time()
         # Compute the rho diagonal for the current step
-        compute_rho_diagonal[blockspergrid, threadsperblock](
+        compute_rho_diagonal[blockspergrid, rho_threadsperblock](
             dX[s_start:(s_start+current_length), :], 
             dY[t_start:(t_start+current_length), :], 
             rho_diagonal[:current_length]
             )
-        
+        cuda.synchronize()
         print(f"Compute rho diagonal in {(time.time() - dstart)} seconds: {rho_diagonal.copy_to_host()}")
 
+        print(f"Using blockspergrid={blockspergrid}")
+        print(f"Using threadsperblock={threadsperblock}")
         dstart = time.time()
-        # Launch kernel
-        tensor_processing_kernel[blockspergrid, threadsperblock](
+        # Compute the sigkernel diagonal
+        compute_sigkernel_diagonal[blockspergrid,threadsperblock](
             N,
             M,
             i,
@@ -275,7 +305,6 @@ def compute_signature(dX, dY) -> float:
         )
         
         # The output diagonal becomes the input diagonal for the next step
-        
         s_start, t_start, current_length = s_next, t_next, next_length
         s_next, t_next, next_length = get_step_length(i + 2, N, M)
         print(f"Kernel launched for {i}th diagonal in {(time.time() - dstart)} seconds")
