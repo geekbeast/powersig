@@ -4,13 +4,10 @@ import time
 
 import cupy as cp
 from contextlib import contextmanager
-from operator import lshift
 
 import psutil
 import torch.cuda
 from cupy.cuda.memory import OutOfMemoryError
-from jinja2.compiler import generate
-from mpmath.libmp.libintmath import powers
 
 from benchmarks.configuration import signature_kernel, CPU_MEMORY, SIG_KERNEL_MAX_LENGTH, dyadic_order, \
     ksig_kernel, ORDER, SIGNATURE_KERNEL, DURATION, CSV_FIELDS, POWERSIG_MAX_LENGTH, KSIG_MAX_LENGTH, MAX_LENGTH, \

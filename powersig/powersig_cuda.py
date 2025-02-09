@@ -1,12 +1,14 @@
 import time
 from typing import Tuple
+import os
+import sys
 
 import numpy as np
 import torch
 from numba import cuda
 import math
 
-from powersig.util.cuda import print_shared_matrix, get_number_threads
+from powersig.util.cuda import get_number_threads
 
 
 @cuda.jit(device=True)
@@ -141,7 +143,7 @@ def compute_sigkernel_diagonal(N, M, step, global_scaling_matrix, rho_diagonal, 
     cuda.syncthreads()
     
     # Scale for integration
-    for i in range(32):
+    for i in range(31):
         # u_n = rho * double integral of u_{n-1} with correct limits
 
         u_n_current_index = i % 2
@@ -152,6 +154,8 @@ def compute_sigkernel_diagonal(N, M, step, global_scaling_matrix, rho_diagonal, 
 
         cuda.syncthreads()
 
+        # Unfortunately, we're not able to use the full block of threads due to synchronization issues.
+
         # Truncate and only shift and scale necessary elements
         if tx < 31 and ty < 31:
             s_tx = (s ** (tx + 1))
@@ -160,24 +164,26 @@ def compute_sigkernel_diagonal(N, M, step, global_scaling_matrix, rho_diagonal, 
             t_ty = (t ** (ty + 1))
 
             # Compute indefinite integral
-            scaled_val_ty = rho * u_n[u_n_current_index, tx, ty] * scaling_matrix[tx, ty]
-            scaled_val_tx = rho * u_n[u_n_current_index, ty, tx] * scaling_matrix[ty, tx]
-            u_n[u_n_next_index, tx + 1, ty + 1] = scaled_val_ty
-            next_s_coeff = scaled_val_ty * t_ty # Scaled coefficient of s
+            u_n[u_n_next_index, tx + 1, ty + 1] = u_n[u_n_current_index, tx, ty] * scaling_matrix[tx, ty]
 
-            # Apply limits of integration using atomic operations for accumulation.
-            cuda.atomic.add(u_n, (u_n_next_index, 0, ty + 1), next_s_coeff) # Warp aggregate accumulating local scaled_val
-            cuda.atomic.add(u_n, (u_n_next_index, ty + 1, 0), scaled_val_tx * s_tx) # Warp aggregate accumulating local scaled_val * t_coeff
-            cuda.atomic.add(u_n_partial, (ty+1), next_s_coeff * t_ty) # Warp aggregate accumulating local scaled_s * t_coeff
+            # Apply limits of integration using a warp aggregate
+            cuda.atomic.sub(u_n, (u_n_next_index, 0, ty+1), u_n[u_n_next_index, tx, ty+1] * t_ty)
+
+        # We've flipped indexing here to take advantage of warp aggregation
+        if tx < 31:
+            # We have to subtract out this portion of the semi-definite integral. This will actually perform an addition into (0,0)
+            cuda.atomic.sub(u_n, (u_n_next_index, ty, 0), u_n[u_n_next_index, ty, tx +1] * s_tx)
 
         cuda.syncthreads()
-        if ty == 0 and tx > 0:
-            cuda.atomic.add(u_n, (u_n_next_index, 0, 0), u_n_partial[tx])
-            print_shared_matrix(u_n[u_n_next_index,:,:])
 
-        # # u = u + u_n, each thread accumulates its own value so no need to sync        
+        u_n[u_n_next_index, tx, ty] *= rho
+
+        # syncthreads not necessary since thread values will be visible to themselves.
+        # u = u + u_n, each thread accumulates its own value so no need to sync
         u[tx, ty] += u_n[u_n_next_index, tx, ty]
-           
+
+    # Write solution of block in input diagonal to grid. This can be skipped since we already have it in shared memory
+    # but its useful for debugging to make sure right values are being computed at each step.
     input_diagonal[bx, tx, ty] = u[tx, ty]
     
     # # If the length of the next diagonal is the same or shorter than the current diagonal
@@ -242,6 +248,8 @@ def compute_signature(dX, dY) -> float:
     M, d_y = dY.shape
 
     assert d_x == d_y, "Input tensors must have same second dimension"
+    # actual_rho = (dX * dY).sum(1)
+    # print(f"Actual rho: {actual_rho}")
 
     dX = cuda.to_device(dX)
     dY = cuda.to_device(dY)
@@ -257,7 +265,7 @@ def compute_signature(dX, dY) -> float:
 
     # Calculate grid and block dimensions
     threadsperblock = (32, 32)
-    rho_threadsperblock = (32, get_number_threads(dX.shape[1]))
+    rho_threadsperblock = (32, get_number_threads(dX.shape[1]//32))
     start = time.time()
     
     scaling_matrix = launch_scaling_matrix()
@@ -269,16 +277,14 @@ def compute_signature(dX, dY) -> float:
     input_diagonal = cuda.device_array((min_NM, 32, 32), dtype=np.float64)
     output_diagonal = cuda.device_array((min_NM, 32, 32), dtype=np.float64)    
     rho_diagonal = cuda.device_array((min_NM,), dtype=np.float64)
-
+    input_diagonal[0,0,0] = 1
     for i in range(total_diagonals):        
         print(f"Processing {i}th diagonal with s_start={s_start}, t_start={t_start}, current_length={current_length}, next_length={next_length}")
-        rho_blockspergrid = (current_length)
-        blockspergrid = (current_length, 32,32)
+        blockspergrid = (current_length)
 
-        print(f"Rho blocks per grid: {rho_blockspergrid}")
-        print(f"Rho threads per block: {rho_threadsperblock}")
         print(f"Blocks per grid: {blockspergrid}")
         print(f"Threads per block: {threadsperblock}")
+        print(f"Rho threads per block: {rho_threadsperblock}")
 
         dstart = time.time()
         # Compute the rho diagonal for the current step
@@ -292,6 +298,7 @@ def compute_signature(dX, dY) -> float:
 
         print(f"Using blockspergrid={blockspergrid}")
         print(f"Using threadsperblock={threadsperblock}")
+        print(f"(Before) Input diagonal: {input_diagonal[:current_length, :, :].copy_to_host()}")
         dstart = time.time()
         # Compute the sigkernel diagonal
         compute_sigkernel_diagonal[blockspergrid,threadsperblock](
@@ -303,31 +310,31 @@ def compute_signature(dX, dY) -> float:
             input_diagonal[:current_length,:,:],
             output_diagonal[:next_length,:,:]
         )
-        
-        # The output diagonal becomes the input diagonal for the next step
-        s_start, t_start, current_length = s_next, t_next, next_length
-        s_next, t_next, next_length = get_step_length(i + 2, N, M)
+
         print(f"Kernel launched for {i}th diagonal in {(time.time() - dstart)} seconds")
         cuda.synchronize()
         print(f"Kernel execution finished for diagonal {i}  in {(time.time() - dstart)} seconds")
 
-        print(f"Input diagonal: {input_diagonal[:current_length,:,:].copy_to_host()}")
-        print(f"Output diagonal: {output_diagonal[:next_length,:,:].copy_to_host()}")
+        print(f"(After) Input diagonal: {input_diagonal[:current_length, :, :].copy_to_host()}")
+        print(f"Output diagonal: {output_diagonal[:next_length, :, :].copy_to_host()}")
 
+        # The output diagonal becomes the input diagonal for the next step
+        s_start, t_start, current_length = s_next, t_next, next_length
+        s_next, t_next, next_length = get_step_length(i + 2, N, M)
         input_diagonal, output_diagonal = output_diagonal, input_diagonal
 
     print(f"Processed {dX.shape[0]}x{dY.shape[0]} grid in {(time.time() - start)} seconds")
     
 
-    return output_diagonal.sum()
+    return output_diagonal.copy_to_host().sum()
 
 
 # Example usage
 if __name__ == "__main__":
     # dX = np.random.random((1 << 2, 2)).astype(np.float64)
     # dY = np.random.random((1 << 2, 2)).astype(np.float64)
-    dX = np.asarray([[2,4,6,8]]).astype(np.float64)
-    dY = np.asarray([[2,4,6,8]]).astype(np.float64)
+    dX = np.asarray([[2,2,2,2]]).astype(np.float64)
+    dY = np.asarray([[2,2,2,2]]).astype(np.float64)
     
 
     # Process entire grid

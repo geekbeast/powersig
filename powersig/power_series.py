@@ -5,7 +5,7 @@ from typing import Self, Tuple
 import torch
 from torch import Tensor
 
-from powersig.util.series import resize
+from util.series import resize
 
 
 class TileSolutionPowerSeries:
