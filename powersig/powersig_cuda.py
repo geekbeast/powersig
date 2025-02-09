@@ -117,7 +117,7 @@ def compute_sigkernel_diagonal(N, M, step, global_scaling_matrix, rho_diagonal, 
     scaling_matrix = cuda.shared.array(shape=(32, 32), dtype=np.float64)
     u = cuda.shared.array(shape=(32, 32), dtype=np.float64)
     u_n = cuda.shared.array(shape=(2, 32, 32), dtype=np.float64)
-    u_n_partial = cuda.shared.array(shape=(32,), dtype=np.float64)
+    limits = cuda.shared.array(shape=(2,), dtype=np.int64)
 
     # Only one thread per block needs to copy rho to shared memory
     # if tx == 0 and ty == 0:
@@ -196,15 +196,15 @@ def compute_sigkernel_diagonal(N, M, step, global_scaling_matrix, rho_diagonal, 
     # If the length of the next diagonal is longer than the current diagonal
     # then all blocks propagate up. Otherwise, skip propagating the last one, but do not adjust first dimension.
 
-    bottom_offset = 0
-    top_limit = step_length
+    limits[0] = 0
+    limits[1] = step_length
 
     if step_length > next_step_length:
-        bottom_offset = 1  # skip propagating first bottom
-        top_limit = step_length - 1  # skip propagating last top
+        limits[0] = 1  # skip propagating first bottom
+        limits[1] = step_length - 1  # skip propagating last top
     elif step_length == next_step_length:
-        bottom_offset = 0  # propagate first bottom.
-        top_limit = step_length - 1  # skip propagating last top
+        # bottom_offset = 0  # propagate first bottom.
+        limits[1] = step_length - 1  # skip propagating last top
 
     # Next steps.
     s = get_point(N, s_idx + 1)
@@ -212,36 +212,36 @@ def compute_sigkernel_diagonal(N, M, step, global_scaling_matrix, rho_diagonal, 
     s_coeff = (s ** tx)
     t_coeff = (t ** ty)
 
+    # TODO: Propagate to correct index in output
     # Only propagate to the right if we are not at the right limit. Should result in warp aggregate for each chunk of 32 threads.
-    if bx > bottom_offset:
+    if bx >= limits[0]:
         if tx == 0:
             u_n[0, 0, ty] = 0.0
+            if ty == 0:
+                u_n[1, 0, 0] = 0.0
         # Propagate the right boundary condition resulting in a function of s
         cuda.atomic.add(u_n, (0, 0, ty), u[tx, ty] * t_coeff)
 
-        # Always use this to compute initial condition, if you are in a valid block
+        # Always use this to compute initial condition. All tiles where this matter will receive propagation from left.
         cuda.syncthreads()
-        cuda.atomic.add(u_n, (0, 0, 0), u_n[0,0, ty] * s_coeff)
+        cuda.atomic.add(u_n, (1, 0, 0), u_n[0, 0, ty] * s_coeff)
+        cuda.syncthreads()
+        if tx == 0:
+            if ty == 0:
+                output_diagonal[bx + limits[0], 0, 0] = u_n[0, 0, 0] + u_n[1, 0, 0]
+            else:
+                output_diagonal[bx + limits[0], 0, ty] = u_n[0, 0, ty]
 
     # Only propagate to the top if we are not at the top limit
-    if bx < top_limit:
+    if bx < limits[1]:
         if tx == 0:
             u_n[0, ty, 0] = 0.0
         # Propagate to the top boundary condition resulting in a function of t.
         # Reverse tx and ty, so that we get warp aggregate for each chunk of 32 threads.
         cuda.atomic.add(u_n, (0, ty, 0), u[ty, tx] * s_coeff)
-
-        # Only use this to compute initial condition if it hasn't already been computed.
-        if bx <= bottom_offset:
-            cuda.syncthreads()
-            cuda.atomic.add(u_n, (0, 0, 0), u_n[0, ty, 0] * t_coeff)
-
-
-    if bx < top_limit or bx > bottom_offset:
+        cuda.syncthreads()
         if tx == 0:
-            output_diagonal[bx, 0, ty] = u_n[0, 0, ty]
-        elif tx == 1:
-            output_diagonal[bx, ty, 0] = u_n[0, ty, 0]
+            output_diagonal[bx + limits[0] + 1, ty, 0] = u_n[0, ty, 0]
 
     input_diagonal[bx, tx, ty] = u[tx, ty]
 
@@ -359,6 +359,8 @@ if __name__ == "__main__":
     dX = np.asarray([[2, 2, 2, 2]]).astype(np.float64)
     dY = np.asarray([[2, 2, 2, 2]]).astype(np.float64)
 
+    dX = np.asarray([[2], [2], [2], [2]]).astype(np.float64)
+    dY = np.asarray([[2], [2], [2], [2]]).astype(np.float64)
     # Process entire grid
 
     result = compute_signature(dX, dY)
