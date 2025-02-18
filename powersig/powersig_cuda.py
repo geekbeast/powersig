@@ -302,13 +302,13 @@ def compute_signature(dX, dY) -> float:
     rho_diagonal = cuda.device_array((min_NM,), dtype=np.float64)
     input_diagonal[0, 0, 0] = 1
     for i in range(total_diagonals):
-        print(
-            f"Processing {i}th diagonal with s_start={s_start}, t_start={t_start}, current_length={current_length}, next_length={next_length}")
+        # print(
+        #     f"Processing {i}th diagonal with s_start={s_start}, t_start={t_start}, current_length={current_length}, next_length={next_length}")
         blockspergrid = (current_length)
-
-        print(f"Blocks per grid: {blockspergrid}")
-        print(f"Threads per block: {threadsperblock}")
-        print(f"Rho threads per block: {rho_threadsperblock}")
+        #
+        # print(f"Blocks per grid: {blockspergrid}")
+        # print(f"Threads per block: {threadsperblock}")
+        # print(f"Rho threads per block: {rho_threadsperblock}")
 
         dstart = time.time()
         # Compute the rho diagonal for the current step
@@ -317,12 +317,12 @@ def compute_signature(dX, dY) -> float:
             dY[t_start:(t_start + current_length), :],
             rho_diagonal[:current_length]
         )
-        cuda.synchronize()
-        print(f"Compute rho diagonal in {(time.time() - dstart)} seconds: {rho_diagonal.copy_to_host()}")
+        # cuda.synchronize()
+        # print(f"Compute rho diagonal in {(time.time() - dstart)} seconds: {rho_diagonal.copy_to_host()}")
 
-        print(f"Using blockspergrid={blockspergrid}")
-        print(f"Using threadsperblock={threadsperblock}")
-        print(f"(Before) Input diagonal: {input_diagonal[:current_length, :, :].copy_to_host()}")
+        # print(f"Using blockspergrid={blockspergrid}")
+        # print(f"Using threadsperblock={threadsperblock}")
+        # print(f"(Before) Input diagonal: {input_diagonal[:current_length, :, :].copy_to_host()}")
         dstart = time.time()
         # Compute the sigkernel diagonal
         compute_sigkernel_diagonal[blockspergrid, threadsperblock](
@@ -335,12 +335,12 @@ def compute_signature(dX, dY) -> float:
             output_diagonal[:next_length, :, :]
         )
 
-        print(f"Kernel launched for {i}th diagonal in {(time.time() - dstart)} seconds")
-        cuda.synchronize()
-        print(f"Kernel execution finished for diagonal {i}  in {(time.time() - dstart)} seconds")
+        # print(f"Kernel launched for {i}th diagonal in {(time.time() - dstart)} seconds")
+        # cuda.synchronize()
+        # print(f"Kernel execution finished for diagonal {i}  in {(time.time() - dstart)} seconds")
 
-        print(f"(After) Input diagonal: {input_diagonal[:current_length, :, :].copy_to_host()}")
-        print(f"Output diagonal: {output_diagonal[:next_length, :, :].copy_to_host()}")
+        # print(f"(After) Input diagonal: {input_diagonal[:current_length, :, :].copy_to_host()}")
+        # print(f"Output diagonal: {output_diagonal[:next_length, :, :].copy_to_host()}")
 
         # The output diagonal becomes the input diagonal for the next step
         s_start, t_start, current_length = s_next, t_next, next_length
@@ -354,13 +354,13 @@ def compute_signature(dX, dY) -> float:
 
 # Example usage
 if __name__ == "__main__":
-    # dX = np.random.random((1 << 2, 2)).astype(np.float64)
-    # dY = np.random.random((1 << 2, 2)).astype(np.float64)
-    dX = np.asarray([[2, 2, 2, 2]]).astype(np.float64)
-    dY = np.asarray([[2, 2, 2, 2]]).astype(np.float64)
-
-    dX = np.asarray([[2], [2], [2], [2]]).astype(np.float64)
-    dY = np.asarray([[2], [2], [2], [2]]).astype(np.float64)
+    dX = np.random.random((1 << 10, 1)).astype(np.float64)
+    dY = np.random.random((1 << 10, 1)).astype(np.float64)
+    # dX = np.asarray([[2, 2, 2, 2]]).astype(np.float64)
+    # dY = np.asarray([[2, 2, 2, 2]]).astype(np.float64)
+    #
+    # dX = np.asarray([[2], [2], [2], [2]]).astype(np.float64)
+    # dY = np.asarray([[2], [2], [2], [2]]).astype(np.float64)
     # Process entire grid
 
     result = compute_signature(dX, dY)

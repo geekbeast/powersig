@@ -113,9 +113,9 @@ if __name__== '__main__':
     # Setup new tracking pool allocator for cp
     cp.cuda.set_allocator(tracking_pool.malloc)
 
-    sk_filename = "sigkernel.csv"
-    ps_filename = "powersig.csv"
-    ks_filename = "ksig.csv"
+    sk_filename = "Before20250218/sigkernel.csv"
+    ps_filename = "Before20250218/powersig.csv"
+    ks_filename = "Before20250218/ksig.csv"
 
     sk_file_exists = os.path.isfile(sk_filename)
     ps_file_exists = os.path.isfile(ps_filename)
