@@ -15,27 +15,35 @@ def save_stats(stats, filename):
         writer.writerow(stats)
 
 
-def generate_brownian_motion(n_steps, n_paths=1, cuda: bool = True):
+def generate_brownian_motion(n_steps, n_paths=1, cuda: bool = True, dim: int = 1):
     """
-    Generate Brownian motion paths.
+    Generate multi-dimensional Brownian motion paths.
 
     Args:
         n_steps (int): Number of time steps
         n_paths (int): Number of paths to generate
-        dt (float): Time step size
+        cuda (bool): Whether to use CUDA (GPU) or CPU
+        dim (int): Dimension of the Brownian motion (default: 1)
 
     Returns:
-        torch.Tensor: Brownian paths of shape (n_paths, n_steps + 1)
+        torch.Tensor: Brownian paths of shape (n_paths, n_steps + 1, dim)
+        float: Time step size (dt)
     """
-
-
-    dt = (3/n_steps)**2
-    # Generate random increments
-    dW = torch.normal(mean=0, std=torch.sqrt(torch.tensor(dt, device= 'cuda' if cuda else 'cpu', dtype=torch.float64)),
-                      size=(n_paths, n_steps),device= 'cuda' if cuda else 'cpu', dtype=torch.float64)
+    dt = (.5/n_steps)**2
+    device = 'cuda' if cuda else 'cpu'
+    
+    # Generate random increments for each dimension
+    dW = torch.normal(
+        mean=0, 
+        std=torch.sqrt(torch.tensor(dt, device=device, dtype=torch.float64)),
+        size=(n_paths, n_steps, dim),
+        device=device, 
+        dtype=torch.float64
+    )
 
     # Compute cumulative sum to get Brownian motion
-    W = torch.cat([torch.zeros(n_paths, 1,device= 'cuda' if cuda else 'cpu', dtype=torch.float64), torch.cumsum(dW, dim=1)], dim=1)
+    zeros = torch.zeros(n_paths, 1, dim, device=device, dtype=torch.float64)
+    W = torch.cat([zeros, torch.cumsum(dW, dim=1)], dim=1)
 
     return W, dt
 

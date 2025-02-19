@@ -15,7 +15,8 @@ signature_kernel = sigkernel.SigKernel(static_kernel, dyadic_order)
 ksig_static_kernel = ksig.static.kernels.LinearKernel()
 
 # Instantiate the signature kernel, which takes as input the static kernel.
-ksig_kernel = ksig.kernels.SignaturePDEKernel(normalize = False, static_kernel=ksig_static_kernel)
+ksig_pde_kernel = ksig.kernels.SignaturePDEKernel(normalize = False, static_kernel=ksig_static_kernel)
+ksig_kernel = ksig.kernels.SignatureKernel(n_levels = 21, order = 0, normalize = False, static_kernel=ksig_static_kernel)
 
 
 PYTORCH_MEMORY = "pytorch_memory"
@@ -35,7 +36,19 @@ KSIG_MAX_LENGTH = 1<<15
 
 POWERSIG_MAX_LENGTH = 1000000
 KSIG_PDE_MAX_LENGTH = 50000
-ORDER = 32
+ORDER = 8
+
+# Directory paths
+BENCHMARKS_RESULTS_DIR = "results"
+
+# File extensions
+CSV_EXTENSION = ".csv"
+
+# Benchmark result files
+POWERSIG_RESULTS = "powersig_results.csv"
+SIGKERNEL_RESULTS = "sigkernel_results.csv"
+KSIG_RESULTS = "ksig_results.csv"
+KSIG_PDE_RESULTS = "ksig_pde_results.csv"
 
 def get_benchmark_config(fresh=_fresh):
     if os.path.exists("tests.run"):

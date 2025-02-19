@@ -15,7 +15,7 @@ def torch_compute_derivative(X):
     if X.shape[0] == 1:
         return diff
     else:
-        return diff / ( 1 / ( X.shape[0] - 1 ) )
+        return diff * ( X.shape[0] - 1 )
 
 def torch_compute_dot_prod(X,Y):
     assert X.shape == Y.shape, "X and Y must have the same shape."
@@ -34,6 +34,6 @@ def torch_compute_derivative_batch(X,dt:float|None = None) -> torch.Tensor:
     if dt!= None:
         diff/=dt
     elif X.shape[1] != 1:
-        diff /= ( 1 / ( X.shape[1] - 1 ) )
+        diff *= ( X.shape[1] - 1 )
 
     return diff

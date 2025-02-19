@@ -34,7 +34,7 @@ class TestRun:
         self.X = torch.rand((batch, len_x, dim), dtype=torch.float64) / 10  # shape (batch,len_x,dim)
         self.Y, self.dt = generate_brownian_motion(len_y-1, batch, cuda = cuda)  # shape (batch,len_y,dim)
         self.Z = torch.rand((batch, len_x, dim), dtype=torch.float64)  # shape
-        self.Y = self.Y.unsqueeze(2)
+        # self.Y = self.Y.unsqueeze(2)
 
         if self.cuda:
             self.X = self.X.cuda()

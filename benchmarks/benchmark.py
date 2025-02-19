@@ -12,9 +12,15 @@ from cupy.cuda.memory import OutOfMemoryError
 from jinja2.compiler import generate
 from mpmath.libmp.libintmath import powers
 
-from benchmarks.configuration import signature_kernel, CPU_MEMORY, SIG_KERNEL_MAX_LENGTH, dyadic_order, \
-    ksig_kernel, ORDER, SIGNATURE_KERNEL, DURATION, CSV_FIELDS, POWERSIG_MAX_LENGTH, KSIG_MAX_LENGTH, MAX_LENGTH, \
-    PYTORCH_MEMORY, CUPY_MEMORY
+from benchmarks.configuration import (
+    BENCHMARKS_RESULTS_DIR,
+    SIGKERNEL_RESULTS,
+    POWERSIG_RESULTS,
+    KSIG_RESULTS,
+    KSIG_PDE_RESULTS,
+    signature_kernel, CPU_MEMORY, SIG_KERNEL_MAX_LENGTH, dyadic_order, \
+    ksig_pde_kernel, ORDER, SIGNATURE_KERNEL, DURATION, CSV_FIELDS, POWERSIG_MAX_LENGTH, KSIG_MAX_LENGTH, MAX_LENGTH, \
+    PYTORCH_MEMORY, CUPY_MEMORY, ksig_kernel )
 from benchmarks.util import generate_brownian_motion, TrackingMemoryPool
 from powersig.matrixsig import build_scaling_for_integration, tensor_compute_gram_entry
 from powersig.util.series import torch_compute_derivative_batch
@@ -81,16 +87,29 @@ def benchmark_sigkernel_on_length(X: torch.Tensor) -> dict[str, float]:
 
     return stats
 
-def benchmark_ksig_on_length(X: torch.Tensor) -> dict[str, float]:
+def benchmark_ksig_pde_on_length(X: torch.Tensor) -> dict[str, float]:
     stats = {"length": X.shape[1], "dyadic_order": dyadic_order}
 
     print(f"Dyadic Order: {dyadic_order}")
 
     with track_peak_memory("KSigPDESignatureKernel", stats):
-        result = ksig_kernel(X,X)
+        result = ksig_pde_kernel(X, X)
         if result.shape[0] == 1 and result.shape[1] == 1:
             stats[SIGNATURE_KERNEL] = result.item()
         print(f"KSigPDESignatureKernelKSigPDE computation of gram Matrix: \n {result}")
+
+    return stats
+
+def benchmark_ksig_on_length(X: torch.Tensor) -> dict[str, float]:
+    stats = {"length": X.shape[1], "dyadic_order": dyadic_order}
+
+    print(f"Dyadic Order: {dyadic_order}")
+
+    with track_peak_memory("KSigSignatureKernel", stats):
+        result = ksig_kernel(X, X)
+        if result.shape[0] == 1 and result.shape[1] == 1:
+            stats[SIGNATURE_KERNEL] = result.item()
+        print(f"KSigSignatureKernel computation of gram Matrix: \n {result}")
 
     return stats
 
@@ -110,23 +129,27 @@ def benchmark_powersig_on_length(X: torch.Tensor, scales: torch.Tensor) -> dict[
     return stats
 
 
+
 if __name__== '__main__':
     setup_torch()
 
     # Setup new tracking pool allocator for cp
     cp.cuda.set_allocator(tracking_pool.malloc)
 
-    sk_filename = "sigkernel.csv"
-    ps_filename = "powersig.csv"
-    ks_filename = "ksig.csv"
+    sk_filename = os.path.join(BENCHMARKS_RESULTS_DIR, SIGKERNEL_RESULTS)
+    ps_filename = os.path.join(BENCHMARKS_RESULTS_DIR, POWERSIG_RESULTS)
+    ks_filename = os.path.join(BENCHMARKS_RESULTS_DIR, KSIG_RESULTS)
+    kspde_filename = os.path.join(BENCHMARKS_RESULTS_DIR, KSIG_PDE_RESULTS)
 
     sk_file_exists = os.path.isfile(sk_filename)
     ps_file_exists = os.path.isfile(ps_filename)
     ks_file_exists = os.path.isfile(ks_filename)
+    kspde_file_exists = os.path.isfile(kspde_filename)
 
-    with open(sk_filename, 'a', newline='') as skf, open(ps_filename, 'a', newline='') as psf, open(ks_filename, 'a', newline='') as ksf:
+    with open(sk_filename, 'a', newline='') as skf, open(ps_filename, 'a', newline='') as psf, open(kspde_filename, 'a', newline='') as ksfpde, open(ks_filename, 'a', newline='') as ksf:
         writer_skf = csv.DictWriter(skf, fieldnames=CSV_FIELDS)
         writer_psf = csv.DictWriter(psf, fieldnames=CSV_FIELDS)
+        writer_ksf_pde = csv.DictWriter(ksfpde, fieldnames=CSV_FIELDS)
         writer_ksf = csv.DictWriter(ksf, fieldnames=CSV_FIELDS)
 
         if not sk_file_exists:
@@ -135,17 +158,21 @@ if __name__== '__main__':
         if not ps_file_exists:
             writer_psf.writeheader()
 
+        if not kspde_file_exists:
+            writer_ksf_pde.writeheader()
+
         if not ks_file_exists:
             writer_ksf.writeheader()
 
         length = 2
         scales = build_scaling_for_integration(ORDER, device=torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'), dtype=torch.float64)
         while length <= MAX_LENGTH:
-            X, _ = generate_brownian_motion(length)
+            X, _ = generate_brownian_motion(length, dim=2)
+
             if X.shape[1] < 4:
                 print(f"X = {X.tolist()}")
                 print(f"dX = {torch_compute_derivative_batch(X.unsqueeze(2))}")
-            X = X.unsqueeze(2)
+
 
             print(f"Time series shape: {X.shape}")
 
@@ -159,11 +186,19 @@ if __name__== '__main__':
 
             if length <= KSIG_MAX_LENGTH:
                 try:
+                    stats = benchmark_ksig_pde_on_length(X)
+                    writer_ksf_pde.writerow(stats)
+                    ksfpde.flush()
+                except OutOfMemoryError as ex:
+                    print(f"KSigPDE ran out of memory for time series of length {X.shape[1]}: {ex}")
+
+                try:
                     stats = benchmark_ksig_on_length(X)
                     writer_ksf.writerow(stats)
-                    ksf.flush()
+                    ksfpde.flush()
                 except OutOfMemoryError as ex:
                     print(f"KSig ran out of memory for time series of length {X.shape[1]}: {ex}")
+
             #
             if length <= POWERSIG_MAX_LENGTH:
                 try:
