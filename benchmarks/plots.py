@@ -39,15 +39,18 @@ def get_accuracy(data):
     ksig_pde_df = data[KSIG_PDE_RESULTS]
     powersig_df = data[POWERSIG_RESULTS]
     sigkernel_df = data[SIGKERNEL_RESULTS]
-    
+
+    count = min(len(ksig_df), len(ksig_pde_df))
+    count = min(count, len(powersig_df))
+    count = min(count, len(sigkernel_df))
     # Return both lengths and values for each method
     return {
-        'lengths': ksig_df[LENGTH].to_numpy(),
+        'lengths': ksig_df[LENGTH].to_numpy()[:count],
         'values': {
-            'ksig': ksig_df[SIGNATURE_KERNEL].to_numpy(),
-            'ksig_pde': ksig_pde_df[SIGNATURE_KERNEL].to_numpy(),
-            'powersig': powersig_df[SIGNATURE_KERNEL].to_numpy(),
-            'sigkernel': sigkernel_df[SIGNATURE_KERNEL].to_numpy()
+            'ksig': ksig_df[SIGNATURE_KERNEL].to_numpy()[:count],
+            'ksig_pde': ksig_pde_df[SIGNATURE_KERNEL].to_numpy()[:count],
+            'powersig': powersig_df[SIGNATURE_KERNEL].to_numpy()[:count],
+            'sigkernel': sigkernel_df[SIGNATURE_KERNEL].to_numpy()[:count]
         }
     }
 
@@ -71,7 +74,7 @@ def plot_mape(lengths, values):
     plt.figure(figsize=(10, 6))
     plt.plot(lengths, ksig_pde_mapes, 'b-o', label='KSig PDE')
     plt.plot(lengths, powersig_mapes, 'r-o', label='PowerSig')
-    plt.plot(lengths, sigkernel_mapes, 'g-o', label='SigKernel')
+    #plt.plot(lengths, sigkernel_mapes, 'g-o', label='SigKernel')
     
     plt.xscale('log', base=2)  # Since lengths increase by powers of 2
     plt.yscale('log')  # Log scale for MAPE values
