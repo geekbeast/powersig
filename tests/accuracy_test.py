@@ -21,7 +21,7 @@ from sigkernel import sigkernel
 from benchmarks.util import generate_brownian_motion
 from powersig.matrixsig import MatrixSig, build_tile_power_series_stencil, build_scaling_for_integration, \
     build_vandermonde_matrix_s, build_vandermonde_matrix_t, diagonal_to_string, get_diagonal_range, \
-    tensor_compute_gram_entry, reverse_linspace_0_1
+    tensor_compute_gram_entry, reverse_linspace_0_1, centered_compute_gram_entry
 from powersig.power_series import SimplePowerSeries, MatrixPowerSeries, build_A1, build_A2, \
     build_integration_gather_matrix_s, build_integration_gather_matrix_t
 from powersig.simpesig import SimpleSig
@@ -514,6 +514,26 @@ class TestMatrixPowerSeriesAccuracy(unittest.TestCase):
         start = time.time()
         scales = build_scaling_for_integration(32, dX_i.device, dX_i.dtype)
         result = tensor_compute_gram_entry(dX_i, torch.clone(dX_i), scales, 32)
+        print(f"Matrix Sig computation took: {time.time() - start}s")
+        print(f"Matrix Sig computation of gram Matrix: \n {result}")
+
+    def test_sigkernel_vs_cps(self):
+        config = self.__class__.configuration
+        max_batch = 10
+
+        dX_i = torch_compute_derivative_batch(config.Y).squeeze()
+        # print(f"dX_i = {dX_i.tolist()}")
+        # dX_i = dX_i.reshape([ dX_i.shape[1] ])
+        # dY_j = torch_compute_derivative_batch(config.Y)
+
+        start = time.time()
+        sk = signature_kernel.compute_Gram(config.Y, config.Y, max_batch)
+        print(f"SigKernel computation took: {time.time() - start}s")
+        print(f"SigKernel Gram Matrix: \n {sk.tolist()}")
+
+        start = time.time()
+        scales = build_scaling_for_integration(32, dX_i.device, dX_i.dtype)
+        result = centered_compute_gram_entry(dX_i, torch.clone(dX_i), scales, 32)
         print(f"Matrix Sig computation took: {time.time() - start}s")
         print(f"Matrix Sig computation of gram Matrix: \n {result}")
 

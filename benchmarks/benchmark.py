@@ -20,13 +20,14 @@ from benchmarks.configuration import (
     KSIG_PDE_RESULTS,
     signature_kernel, CPU_MEMORY, SIG_KERNEL_MAX_LENGTH, dyadic_order, \
     ksig_pde_kernel, ORDER, SIGNATURE_KERNEL, DURATION, CSV_FIELDS, POWERSIG_MAX_LENGTH, KSIG_MAX_LENGTH, MAX_LENGTH, \
-    PYTORCH_MEMORY, CUPY_MEMORY, ksig_kernel )
+    PYTORCH_MEMORY, CUPY_MEMORY, ksig_kernel, NUM_PATHS, RUN_ID)
 from benchmarks.util import generate_brownian_motion, TrackingMemoryPool
-from powersig.matrixsig import build_scaling_for_integration, tensor_compute_gram_entry
+from powersig.matrixsig import build_scaling_for_integration, tensor_compute_gram_entry, centered_compute_gram_entry
 from powersig.util.series import torch_compute_derivative_batch
 from tests.utils import setup_torch
 
 tracking_pool = TrackingMemoryPool()
+tcge = torch.compile(tensor_compute_gram_entry)
 
 @contextmanager
 def track_peak_memory(backend, stats):
@@ -117,7 +118,7 @@ def benchmark_powersig_on_length(X: torch.Tensor, scales: torch.Tensor) -> dict[
     stats = {"length": X.shape[1], "order": ORDER}
 
     print(f"Order: {ORDER}")
-    tcge = torch.compile(tensor_compute_gram_entry)
+
     """Context manager to track peak CPU memory usage"""
     with track_peak_memory("PowerSig", stats):
         dX_i = torch_compute_derivative_batch(X).squeeze()
@@ -167,46 +168,48 @@ if __name__== '__main__':
         length = 2
         scales = build_scaling_for_integration(ORDER, device=torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'), dtype=torch.float64)
         while length <= MAX_LENGTH:
-            X, _ = generate_brownian_motion(length, dim=2)
-
+            X, _ = generate_brownian_motion(length,n_paths=NUM_PATHS, dim=2)
             if X.shape[1] < 4:
                 print(f"X = {X.tolist()}")
                 print(f"dX = {torch_compute_derivative_batch(X.unsqueeze(2))}")
 
-
             print(f"Time series shape: {X.shape}")
+            for run_id in range(X.shape[0]):
+                if length <= SIG_KERNEL_MAX_LENGTH:
+                    try:
+                        stats = benchmark_sigkernel_on_length(X[run_id:run_id+1])
+                        stats[RUN_ID] = run_id
+                        writer_skf.writerow(stats)
+                        skf.flush()
+                    except OutOfMemoryError as ex:
+                        print(f"SigKernel ran out of memory for time series of length {X.shape[1]}: {ex}")
 
-            if length <= SIG_KERNEL_MAX_LENGTH:
-                try:
-                    stats = benchmark_sigkernel_on_length(X)
-                    writer_skf.writerow(stats)
-                    skf.flush()
-                except OutOfMemoryError as ex:
-                    print(f"SigKernel ran out of memory for time series of length {X.shape[1]}: {ex}")
+                if length <= KSIG_MAX_LENGTH:
+                    try:
+                        stats = benchmark_ksig_pde_on_length(X[run_id:run_id+1])
+                        stats[RUN_ID] = run_id
+                        writer_ksf_pde.writerow(stats)
+                        ksfpde.flush()
+                    except OutOfMemoryError as ex:
+                        print(f"KSigPDE ran out of memory for time series of length {X.shape[1]}: {ex}")
 
-            if length <= KSIG_MAX_LENGTH:
-                try:
-                    stats = benchmark_ksig_pde_on_length(X)
-                    writer_ksf_pde.writerow(stats)
-                    ksfpde.flush()
-                except OutOfMemoryError as ex:
-                    print(f"KSigPDE ran out of memory for time series of length {X.shape[1]}: {ex}")
+                    try:
+                        stats = benchmark_ksig_on_length(X[run_id:run_id+1])
+                        stats[RUN_ID] = run_id
+                        writer_ksf.writerow(stats)
+                        ksfpde.flush()
+                    except OutOfMemoryError as ex:
+                        print(f"KSig ran out of memory for time series of length {X.shape[1]}: {ex}")
 
-                try:
-                    stats = benchmark_ksig_on_length(X)
-                    writer_ksf.writerow(stats)
-                    ksfpde.flush()
-                except OutOfMemoryError as ex:
-                    print(f"KSig ran out of memory for time series of length {X.shape[1]}: {ex}")
-
-            #
-            if length <= POWERSIG_MAX_LENGTH:
-                try:
-                    stats = benchmark_powersig_on_length(X, scales)
-                    writer_psf.writerow(stats)
-                    psf.flush()
-                except Exception as ex:
-                    print(f"PowerSig ran out of memory for time series of length {X.shape[1]}: {ex}")
+                #
+                if length <= POWERSIG_MAX_LENGTH:
+                    try:
+                        stats = benchmark_powersig_on_length(X.to('cuda:1')[run_id:run_id+1], scales.to('cuda:1'))
+                        stats[RUN_ID] = run_id
+                        writer_psf.writerow(stats)
+                        psf.flush()
+                    except Exception as ex:
+                        print(f"PowerSig ran out of memory for time series of length {X.shape[1]}: {ex}")
 
             length<<=1
 

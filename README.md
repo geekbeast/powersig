@@ -11,6 +11,7 @@ truncated power series representation of
 ### Truncated coefficients
 This is the most accurate, but slowest scheme. It uses a coefficient vector and two exponent vectors
 to maintain an arbitrarily precise power series representation of the 
+
 ### Self-truncating Coefficient Matrices
 This approach is similar to the truncated coefficients scheme, where the linear integral operator
 will automatically discard coefficients that grow two large.

@@ -19,6 +19,7 @@ ksig_pde_kernel = ksig.kernels.SignaturePDEKernel(normalize = False, static_kern
 ksig_kernel = ksig.kernels.SignatureKernel(n_levels = 21, order = 0, normalize = False, static_kernel=ksig_static_kernel)
 
 
+RUN_ID = "run_id"
 PYTORCH_MEMORY = "pytorch_memory"
 CUPY_MEMORY = "cupy_memory"
 CPU_MEMORY = "cpu_memory"
@@ -27,7 +28,7 @@ DURATION = "duration"
 LENGTH = "length"
 ORDER = "order"
 DYADIC_ORDER = "dyadic_order"
-CSV_FIELDS = [LENGTH, DURATION, PYTORCH_MEMORY, CUPY_MEMORY, CPU_MEMORY, ORDER, DYADIC_ORDER, SIGNATURE_KERNEL ]
+CSV_FIELDS = [LENGTH, RUN_ID, DURATION, PYTORCH_MEMORY, CUPY_MEMORY, CPU_MEMORY, ORDER, DYADIC_ORDER, SIGNATURE_KERNEL ]
 
 MAX_LENGTH = 1<<20
 POWERSIG_MAX_LENGTH = 1<<16
@@ -37,6 +38,8 @@ KSIG_MAX_LENGTH = 1<<15
 POWERSIG_MAX_LENGTH = 1000000
 KSIG_PDE_MAX_LENGTH = 50000
 ORDER = 8
+
+NUM_PATHS = 11
 
 # Directory paths
 BENCHMARKS_RESULTS_DIR = "results"

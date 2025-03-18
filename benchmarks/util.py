@@ -1,5 +1,7 @@
 import csv
 import os
+from typing import Tuple
+
 from cupy.cuda.memory import MemoryPool
 import torch
 
@@ -15,7 +17,7 @@ def save_stats(stats, filename):
         writer.writerow(stats)
 
 
-def generate_brownian_motion(n_steps, n_paths=1, cuda: bool = True, dim: int = 1):
+def generate_brownian_motion(n_steps, n_paths=1, cuda: bool = True, dim: int = 1) -> Tuple[torch.tensor, float]:
     """
     Generate multi-dimensional Brownian motion paths.
 

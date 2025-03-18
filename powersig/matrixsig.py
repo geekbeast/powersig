@@ -543,3 +543,129 @@ def tensor_compute_gram_entry(dX_i: torch.Tensor, dY_j: torch.Tensor, scales: to
         prev_u = u
 
     return u.sum().item()
+
+@torch.compile()
+def centered_compute_gram_entry(dX_i: torch.Tensor, dY_j: torch.Tensor, scales: torch.Tensor, order: int = 32) -> float:
+    dX_i[:] = dX_i.flip(0)
+
+    # Initial tile
+    u = torch.zeros([1, order, order], dtype=dX_i.dtype, device=dX_i.device)
+    s_b = (1 / dX_i.shape[0]) ** torch.arange(0, order, device=u.device, dtype=u.dtype)
+    t_b = (1 / dY_j.shape[0]) ** torch.arange(0, order, device=u.device, dtype=u.dtype)
+    s_b = s_b
+    t_b = t_b
+    print(f"s_b: {s_b.shape}")
+    print(f"t_b: {s_b.shape}")
+    prev_u = None
+
+    s = reverse_linspace_0_1(dX_i.shape[0] + 1, dtype=u.dtype, device=u.device)
+    t = torch.linspace(0, 1, dY_j.shape[0] + 1, dtype=u.dtype, device=u.device)
+
+    v_s = None
+    v_t = None
+
+    diagonal_count = dX_i.shape[0] + dY_j.shape[0] - 1
+
+    for d in range(diagonal_count):
+        s_start, t_start, dlen = get_diagonal_range(d, dX_i.shape[0], dY_j.shape[0])
+        u = torch.zeros([dlen, order, order], dtype=dX_i.dtype, device=dX_i.device)
+
+        # This is for the left / bottom boundaries of the current set of diagonals
+        s_L = len(s) - (s_start + 1)
+        s_i = s[s_L:s_L + dlen]
+        t_j = t[t_start:(t_start+dlen)]
+        v_s = build_vandermonde_matrix_s(s_i, order, u.device, u.dtype, 1)
+        v_t = build_vandermonde_matrix_t(t_j, order, u.device, u.dtype, 1)
+
+        # print(f"vandermonde matrix s: {v_s}")
+        # print(f"vandermonde matrix t: {v_t}")
+
+        # Compute the initial power series that will be iterated for tile on the diagonal
+        if d == 0:
+            u[0, 0, 0] = 1
+        else:
+
+            # s_b = build_vandermonde_matrix_s(1/dX_i.shape[0], order, u.device, u.dtype, 0)
+            # t_b = build_vandermonde_matrix_t(1/dX_i.shape[0], order, u.device, u.dtype, 0)
+            # Build the next diagonal. We will only use the boundaries for computational efficiency reasons.
+            # While we could directly use the top right corner of each tile to compute the initial condition,
+            # This would require us storing values for diagonals we aren't directly working on at the moment.
+            # We can instead use either of the boundaries for a tile to compute the initial value.
+
+            # Use the left / bottom boundaries to set the initial conditions based on previous solution for u
+            # This is for the left / bottom boundaries of the current set of diagonals
+            #s_b = build_vandermonde_matrix_s(s[-(s_start+1):], order, u.device, u.dtype)
+            #t_b = build_vandermonde_matrix_t(t[t_start:], order, u.device, u.dtype)
+
+            if d < dX_i.shape[0]:
+                # If you haven't reached the right edge, diagonal tiles in u will be the same length or longer than prev_u
+                # We only care about prev_u.shape[0] propagations from L -> R at v_s points
+                torch.matmul(prev_u, s_b.view(-1,1), out=u[:prev_u.shape[0], :, :1])
+            else:
+                # Skip the first one of the previous as you've reached the right edge.
+                # If you have reached the right edge diagonals only get shorter.
+                torch.matmul(prev_u[1:,:,:], s_b.view(-1,1), out=u[:, :, :1])
+
+            start_offset, stop_offset = 0, 0
+
+            if t_start == 0:
+                start_offset = 1
+            if s_start - dlen + 1 == 0:
+                stop_offset = 1
+            if start_offset + stop_offset < dlen:
+                # u[start_offset:(start_offset+dlen-stop_offset),:1, :1] -= u[start_offset:(start_offset+dlen-stop_offset), :1, :1]
+                u[start_offset:(start_offset+dlen-stop_offset),:1, :1] = 0
+
+            # We can't do these in place since we are adding
+            if d < dY_j.shape[0]:
+                # Always propagate all tiles up, skip v_t[1,:,:] and u[1,:,:] since there is no corresponding tile below
+                # u will always be the same or longer than prev_u for this case
+                u[1:, :1, :]+=torch.matmul(t_b.view(1,1,-1), prev_u)
+            else:
+                # We don't want to propagate the last tile in diagonal up.
+                # Need to figure out whether we want to skip first tile.
+                if t_start == 0:
+                    # t_start = 0 and first tile doesn't need bottom boundary propagated
+                    u[1:, :1, :] += torch.matmul(t_b.view(1,1,-1), prev_u[:-1, :, :])
+                else:
+                    # The first tile needs to have bottom boundary propagated
+                    u[:, :1, :] += torch.matmul(t_b.view(1,1,-1), prev_u[:-1, :, :])
+
+            # We need to subtract out all the boundary conditions.
+            # prev_u
+
+            # print(f"u_0 = {u}")
+            # diagonal_to_string(u)
+
+            # Some clean  up
+            to_delete = prev_u
+            prev_u = None
+            del to_delete
+
+        dX_L = dX_i.shape[0] - (s_start + 1)
+        # print(f"dX_L = {dX_L}")
+        # print(f"s_start = {s_start}")
+        rho = torch_compute_dot_prod_batch(dX_i[dX_L:dX_L + dlen].unsqueeze(1), dY_j[t_start:(t_start+dlen)].unsqueeze(1))
+
+        # print(f"rho = {rho}")
+
+        u_n = torch.clone(u)
+
+        
+        for i in range(order - 1):
+            u_step = rho.view(-1,1,1) * u_n
+            u_step *= scales
+            # print(f"u_step = {u_step}")
+            u_n[:, 1:, 1:] = u_step[:, :-1, :-1]
+            # u_n[:, :1, 1:] = -torch.bmm(v_t, u_step)[:, :, :-1]
+            # u_step_s = torch.bmm(u_step, v_s)
+            # u_n[:, 1:, :1] = -u_step_s[:, :-1, :]
+            # print(f"(v_t . u_n[:, :, :1]) = {torch.bmm(v_t, u_n[:, :, :1])}")
+            # u_n[:, :1, :1] = torch.bmm(v_t, u_step_s)
+            # print(f"u_n = {u_n}")
+            u += u_n
+            # print(f"u = {u}")
+
+        prev_u = u
+
+    return torch.matmul(t_b.view(1,1,-1), torch.matmul(u, s_b.view(-1,1))).item()
