@@ -2,11 +2,14 @@ import os
 import pickle
 
 import torch
+from jinja2.compiler import generate
 from sigkernel import sigkernel
 
-_batch, _len_x, _len_y, _dim = 2, 10, 10, 2
+from benchmarks.util import generate_brownian_motion
+
+_batch, _len_x, _len_y, _dim = 1, 10, 10, 2
 _fresh = True
-torch.random.manual_seed(0)
+torch.random.manual_seed(1)
 static_kernel = sigkernel.LinearKernel()
 dyadic_order = 5
 signature_kernel = sigkernel.SigKernel(static_kernel, dyadic_order)
@@ -28,9 +31,10 @@ class TestRun:
         self.len_y = len_y
         self.dim = dim
         self.cuda = cuda
-        self.X = torch.rand((batch, len_x, dim), dtype=torch.float64) * 2 # shape (batch,len_x,dim)
-        self.Y = torch.rand((batch, len_y, dim), dtype=torch.float64)  # shape (batch,len_y,dim)
+        self.X = torch.rand((batch, len_x, dim), dtype=torch.float64) / 10  # shape (batch,len_x,dim)
+        self.Y, self.dt = generate_brownian_motion(len_y-1, batch, cuda = cuda)  # shape (batch,len_y,dim)
         self.Z = torch.rand((batch, len_x, dim), dtype=torch.float64)  # shape
+        # self.Y = self.Y.unsqueeze(2)
 
         if self.cuda:
             self.X = self.X.cuda()
