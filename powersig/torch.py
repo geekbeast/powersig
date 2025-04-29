@@ -5,13 +5,14 @@ import time
 from concurrent.futures.process import ProcessPoolExecutor
 from math import factorial
 from typing import Optional, Tuple
-
+import torch._dynamo
 import torch
 
 from .util.grid import get_diagonal_range
 
 from .util.series import torch_compute_dot_prod_batch
 
+torch._dynamo.config.capture_scalar_outputs = True
 
 @torch.compile()
 def batch_ADM_for_diagonal(
@@ -181,7 +182,7 @@ def batch_compute_boundaries(
 
     return S, T
 
-
+@torch.compile(mode="max-autotune", fullgraph=True,disable=True)
 def batch_compute_gram_entry(
     dX_i: torch.Tensor, dY_j: torch.Tensor, scales: Optional[torch.Tensor], order: int = 32
 ) -> float:
@@ -237,4 +238,5 @@ def batch_compute_gram_entry(
         )
         # del old_S, old_T
 
-    return torch.matmul(torch.matmul(v_t, u), v_s).item()
+    # return torch.matmul(torch.matmul(v_t, u), v_s).item()
+    return torch.einsum('i,bij,j->', v_t, u, v_s)
