@@ -28,6 +28,8 @@ class TestBatchADMForDiagonal(unittest.TestCase):
             [1.0, 2.0],
             [3.0, 4.0]
         ], dtype=torch.float64)  # n x n stencil
+        # Pre-allocated buffer for 2x2 case
+        self.U_buf_2x2 = torch.empty((2, 2, 2), dtype=torch.float64)
 
         # Common test data for 3x3 case
         self.rho_3x3 = torch.tensor([0.3], dtype=torch.float64)  # batch_size = 1
@@ -38,6 +40,8 @@ class TestBatchADMForDiagonal(unittest.TestCase):
             [4.0, 5.0, 6.0],
             [7.0, 8.0, 9.0]
         ], dtype=torch.float64)  # n x n stencil
+        # Pre-allocated buffer for 3x3 case
+        self.U_buf_3x3 = torch.empty((1, 3, 3), dtype=torch.float64)
 
         # Common test data for 4x4 case
         self.rho_4x4 = torch.tensor([0.4, 0.6, 0.8], dtype=torch.float64)  # batch_size = 3
@@ -64,15 +68,17 @@ class TestBatchADMForDiagonal(unittest.TestCase):
             [9.0, 10.0, 11.0, 12.0],
             [13.0, 14.0, 15.0, 16.0]
         ], dtype=torch.float64)  # n x n stencil
+        # Pre-allocated buffer for 4x4 case
+        self.U_buf_4x4 = torch.empty((3, 4, 4), dtype=torch.float64)
 
     def test_2x2_shape(self):
         """Test that the output shape is correct for 2x2 case"""
-        result = batch_ADM_for_diagonal(self.rho_2x2, self.S_2x2, self.T_2x2, self.stencil_2x2)
+        result = batch_ADM_for_diagonal(self.rho_2x2, self.U_buf_2x2, self.S_2x2, self.T_2x2, self.stencil_2x2)
         self.assertEqual(result.shape, (2, 2, 2))  # batch_size x n x n
 
     def test_2x2_first_batch(self):
         """Test the first batch element of 2x2 case"""
-        result = batch_ADM_for_diagonal(self.rho_2x2, self.S_2x2, self.T_2x2, self.stencil_2x2)
+        result = batch_ADM_for_diagonal(self.rho_2x2, self.U_buf_2x2, self.S_2x2, self.T_2x2, self.stencil_2x2)
 
         # For the first batch (rho = 0.5):
         # First level: first row/column use rho^0 = 1.0
@@ -87,7 +93,7 @@ class TestBatchADMForDiagonal(unittest.TestCase):
 
     def test_2x2_second_batch(self):
         """Test the second batch element of 2x2 case"""
-        result = batch_ADM_for_diagonal(self.rho_2x2, self.S_2x2, self.T_2x2, self.stencil_2x2)
+        result = batch_ADM_for_diagonal(self.rho_2x2, self.U_buf_2x2, self.S_2x2, self.T_2x2, self.stencil_2x2)
 
         # For the second batch (rho = 0.7):
         # First level: first row/column use rho^0 = 1.0
@@ -105,12 +111,12 @@ class TestBatchADMForDiagonal(unittest.TestCase):
 
     def test_3x3_shape(self):
         """Test that the output shape is correct for 3x3 case"""
-        result = batch_ADM_for_diagonal(self.rho_3x3, self.S_3x3, self.T_3x3, self.stencil_3x3)
+        result = batch_ADM_for_diagonal(self.rho_3x3, self.U_buf_3x3, self.S_3x3, self.T_3x3, self.stencil_3x3)
         self.assertEqual(result.shape, (1, 3, 3))  # batch_size x n x n
 
     def test_3x3_values(self):
         """Test the values for 3x3 case"""
-        result = batch_ADM_for_diagonal(self.rho_3x3, self.S_3x3, self.T_3x3, self.stencil_3x3)
+        result = batch_ADM_for_diagonal(self.rho_3x3, self.U_buf_3x3, self.S_3x3, self.T_3x3, self.stencil_3x3)
 
         # For the 3x3 case (rho = 0.3):
         # First level: first row/column use rho^0 = 1.0
@@ -132,7 +138,7 @@ class TestBatchADMForDiagonal(unittest.TestCase):
 
     def test_4x4_values(self):
         """Test the values for 4x4 case"""
-        result = batch_ADM_for_diagonal(self.rho_4x4, self.S_4x4, self.T_4x4, self.stencil_4x4)
+        result = batch_ADM_for_diagonal(self.rho_4x4, self.U_buf_4x4, self.S_4x4, self.T_4x4, self.stencil_4x4)
 
         # For the 4x4 case with batch size 3:
         # First batch (rho = 0.4):
@@ -646,11 +652,10 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         # Compute gram matrix
         powersig_results = torch.zeros((self.X.shape[0], self.Y.shape[0]), dtype=torch.float64, device=self.device)
         order = 32
-        scales = build_stencil(order, dX.device, dX.dtype)
         
         for i in range(dX.shape[0]):
             for j in range(dY.shape[0]):
-                powersig_results[i, j] = batch_compute_gram_entry(dX[i], dY[j], scales, order)
+                powersig_results[i, j] = batch_compute_gram_entry(dX[i], dY[j], None, order)
         
         # Move results to CPU for comparison
         if powersig_results.is_cuda:
