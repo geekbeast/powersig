@@ -646,7 +646,7 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         # Compute gram matrix
         powersig_results = torch.zeros((self.X.shape[0], self.Y.shape[0]), dtype=torch.float64, device=self.device)
         order = 32
-        scales = build_scaling_for_integration(order, dX.device, dX.dtype)
+        scales = build_stencil(order, dX.device, dX.dtype)
         
         for i in range(dX.shape[0]):
             for j in range(dY.shape[0]):
