@@ -13,57 +13,6 @@ from .util.grid import get_diagonal_range
 from .util.series import torch_compute_dot_prod_batch
 
 
-def multiply_diagonal(
-    U: torch.Tensor,
-    k: int,
-    S: torch.Tensor,
-    T: torch.Tensor,
-    vandermonde_full: torch.Tensor,
-) -> None:
-    """
-    Does an inplace multiply ofa diagonal of U by its corresponding coefficient and Vandermonde slice.
-
-    Args:
-        U: Tensor of shape (batch_size, n, n) containing the matrices
-        k: Diagonal offset (positive for upper diagonals, negative for lower)
-        S: Tensor of shape (batch_size, n) containing coefficients for diagonals 0...n-1
-        T: Tensor of shape (batch_size, n) containing coefficients for diagonals 0...-(n-1)
-        vandermonde_full: Tensor of shape (batch_size, n) containing the Vandermonde vectors
-    """
-    batch_size = U.shape[0]
-    n = U.shape[1]
-
-    # Calculate the length of the diagonal
-    diag_length = n - abs(k)
-
-    # Get the view of the diagonal for all matrices in the batch
-    diagonal_view = torch.diagonal(U, offset=k, dim1=1, dim2=2)
-
-    # Take the appropriate slice of the full Vandermonde matrix
-    vandermonde_slice = vandermonde_full[:, :diag_length]
-
-    # These two cases happen before you either hit top or right of grid
-    # If you didn't skip first and S.shape[0] < batch_size then use left initial boundary
-    # If you didn't skip last and T.shape[0] < batch_size then use bottom initial boundary
-
-    # These two cases happen after you either hit top or right of grid
-    # If you skipped first and S.shape[0] < batch_size then use left initial boundary on last
-    # If you skipped last and T.shape[0] < batch_size then use bottom initial boundary
-    # If you skipped first and last and S.shape[0] = batch_size and T.shape[0] = batch_size
-
-    # Get the coefficient and reshape for broadcasting
-    if k > 0:
-        # Use S for upper diagonals (k > 0)
-        # Map k to index in S (1 to n-1)
-        coefficients = S[:, k].view(batch_size, 1)
-    else:
-        # Use T for main and lower diagonals (k <= 0)
-        # Map k to index in T (0 to n-1)
-        coefficients = T[:, -k].view(batch_size, 1)
-
-    # In-place multiplication: diagonal * coefficient * vandermonde_slice
-    diagonal_view.mul_(coefficients * vandermonde_slice)
-
 @torch.compile()
 def batch_ADM_for_diagonal(
     rho: torch.Tensor, U_buf: torch.Tensor, S: torch.Tensor, T: torch.Tensor, stencil: torch.Tensor
