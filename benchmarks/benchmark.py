@@ -139,18 +139,18 @@ def benchmark_ksig_on_length(X: torch.Tensor) -> dict[str, float]:
 
     return stats
 
-def benchmark_powersig_on_length(X: torch.Tensor, scales: torch.Tensor) -> dict[str, float]:
+def benchmark_powersig_on_length(X: torch.Tensor) -> dict[str, float]:
     stats = {"length": X.shape[1], "order": POLYNOMIAL_ORDER}
 
     print(f"Order: {POLYNOMIAL_ORDER}")
     dX_i = torch_compute_derivative_batch(X).squeeze()
     dX_i_clone = torch.clone(dX_i)
-    ds = 1 / dX_i.shape[0]
-    dt = 1 / dX_i.shape[0]
-    v_s, v_t = compute_vandermonde_vectors(ds, dt, POLYNOMIAL_ORDER, X.dtype, X.device)
+    # ds = 1 / dX_i.shape[0]
+    # dt = 1 / dX_i.shape[0]
+    # v_s, v_t = compute_vandermonde_vectors(ds, dt, POLYNOMIAL_ORDER, X.dtype, X.device)
     """Context manager to track peak CPU memory usage"""
     with track_peak_memory(POWERSIG_BACKEND, stats):
-        result = tcge(dX_i, dX_i_clone, scales, v_s, v_t, POLYNOMIAL_ORDER)
+        result = tcge(dX_i, dX_i_clone, None, POLYNOMIAL_ORDER)
         stats[SIGNATURE_KERNEL] = result
 
         print(f"PowerSig computation of gram Matrix: \n {result}")
@@ -216,7 +216,7 @@ if __name__== '__main__':
 
         length = 2
         # scales = build_scaling_for_integration(POLYNOMIAL_ORDER, device=torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'), dtype=torch.float64)
-        scales = build_stencil(POLYNOMIAL_ORDER, device=torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'), dtype=torch.float64)
+        # scales = build_stencil(POLYNOMIAL_ORDER, device=torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'), dtype=torch.float64)
         while length <= MAX_LENGTH:
             X, _ = generate_brownian_motion(length,n_paths=NUM_PATHS, dim=2)
             if X.shape[1] < 4:
@@ -225,15 +225,6 @@ if __name__== '__main__':
 
             print(f"Time series shape: {X.shape}")
             for run_id in range(X.shape[0]):
-                if length <= POLYSIG_MAX_LENGTH:
-                    try:
-                        stats = benchmark_polysig_on_length(X[run_id:run_id+1])
-                        stats[RUN_ID] = run_id
-                        writer_polysig.writerow(stats)
-                        polysig.flush()
-                    except OutOfMemoryError as ex:
-                        print(f"PolySig ran out of memory for time series of length {X.shape[1]}: {ex}")
-
                 if length <= SIG_KERNEL_MAX_LENGTH:
                     try:
                         stats = benchmark_sigkernel_on_length(X[run_id:run_id+1])
@@ -260,15 +251,25 @@ if __name__== '__main__':
                     except OutOfMemoryError as ex:
                         print(f"KSig ran out of memory for time series of length {X.shape[1]}: {ex}")
 
-                #
+                if length <= POLYSIG_MAX_LENGTH:
+                    try:
+                        stats = benchmark_polysig_on_length(X[run_id:run_id+1])
+                        stats[RUN_ID] = run_id
+                        writer_polysig.writerow(stats)
+                        polysig.flush()
+                    except OutOfMemoryError as ex:
+                        print(f"PolySig ran out of memory for time series of length {X.shape[1]}: {ex}")
+
                 if length <= POWERSIG_MAX_LENGTH:
                     try:
-                        stats = benchmark_powersig_on_length(X.to('cuda:1')[run_id:run_id+1], scales.to('cuda:1'))
+                        stats = benchmark_powersig_on_length(X.to('cuda:1')[run_id:run_id+1])
                         stats[RUN_ID] = run_id
                         writer_psf.writerow(stats)
                         psf.flush()
-                    except Exception as ex:
+                    except OutOfMemoryError as ex:
                         print(f"PowerSig ran out of memory for time series of length {X.shape[1]}: {ex}")
+                    except Exception as ex:
+                        print(f"PowerSig ran into an error for time series of length {X.shape[1]}: {ex}")
 
             length<<=1
 
