@@ -28,6 +28,7 @@ class TestBatchADMForDiagonal(unittest.TestCase):
             [1.0, 2.0],
             [3.0, 4.0]
         ], dtype=torch.float64)  # n x n stencil
+        self.U_buf_2x2 = torch.empty((2, 2, 2), dtype=torch.float64)  # Pre-allocated buffer
 
         # Common test data for 3x3 case
         self.rho_3x3 = torch.tensor([0.3], dtype=torch.float64)  # batch_size = 1
@@ -38,6 +39,7 @@ class TestBatchADMForDiagonal(unittest.TestCase):
             [4.0, 5.0, 6.0],
             [7.0, 8.0, 9.0]
         ], dtype=torch.float64)  # n x n stencil
+        self.U_buf_3x3 = torch.empty((1, 3, 3), dtype=torch.float64)  # Pre-allocated buffer
 
         # Common test data for 4x4 case
         self.rho_4x4 = torch.tensor([0.4, 0.6, 0.8], dtype=torch.float64)  # batch_size = 3
@@ -64,15 +66,16 @@ class TestBatchADMForDiagonal(unittest.TestCase):
             [9.0, 10.0, 11.0, 12.0],
             [13.0, 14.0, 15.0, 16.0]
         ], dtype=torch.float64)  # n x n stencil
+        self.U_buf_4x4 = torch.empty((3, 4, 4), dtype=torch.float64)  # Pre-allocated buffer
 
     def test_2x2_shape(self):
         """Test that the output shape is correct for 2x2 case"""
-        result = batch_ADM_for_diagonal(self.rho_2x2, self.S_2x2, self.T_2x2, self.stencil_2x2)
+        result = batch_ADM_for_diagonal(self.rho_2x2, self.U_buf_2x2, self.S_2x2, self.T_2x2, self.stencil_2x2)
         self.assertEqual(result.shape, (2, 2, 2))  # batch_size x n x n
 
     def test_2x2_first_batch(self):
         """Test the first batch element of 2x2 case"""
-        result = batch_ADM_for_diagonal(self.rho_2x2, self.S_2x2, self.T_2x2, self.stencil_2x2)
+        result = batch_ADM_for_diagonal(self.rho_2x2, self.U_buf_2x2, self.S_2x2, self.T_2x2, self.stencil_2x2)
 
         # For the first batch (rho = 0.5):
         # First level: first row/column use rho^0 = 1.0
@@ -87,7 +90,7 @@ class TestBatchADMForDiagonal(unittest.TestCase):
 
     def test_2x2_second_batch(self):
         """Test the second batch element of 2x2 case"""
-        result = batch_ADM_for_diagonal(self.rho_2x2, self.S_2x2, self.T_2x2, self.stencil_2x2)
+        result = batch_ADM_for_diagonal(self.rho_2x2, self.U_buf_2x2, self.S_2x2, self.T_2x2, self.stencil_2x2)
 
         # For the second batch (rho = 0.7):
         # First level: first row/column use rho^0 = 1.0
@@ -105,12 +108,12 @@ class TestBatchADMForDiagonal(unittest.TestCase):
 
     def test_3x3_shape(self):
         """Test that the output shape is correct for 3x3 case"""
-        result = batch_ADM_for_diagonal(self.rho_3x3, self.S_3x3, self.T_3x3, self.stencil_3x3)
+        result = batch_ADM_for_diagonal(self.rho_3x3, self.U_buf_3x3, self.S_3x3, self.T_3x3, self.stencil_3x3)
         self.assertEqual(result.shape, (1, 3, 3))  # batch_size x n x n
 
     def test_3x3_values(self):
         """Test the values for 3x3 case"""
-        result = batch_ADM_for_diagonal(self.rho_3x3, self.S_3x3, self.T_3x3, self.stencil_3x3)
+        result = batch_ADM_for_diagonal(self.rho_3x3, self.U_buf_3x3, self.S_3x3, self.T_3x3, self.stencil_3x3)
 
         # For the 3x3 case (rho = 0.3):
         # First level: first row/column use rho^0 = 1.0
@@ -132,7 +135,7 @@ class TestBatchADMForDiagonal(unittest.TestCase):
 
     def test_4x4_values(self):
         """Test the values for 4x4 case"""
-        result = batch_ADM_for_diagonal(self.rho_4x4, self.S_4x4, self.T_4x4, self.stencil_4x4)
+        result = batch_ADM_for_diagonal(self.rho_4x4, self.U_buf_4x4, self.S_4x4, self.T_4x4, self.stencil_4x4)
 
         # For the 4x4 case with batch size 3:
         # First batch (rho = 0.4):
@@ -198,6 +201,9 @@ class TestBatchComputeBoundaries(unittest.TestCase):
         self.ds_2x2 = 0.5
         self.dt_2x2 = 0.5
         self.v_s_2x2, self.v_t_2x2 = compute_vandermonde_vectors(self.ds_2x2, self.dt_2x2, 2, self.U_2x2.dtype, self.U_2x2.device)
+        # Pre-allocated buffers for 2x2 case
+        self.S_buf_2x2 = torch.empty((3, 2), dtype=torch.float64)  # Max size needed for growing case
+        self.T_buf_2x2 = torch.empty((3, 2), dtype=torch.float64)  # Max size needed for growing case
 
         # Common test data for 3x3 case
         self.U_3x3 = torch.tensor([
@@ -208,6 +214,9 @@ class TestBatchComputeBoundaries(unittest.TestCase):
         self.ds_3x3 = 0.3
         self.dt_3x3 = 0.3
         self.v_s_3x3, self.v_t_3x3 = compute_vandermonde_vectors(self.ds_3x3, self.dt_3x3, 3, self.U_3x3.dtype, self.U_3x3.device)
+        # Pre-allocated buffers for 3x3 case
+        self.S_buf_3x3 = torch.empty((2, 3), dtype=torch.float64)  # Max size needed for growing case
+        self.T_buf_3x3 = torch.empty((2, 3), dtype=torch.float64)  # Max size needed for growing case
 
         # Common test data for 4x4 case with batch size 3
         self.U_4x4 = torch.tensor([
@@ -227,10 +236,13 @@ class TestBatchComputeBoundaries(unittest.TestCase):
         self.ds_4x4 = 0.25
         self.dt_4x4 = 0.25
         self.v_s_4x4, self.v_t_4x4 = compute_vandermonde_vectors(self.ds_4x4, self.dt_4x4, 4, self.U_4x4.dtype, self.U_4x4.device)
+        # Pre-allocated buffers for 4x4 case
+        self.S_buf_4x4 = torch.empty((4, 4), dtype=torch.float64)  # Max size needed for growing case
+        self.T_buf_4x4 = torch.empty((4, 4), dtype=torch.float64)  # Max size needed for growing case
 
     def test_2x2_shrinking(self):
         """Test 2x2 case with both skip_first and skip_last=True (shrinking)"""
-        S, T = batch_compute_boundaries(self.U_2x2, self.v_s_2x2, self.v_t_2x2, skip_first=True, skip_last=True)
+        S, T = batch_compute_boundaries(self.U_2x2, self.v_s_2x2, self.v_t_2x2, self.S_buf_2x2, self.T_buf_2x2, skip_first=True, skip_last=True)
         
         # For first batch:
         # S values (v_t^T.U):
@@ -265,7 +277,7 @@ class TestBatchComputeBoundaries(unittest.TestCase):
 
     def test_2x2_growing(self):
         """Test 2x2 case with both skip_first and skip_last=False (growing)"""
-        S, T = batch_compute_boundaries(self.U_2x2, self.v_s_2x2, self.v_t_2x2, skip_first=False, skip_last=False)
+        S, T = batch_compute_boundaries(self.U_2x2, self.v_s_2x2, self.v_t_2x2, self.S_buf_2x2, self.T_buf_2x2, skip_first=False, skip_last=False)
         
         # For first batch:
         # S values (v_t^T.U):
@@ -312,7 +324,7 @@ class TestBatchComputeBoundaries(unittest.TestCase):
 
     def test_2x2_staying_same(self):
         """Test 2x2 case with skip_first=True and skip_last=False (staying same size)"""
-        S, T = batch_compute_boundaries(self.U_2x2, self.v_s_2x2, self.v_t_2x2, skip_first=True, skip_last=False)
+        S, T = batch_compute_boundaries(self.U_2x2, self.v_s_2x2, self.v_t_2x2, self.S_buf_2x2, self.T_buf_2x2, skip_first=True, skip_last=False)
         
         # For first batch:
         # S values (v_t^T.U):
@@ -356,7 +368,7 @@ class TestBatchComputeBoundaries(unittest.TestCase):
 
     def test_3x3_shrinking(self):
         """Test 3x3 case with both skip_first and skip_last=True (shrinking)"""
-        S, T = batch_compute_boundaries(self.U_3x3, self.v_s_3x3, self.v_t_3x3, skip_first=True, skip_last=True)
+        S, T = batch_compute_boundaries(self.U_3x3, self.v_s_3x3, self.v_t_3x3, self.S_buf_3x3, self.T_buf_3x3, skip_first=True, skip_last=True)
         
         # For the single batch:
         # S values (v_t^T.U):
@@ -381,7 +393,7 @@ class TestBatchComputeBoundaries(unittest.TestCase):
 
     def test_3x3_growing(self):
         """Test 3x3 case with both skip_first and skip_last=False (growing)"""
-        S, T = batch_compute_boundaries(self.U_3x3, self.v_s_3x3, self.v_t_3x3, skip_first=False, skip_last=False)
+        S, T = batch_compute_boundaries(self.U_3x3, self.v_s_3x3, self.v_t_3x3, self.S_buf_3x3, self.T_buf_3x3, skip_first=False, skip_last=False)
         
         # For the single batch:
         # S values (v_t^T.U):
@@ -420,7 +432,7 @@ class TestBatchComputeBoundaries(unittest.TestCase):
 
     def test_3x3_staying_same(self):
         """Test 3x3 case with skip_first=True and skip_last=False (staying same size)"""
-        S, T = batch_compute_boundaries(self.U_3x3, self.v_s_3x3, self.v_t_3x3, skip_first=True, skip_last=False)
+        S, T = batch_compute_boundaries(self.U_3x3, self.v_s_3x3, self.v_t_3x3, self.S_buf_3x3, self.T_buf_3x3, skip_first=True, skip_last=False)
         
         # For the single batch:
         # S values (v_t^T.U):
@@ -449,7 +461,7 @@ class TestBatchComputeBoundaries(unittest.TestCase):
 
     def test_4x4_shrinking(self):
         """Test 4x4 case with both skip_first and skip_last=True (shrinking)"""
-        S, T = batch_compute_boundaries(self.U_4x4, self.v_s_4x4, self.v_t_4x4, skip_first=True, skip_last=True)
+        S, T = batch_compute_boundaries(self.U_4x4, self.v_s_4x4, self.v_t_4x4, self.S_buf_4x4, self.T_buf_4x4, skip_first=True, skip_last=True)
         
         # For the first batch:
         # S values (v_t^T.U):s1,15] = 1*3 + 0.25*7 + 0.0625*11 + 0.015625*15 = 5.203125
@@ -488,7 +500,7 @@ class TestBatchComputeBoundaries(unittest.TestCase):
 
     def test_4x4_growing(self):
         """Test 4x4 case with both skip_first and skip_last=False (growing)"""
-        S, T = batch_compute_boundaries(self.U_4x4, self.v_s_4x4, self.v_t_4x4, skip_first=False, skip_last=False)
+        S, T = batch_compute_boundaries(self.U_4x4, self.v_s_4x4, self.v_t_4x4, self.S_buf_4x4, self.T_buf_4x4, skip_first=False, skip_last=False)
         
         # For the first batch:
         # S values (v_t^T.U):
@@ -619,6 +631,7 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         # Set up sigkernel
         self.dyadic_order = 0
         self.signature_kernel = sigkernel.SigKernel(sigkernel.LinearKernel(), self.dyadic_order)
+        self.order = 8
         
     def test_signature_kernel_consistency(self):
         """Test that different signature kernel implementations give consistent results"""
@@ -642,15 +655,18 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         # Convert to derivatives
         dX = torch_compute_derivative_batch(self.X)
         dY = torch_compute_derivative_batch(self.Y)
-        
+        ds = 1/dY.shape[1]
+        dt = 1/dX.shape[1]
+
+        v_s, v_t = compute_vandermonde_vectors(ds, dt, self.order, torch.float64, self.device)
         # Compute gram matrix
         powersig_results = torch.zeros((self.X.shape[0], self.Y.shape[0]), dtype=torch.float64, device=self.device)
-        order = 32
-        scales = build_scaling_for_integration(order, dX.device, dX.dtype)
-        
+
+        # stencil = build_scaling_for_integration(self.order, dX.device, dX.dtype)
+        stencil = build_stencil(self.order, dX.device, dX.dtype)
         for i in range(dX.shape[0]):
             for j in range(dY.shape[0]):
-                powersig_results[i, j] = batch_compute_gram_entry(dX[i], dY[j], scales, order)
+                powersig_results[i, j] = batch_compute_gram_entry(dX[i], dY[j], stencil, v_s, v_t, self.order)
         
         # Move results to CPU for comparison
         if powersig_results.is_cuda:
