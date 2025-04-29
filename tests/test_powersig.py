@@ -204,6 +204,9 @@ class TestBatchComputeBoundaries(unittest.TestCase):
         self.ds_2x2 = 0.5
         self.dt_2x2 = 0.5
         self.v_s_2x2, self.v_t_2x2 = compute_vandermonde_vectors(self.ds_2x2, self.dt_2x2, 2, self.U_2x2.dtype, self.U_2x2.device)
+        # Pre-allocated buffers for S and T for 2x2 case
+        self.S_buf_2x2 = torch.empty((3, 2), dtype=torch.float64)  # Max size needed is batch_size+1
+        self.T_buf_2x2 = torch.empty((3, 2), dtype=torch.float64)  # Max size needed is batch_size+1
 
         # Common test data for 3x3 case
         self.U_3x3 = torch.tensor([
@@ -214,6 +217,9 @@ class TestBatchComputeBoundaries(unittest.TestCase):
         self.ds_3x3 = 0.3
         self.dt_3x3 = 0.3
         self.v_s_3x3, self.v_t_3x3 = compute_vandermonde_vectors(self.ds_3x3, self.dt_3x3, 3, self.U_3x3.dtype, self.U_3x3.device)
+        # Pre-allocated buffers for S and T for 3x3 case
+        self.S_buf_3x3 = torch.empty((2, 3), dtype=torch.float64)  # Max size needed is batch_size+1
+        self.T_buf_3x3 = torch.empty((2, 3), dtype=torch.float64)  # Max size needed is batch_size+1
 
         # Common test data for 4x4 case with batch size 3
         self.U_4x4 = torch.tensor([
@@ -233,10 +239,21 @@ class TestBatchComputeBoundaries(unittest.TestCase):
         self.ds_4x4 = 0.25
         self.dt_4x4 = 0.25
         self.v_s_4x4, self.v_t_4x4 = compute_vandermonde_vectors(self.ds_4x4, self.dt_4x4, 4, self.U_4x4.dtype, self.U_4x4.device)
+        # Pre-allocated buffers for S and T for 4x4 case
+        self.S_buf_4x4 = torch.empty((4, 4), dtype=torch.float64)  # Max size needed is batch_size+1
+        self.T_buf_4x4 = torch.empty((4, 4), dtype=torch.float64)  # Max size needed is batch_size+1
 
     def test_2x2_shrinking(self):
         """Test 2x2 case with both skip_first and skip_last=True (shrinking)"""
-        S, T = batch_compute_boundaries(self.U_2x2, self.v_s_2x2, self.v_t_2x2, skip_first=True, skip_last=True)
+        S, T = batch_compute_boundaries(
+            self.U_2x2, 
+            self.S_buf_2x2, 
+            self.T_buf_2x2, 
+            self.v_s_2x2, 
+            self.v_t_2x2, 
+            skip_first=True, 
+            skip_last=True
+        )
         
         # For first batch:
         # S values (v_t^T.U):
@@ -271,7 +288,15 @@ class TestBatchComputeBoundaries(unittest.TestCase):
 
     def test_2x2_growing(self):
         """Test 2x2 case with both skip_first and skip_last=False (growing)"""
-        S, T = batch_compute_boundaries(self.U_2x2, self.v_s_2x2, self.v_t_2x2, skip_first=False, skip_last=False)
+        S, T = batch_compute_boundaries(
+            self.U_2x2, 
+            self.S_buf_2x2, 
+            self.T_buf_2x2, 
+            self.v_s_2x2, 
+            self.v_t_2x2, 
+            skip_first=False, 
+            skip_last=False
+        )
         
         # For first batch:
         # S values (v_t^T.U):
@@ -318,7 +343,15 @@ class TestBatchComputeBoundaries(unittest.TestCase):
 
     def test_2x2_staying_same(self):
         """Test 2x2 case with skip_first=True and skip_last=False (staying same size)"""
-        S, T = batch_compute_boundaries(self.U_2x2, self.v_s_2x2, self.v_t_2x2, skip_first=True, skip_last=False)
+        S, T = batch_compute_boundaries(
+            self.U_2x2, 
+            self.S_buf_2x2, 
+            self.T_buf_2x2, 
+            self.v_s_2x2, 
+            self.v_t_2x2, 
+            skip_first=True, 
+            skip_last=False
+        )
         
         # For first batch:
         # S values (v_t^T.U):
@@ -362,14 +395,22 @@ class TestBatchComputeBoundaries(unittest.TestCase):
 
     def test_3x3_shrinking(self):
         """Test 3x3 case with both skip_first and skip_last=True (shrinking)"""
-        S, T = batch_compute_boundaries(self.U_3x3, self.v_s_3x3, self.v_t_3x3, skip_first=True, skip_last=True)
+        S, T = batch_compute_boundaries(
+            self.U_3x3, 
+            self.S_buf_3x3, 
+            self.T_buf_3x3, 
+            self.v_s_3x3, 
+            self.v_t_3x3, 
+            skip_first=True, 
+            skip_last=True
+        )
         
         # For the single batch:
         # S values (v_t^T.U):
         # v_t = [1, 0.3, 0.09]
         # [1,0.3,0.09] * [1,4,7] = 1*1 + 0.3*4 + 0.09*7 = 2.83
         # [1,0.3,0.09] * [2,5,8] = 1*2 + 0.3*5 + 0.09*8 = 4.22
-        # [1,0.3,0.09] * [3,6,9] = 1*3 s
+        # [1,0.3,0.09] * [3,6,9] = 1*3 + 0.3*6 + 0.09*9 = 5.61
         expected_S = torch.tensor([[2.83, 4.22, 5.61]], dtype=torch.float64)
         expected_T = torch.tensor([[1.87, 6.04, 10.21]], dtype=torch.float64)
         
@@ -387,7 +428,15 @@ class TestBatchComputeBoundaries(unittest.TestCase):
 
     def test_3x3_growing(self):
         """Test 3x3 case with both skip_first and skip_last=False (growing)"""
-        S, T = batch_compute_boundaries(self.U_3x3, self.v_s_3x3, self.v_t_3x3, skip_first=False, skip_last=False)
+        S, T = batch_compute_boundaries(
+            self.U_3x3, 
+            self.S_buf_3x3, 
+            self.T_buf_3x3, 
+            self.v_s_3x3, 
+            self.v_t_3x3, 
+            skip_first=False, 
+            skip_last=False
+        )
         
         # For the single batch:
         # S values (v_t^T.U):
@@ -426,7 +475,15 @@ class TestBatchComputeBoundaries(unittest.TestCase):
 
     def test_3x3_staying_same(self):
         """Test 3x3 case with skip_first=True and skip_last=False (staying same size)"""
-        S, T = batch_compute_boundaries(self.U_3x3, self.v_s_3x3, self.v_t_3x3, skip_first=True, skip_last=False)
+        S, T = batch_compute_boundaries(
+            self.U_3x3, 
+            self.S_buf_3x3, 
+            self.T_buf_3x3, 
+            self.v_s_3x3, 
+            self.v_t_3x3, 
+            skip_first=True, 
+            skip_last=False
+        )
         
         # For the single batch:
         # S values (v_t^T.U):
@@ -455,7 +512,15 @@ class TestBatchComputeBoundaries(unittest.TestCase):
 
     def test_4x4_shrinking(self):
         """Test 4x4 case with both skip_first and skip_last=True (shrinking)"""
-        S, T = batch_compute_boundaries(self.U_4x4, self.v_s_4x4, self.v_t_4x4, skip_first=True, skip_last=True)
+        S, T = batch_compute_boundaries(
+            self.U_4x4, 
+            self.S_buf_4x4, 
+            self.T_buf_4x4, 
+            self.v_s_4x4, 
+            self.v_t_4x4, 
+            skip_first=True, 
+            skip_last=True
+        )
         
         # For the first batch:
         # S values (v_t^T.U):s1,15] = 1*3 + 0.25*7 + 0.0625*11 + 0.015625*15 = 5.203125
@@ -494,7 +559,15 @@ class TestBatchComputeBoundaries(unittest.TestCase):
 
     def test_4x4_growing(self):
         """Test 4x4 case with both skip_first and skip_last=False (growing)"""
-        S, T = batch_compute_boundaries(self.U_4x4, self.v_s_4x4, self.v_t_4x4, skip_first=False, skip_last=False)
+        S, T = batch_compute_boundaries(
+            self.U_4x4, 
+            self.S_buf_4x4, 
+            self.T_buf_4x4, 
+            self.v_s_4x4, 
+            self.v_t_4x4, 
+            skip_first=False, 
+            skip_last=False
+        )
         
         # For the first batch:
         # S values (v_t^T.U):

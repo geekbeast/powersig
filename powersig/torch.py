@@ -128,6 +128,8 @@ def build_stencil(
 # @torch.compile()
 def batch_compute_boundaries(
     U: torch.Tensor,
+    S_buf: torch.Tensor,
+    T_buf: torch.Tensor,
     v_s: torch.Tensor,
     v_t: torch.Tensor,
     skip_first: bool = False,
@@ -138,6 +140,8 @@ def batch_compute_boundaries(
 
     Args:
         U: Tensor of shape (batch_size, n, n) containing the power series coefficients
+        S_buf: Pre-allocated buffer for S of shape (max_batch_size, n)
+        T_buf: Pre-allocated buffer for T of shape (max_batch_size, n)
         v_s: Vandermonde vector for s direction
         v_t: Vandermonde vector for t direction
         skip_first: Whether to skip propagating the rightmost boundary of the first tile in the diagonal
@@ -148,8 +152,10 @@ def batch_compute_boundaries(
     if skip_first and skip_last:
         # Shrinking
         next_dlen = U.shape[0] - 1
-        T = torch.empty((next_dlen, U.shape[1]), dtype=U.dtype, device=U.device)
-        S = torch.empty((next_dlen, U.shape[1]), dtype=U.dtype, device=U.device)
+        # T = torch.empty((next_dlen, U.shape[1]), dtype=U.dtype, device=U.device)
+        # S = torch.empty((next_dlen, U.shape[1]), dtype=U.dtype, device=U.device)
+        T = T_buf[:next_dlen, :]
+        S = S_buf[:next_dlen, :]
         torch.matmul(
             U[1:, :, :], v_s, out=T
         )  # Skip first, don't propagate coefficients right
@@ -160,8 +166,10 @@ def batch_compute_boundaries(
     elif not skip_first and not skip_last:
         # Growing
         next_dlen = U.shape[0] + 1
-        T = torch.empty((next_dlen, U.shape[1]), dtype=U.dtype, device=U.device)
-        S = torch.empty((next_dlen, U.shape[1]), dtype=U.dtype, device=U.device)
+        # T = torch.empty((next_dlen, U.shape[1]), dtype=U.dtype, device=U.device)
+        # S = torch.empty((next_dlen, U.shape[1]), dtype=U.dtype, device=U.device)
+        T = T_buf[:next_dlen, :]
+        S = S_buf[:next_dlen, :]
 
         # Top tile receives initial left boundary, tiles below propagate top boundary
         torch.matmul(U, v_s, out=T[:-1, :])
@@ -176,8 +184,10 @@ def batch_compute_boundaries(
     elif skip_first or skip_last:
         # Staying the same size
         next_dlen = U.shape[0]
-        T = torch.empty((next_dlen, U.shape[1]), dtype=U.dtype, device=U.device)
-        S = torch.empty((next_dlen, U.shape[1]), dtype=U.dtype, device=U.device)
+        # T = torch.empty((next_dlen, U.shape[1]), dtype=U.dtype, device=U.device)
+        # S = torch.empty((next_dlen, U.shape[1]), dtype=U.dtype, device=U.device)
+        T = T_buf[:next_dlen, :]
+        S = S_buf[:next_dlen, :]
 
         if skip_first:
             # Top tile, not propagating top boundary, but bottom tile receives initial bottom boundary
@@ -213,9 +223,13 @@ def batch_compute_gram_entry(
     u_buf = torch.empty(
         [longest_diagonal, stencil.shape[0], stencil.shape[1]], dtype=dX_i.dtype, device=dX_i.device
     )
-    S = torch.zeros([1, order], dtype=dX_i.dtype, device=dX_i.device)
-    T = torch.zeros([1, order], dtype=dX_i.dtype, device=dX_i.device)
+    # S = torch.zeros([1, order], dtype=dX_i.dtype, device=dX_i.device)
+    # T = torch.zeros([1, order], dtype=dX_i.dtype, device=dX_i.device)
+    S_buf = torch.zeros([longest_diagonal, order], dtype=dX_i.dtype, device=dX_i.device)
+    T_buf = torch.zeros([longest_diagonal, order], dtype=dX_i.dtype, device=dX_i.device)
     u = u_buf[:1,:,:]
+    S = S_buf[:1,:]
+    T = T_buf[:1,:]
     S[0, 0] = 1
     T[0, 0] = 1
 
@@ -245,10 +259,10 @@ def batch_compute_gram_entry(
 
         skip_first = (s_start + 1) >= dX_i.shape[0]
         skip_last = (t_start + dlen) >= dY_j.shape[0]
-        old_S, old_T = S, T
+        # old_S, old_T = S, T
         S, T = batch_compute_boundaries(
-            u, v_s, v_t, skip_first=skip_first, skip_last=skip_last
+            u, S_buf, T_buf, v_s, v_t, skip_first=skip_first, skip_last=skip_last
         )
-        del old_S, old_T
+        # del old_S, old_T
 
     return torch.matmul(torch.matmul(v_t, u), v_s).item()
