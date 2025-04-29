@@ -233,11 +233,11 @@ def batch_compute_gram_entry(
         del prev_u
 
         skip_first = (s_start + 1) >= dX_i.shape[0]
-        skip_last = (t_start + dlen + 1) >= dY_j.shape[0]
+        skip_last = (t_start + dlen) >= dY_j.shape[0]
         old_S, old_T = S, T
         S, T = batch_compute_boundaries(
             u, v_s, v_t, skip_first=skip_first, skip_last=skip_last
         )
         del old_S, old_T
 
-    return torch.mm(v_t, torch.mm(u, v_s)).item()
+    return torch.matmul(torch.matmul(v_t,u),v_s).item()

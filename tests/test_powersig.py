@@ -662,6 +662,13 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         print(f"KSig truncated signature result:\n{ksig_trunc_result}")
         print(f"PowerSig result:\n{powersig_results}")
         
+        # Convert numpy arrays to PyTorch tensors if needed
+        if not isinstance(ksig_pde_result, torch.Tensor):
+            ksig_pde_result = torch.tensor(ksig_pde_result, dtype=torch.float64)
+        
+        if not isinstance(ksig_trunc_result, torch.Tensor):
+            ksig_trunc_result = torch.tensor(ksig_trunc_result, dtype=torch.float64)
+        
         # Check that results are close to each other
         self.assertTrue(torch.allclose(sig_kernel_result, ksig_pde_result, rtol=1e-2), 
                         f"SigKernel and KSig PDE results differ significantly\n{sig_kernel_result}\n{ksig_pde_result}")
@@ -673,8 +680,15 @@ class TestSignatureKernelConsistency(unittest.TestCase):
 
 if __name__ == '__main__':
     # To run all tests
-    # unittest.main()
+    unittest.main()
     
-    # To run only TestSignatureKernelConsistency
-    suite = unittest.TestLoader().loadTestsFromTestCase(TestSignatureKernelConsistency)
-    unittest.TextTestRunner().run(suite)
+    # To run only TestBuildStencil
+    # suite = unittest.TestLoader().loadTestsFromTestCase(TestBuildStencil)
+    # suite = unittest.TestLoader().loadTestsFromTestCase(TestBatchComputeBoundaries)
+    # suite = unittest.TestLoader().loadTestsFromTestCase(TestBatchADMForDiagonal)
+    # suite = unittest.TestLoader().loadTestsFromTestCase(TestSignatureKernelConsistency)
+    # unittest.TextTestRunner().run(suite)
+    
+    # To run a specific test method
+    # suite = unittest.TestLoader().loadTestsFromName('TestBatchComputeBoundaries.test_2x2_values')
+    # unittest.TextTestRunner().run(suite)
