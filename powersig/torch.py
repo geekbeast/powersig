@@ -64,7 +64,7 @@ def multiply_diagonal(
     # In-place multiplication: diagonal * coefficient * vandermonde_slice
     diagonal_view.mul_(coefficients * vandermonde_slice)
 
-
+@torch.compile()
 def batch_ADM_for_diagonal(
     rho: torch.Tensor, U_buf: torch.Tensor, S: torch.Tensor, T: torch.Tensor, stencil: torch.Tensor
 ) -> torch.Tensor:
@@ -90,7 +90,30 @@ def batch_ADM_for_diagonal(
 
     # Iterate over all diagonals from -(n-1) (bottom-left diagonal) to (n-1) (top-right diagonal)
     for k in range(-(n - 1), n):
-        multiply_diagonal(U, k, S, T, vandermonde_full)
+        # multiply_diagonal(U, k, S, T, vandermonde_full)
+        
+        # Calculate the length of the diagonal
+        diag_length = n - abs(k)
+
+        # Get the view of the diagonal for all matrices in the batch
+        diagonal_view = torch.diagonal(U, offset=k, dim1=1, dim2=2)
+
+        # Take the appropriate slice of the full Vandermonde matrix
+        vandermonde_slice = vandermonde_full[:, :diag_length]
+
+        # Get the coefficient and reshape for broadcasting
+        if k > 0:
+            # Use S for upper diagonals (k > 0)
+            # Map k to index in S (1 to n-1)
+            coefficients = S[:, k].view(batch_size, 1)
+        else:
+            # Use T for main and lower diagonals (k <= 0)
+            # Map k to index in T (0 to n-1)
+            coefficients = T[:, -k].view(batch_size, 1)
+
+        # In-place multiplication: diagonal * coefficient * vandermonde_slice
+        diagonal_view.mul_(coefficients) 
+        diagonal_view.mul_(vandermonde_slice)
 
     return U
 
@@ -104,7 +127,7 @@ def compute_vandermonde_vectors(
     v_t = dt**powers
     return v_s, v_t
 
-
+@torch.compile()
 def build_stencil(
     order: int = 32, device: torch.device = None, dtype: torch.dtype = torch.float64
 ) -> torch.Tensor:
@@ -125,7 +148,7 @@ def build_stencil(
     return stencil
 
 
-# @torch.compile()
+@torch.compile()
 def batch_compute_boundaries(
     U: torch.Tensor,
     S_buf: torch.Tensor,
