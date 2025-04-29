@@ -3,6 +3,8 @@ import os
 import time
 
 import cupy as cp
+import jax
+import jax.numpy as jnp
 from contextlib import contextmanager
 from operator import lshift
 
@@ -14,20 +16,31 @@ from mpmath.libmp.libintmath import powers
 
 from benchmarks.configuration import (
     BENCHMARKS_RESULTS_DIR,
+    KSIG_BACKEND,
+    KSIG_PDE_BACKEND,
+    POLYNOMIAL_ORDER,
+    POLYSIG_BACKEND,
+    POLYSIG_MAX_LENGTH,
+    POWERSIG_BACKEND,
+    SIGKERNEL_BACKEND,
     SIGKERNEL_RESULTS,
     POWERSIG_RESULTS,
     KSIG_RESULTS,
     KSIG_PDE_RESULTS,
+    POLYSIG_RESULTS,
+    polysig_sk,
     signature_kernel, CPU_MEMORY, SIG_KERNEL_MAX_LENGTH, dyadic_order, \
     ksig_pde_kernel, ORDER, SIGNATURE_KERNEL, DURATION, CSV_FIELDS, POWERSIG_MAX_LENGTH, KSIG_MAX_LENGTH, MAX_LENGTH, \
-    PYTORCH_MEMORY, CUPY_MEMORY, ksig_kernel, NUM_PATHS, RUN_ID)
+    GPU_MEMORY, CUPY_MEMORY, ksig_kernel, NUM_PATHS, RUN_ID)
 from benchmarks.util import generate_brownian_motion, TrackingMemoryPool
 from powersig.matrixsig import build_scaling_for_integration, tensor_compute_gram_entry, centered_compute_gram_entry
+from powersig.torch import batch_compute_gram_entry, build_stencil, compute_vandermonde_vectors
 from powersig.util.series import torch_compute_derivative_batch
 from tests.utils import setup_torch
 
 tracking_pool = TrackingMemoryPool()
-tcge = torch.compile(tensor_compute_gram_entry)
+# tcge = torch.compile(tensor_compute_gram_entry)
+tcge = torch.compile(batch_compute_gram_entry)
 
 @contextmanager
 def track_peak_memory(backend, stats):
@@ -46,6 +59,8 @@ def track_peak_memory(backend, stats):
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
         torch.cuda.synchronize()
+    
+    jax_cuda_avaiable = any(device.platform == 'gpu' for device in jax.devices())
 
     start = time.time()
 
@@ -60,16 +75,26 @@ def track_peak_memory(backend, stats):
         stats[CPU_MEMORY] = peak_cpu_mem
         print(f"Peak CPU memory usage: {peak_cpu_mem:.1f} MB")
         
-        if cp.is_available():
+        if  cp.is_available():
             peak_cupy_mem = tracking_pool.peak_usage / (1024 * 1024)  # MB
             stats[CUPY_MEMORY] = peak_cupy_mem
             print(f"Peak cupy memory usage: {peak_cupy_mem:.1f} MB")
 
-        if torch.cuda.is_available():
+        if torch.cuda.is_available() and backend != POLYSIG_BACKEND:
             torch.cuda.synchronize()
             peak_pytorch_memory = torch.cuda.max_memory_allocated() / (1024 ** 2)  # Convert to MB
-            stats[PYTORCH_MEMORY] = peak_pytorch_memory
+            stats[GPU_MEMORY] = peak_pytorch_memory
             print(f"Peak pytorch memory usage: {peak_pytorch_memory:.2f} MB")
+        
+        # TODO: This is a hack to get the peak memory usage for PolySig, the problem is we have to reset device memory before each run of the kernel
+        # and that means we have to rewarm the compilation cache to be fair.
+        if jax_cuda_avaiable and backend == POLYSIG_BACKEND:
+            peak_jax_memory = 0
+            for device in jax.devices():
+                if device.platform == 'gpu':
+                    peak_jax_memory += device.memory_stats()['peak_bytes_in_use'] / (1024 ** 2)  # Convert to MB
+            stats[GPU_MEMORY] = peak_jax_memory
+            print(f"Peak jax memory usage: {peak_jax_memory:.2f} MB")
 
 
 def benchmark_sigkernel_on_length(X: torch.Tensor) -> dict[str, float]:
@@ -78,7 +103,7 @@ def benchmark_sigkernel_on_length(X: torch.Tensor) -> dict[str, float]:
     print(f"Time series length: {X.shape[1]}")
     print(f"Dyadic Order: {dyadic_order}")
 
-    with track_peak_memory("SigKernel", stats):
+    with track_peak_memory(SIGKERNEL_BACKEND, stats):
         sk = signature_kernel.compute_Gram(X, X)
 
         if sk.shape[0] == 1 and sk.shape[1] == 1:
@@ -93,7 +118,7 @@ def benchmark_ksig_pde_on_length(X: torch.Tensor) -> dict[str, float]:
 
     print(f"Dyadic Order: {dyadic_order}")
 
-    with track_peak_memory("KSigPDESignatureKernel", stats):
+    with track_peak_memory(KSIG_PDE_BACKEND, stats):
         result = ksig_pde_kernel(X, X)
         if result.shape[0] == 1 and result.shape[1] == 1:
             stats[SIGNATURE_KERNEL] = result.item()
@@ -106,7 +131,7 @@ def benchmark_ksig_on_length(X: torch.Tensor) -> dict[str, float]:
 
     print(f"Dyadic Order: {dyadic_order}")
 
-    with track_peak_memory("KSigSignatureKernel", stats):
+    with track_peak_memory(KSIG_BACKEND, stats):
         result = ksig_kernel(X, X)
         if result.shape[0] == 1 and result.shape[1] == 1:
             stats[SIGNATURE_KERNEL] = result.item()
@@ -115,20 +140,38 @@ def benchmark_ksig_on_length(X: torch.Tensor) -> dict[str, float]:
     return stats
 
 def benchmark_powersig_on_length(X: torch.Tensor, scales: torch.Tensor) -> dict[str, float]:
-    stats = {"length": X.shape[1], "order": ORDER}
+    stats = {"length": X.shape[1], "order": POLYNOMIAL_ORDER}
 
-    print(f"Order: {ORDER}")
-
+    print(f"Order: {POLYNOMIAL_ORDER}")
+    dX_i = torch_compute_derivative_batch(X).squeeze()
+    dX_i_clone = torch.clone(dX_i)
+    ds = 1 / dX_i.shape[0]
+    dt = 1 / dX_i.shape[0]
+    v_s, v_t = compute_vandermonde_vectors(ds, dt, POLYNOMIAL_ORDER, X.dtype, X.device)
     """Context manager to track peak CPU memory usage"""
-    with track_peak_memory("PowerSig", stats):
-        dX_i = torch_compute_derivative_batch(X).squeeze()
-        result = tcge(dX_i, torch.clone(dX_i), scales, ORDER)
+    with track_peak_memory(POWERSIG_BACKEND, stats):
+        result = tcge(dX_i, dX_i_clone, scales, v_s, v_t, POLYNOMIAL_ORDER)
         stats[SIGNATURE_KERNEL] = result
 
         print(f"PowerSig computation of gram Matrix: \n {result}")
 
     return stats
 
+def benchmark_polysig_on_length(X: torch.Tensor) -> dict[str, float]:
+    stats = {"length": X.shape[1], "order": POLYNOMIAL_ORDER}
+
+    print(f"Order: {POLYNOMIAL_ORDER}")
+
+    # Convert PyTorch tensor to JAX array outside of tracking loop
+    X_jax = jnp.array(X.cpu().numpy())
+    
+    with track_peak_memory(POLYSIG_BACKEND, stats):
+        result = polysig_sk.kernel_matrix(X_jax, X_jax)    
+        if result.shape[0] == 1 and result.shape[1] == 1:
+            stats[SIGNATURE_KERNEL] = float(result[0, 0])
+        print(f"PolySig computation of gram Matrix: \n {result}")
+
+    return stats
 
 
 if __name__== '__main__':
@@ -136,22 +179,25 @@ if __name__== '__main__':
 
     # Setup new tracking pool allocator for cp
     cp.cuda.set_allocator(tracking_pool.malloc)
-
+    
     sk_filename = os.path.join(BENCHMARKS_RESULTS_DIR, SIGKERNEL_RESULTS)
     ps_filename = os.path.join(BENCHMARKS_RESULTS_DIR, POWERSIG_RESULTS)
+    polysig_filename = os.path.join(BENCHMARKS_RESULTS_DIR, POLYSIG_RESULTS)
     ks_filename = os.path.join(BENCHMARKS_RESULTS_DIR, KSIG_RESULTS)
     kspde_filename = os.path.join(BENCHMARKS_RESULTS_DIR, KSIG_PDE_RESULTS)
 
     sk_file_exists = os.path.isfile(sk_filename)
     ps_file_exists = os.path.isfile(ps_filename)
+    polysig_file_exists = os.path.isfile(polysig_filename)
     ks_file_exists = os.path.isfile(ks_filename)
     kspde_file_exists = os.path.isfile(kspde_filename)
 
-    with open(sk_filename, 'a', newline='') as skf, open(ps_filename, 'a', newline='') as psf, open(kspde_filename, 'a', newline='') as ksfpde, open(ks_filename, 'a', newline='') as ksf:
+    with open(sk_filename, 'a', newline='') as skf, open(ps_filename, 'a', newline='') as psf, open(kspde_filename, 'a', newline='') as ksfpde, open(ks_filename, 'a', newline='') as ksf, open(polysig_filename, 'a', newline='') as polysig:
         writer_skf = csv.DictWriter(skf, fieldnames=CSV_FIELDS)
         writer_psf = csv.DictWriter(psf, fieldnames=CSV_FIELDS)
         writer_ksf_pde = csv.DictWriter(ksfpde, fieldnames=CSV_FIELDS)
         writer_ksf = csv.DictWriter(ksf, fieldnames=CSV_FIELDS)
+        writer_polysig = csv.DictWriter(polysig, fieldnames=CSV_FIELDS)
 
         if not sk_file_exists:
             writer_skf.writeheader()
@@ -165,8 +211,12 @@ if __name__== '__main__':
         if not ks_file_exists:
             writer_ksf.writeheader()
 
+        if not polysig_file_exists:
+            writer_polysig.writeheader()
+
         length = 2
-        scales = build_scaling_for_integration(ORDER, device=torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'), dtype=torch.float64)
+        # scales = build_scaling_for_integration(POLYNOMIAL_ORDER, device=torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'), dtype=torch.float64)
+        scales = build_stencil(POLYNOMIAL_ORDER, device=torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'), dtype=torch.float64)
         while length <= MAX_LENGTH:
             X, _ = generate_brownian_motion(length,n_paths=NUM_PATHS, dim=2)
             if X.shape[1] < 4:
@@ -175,6 +225,15 @@ if __name__== '__main__':
 
             print(f"Time series shape: {X.shape}")
             for run_id in range(X.shape[0]):
+                if length <= POLYSIG_MAX_LENGTH:
+                    try:
+                        stats = benchmark_polysig_on_length(X[run_id:run_id+1])
+                        stats[RUN_ID] = run_id
+                        writer_polysig.writerow(stats)
+                        polysig.flush()
+                    except OutOfMemoryError as ex:
+                        print(f"PolySig ran out of memory for time series of length {X.shape[1]}: {ex}")
+
                 if length <= SIG_KERNEL_MAX_LENGTH:
                     try:
                         stats = benchmark_sigkernel_on_length(X[run_id:run_id+1])

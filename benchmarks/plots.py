@@ -6,7 +6,7 @@ from benchmarks.configuration import (
     KSIG_PDE_RESULTS,
     SIGNATURE_KERNEL,
     LENGTH,
-    PYTORCH_MEMORY,
+    GPU_MEMORY,
     CUPY_MEMORY,
     DURATION
 )
@@ -128,7 +128,7 @@ def plot_memory_usage(lengths, data):
     }).reset_index()
     
     powersig_df = data[POWERSIG_RESULTS].groupby(LENGTH).agg({
-        PYTORCH_MEMORY: ['mean', 'std']
+        GPU_MEMORY: ['mean', 'std']
     }).reset_index()
     
     # Plot means with error bars
@@ -148,8 +148,8 @@ def plot_memory_usage(lengths, data):
     
     plt.errorbar(
         powersig_df[LENGTH], 
-        powersig_df[PYTORCH_MEMORY]['mean'],
-        yerr=powersig_df[PYTORCH_MEMORY]['std'],
+        powersig_df[GPU_MEMORY]['mean'],
+        yerr=powersig_df[GPU_MEMORY]['std'],
         fmt='r-o', label='PowerSig (PyTorch)', capsize=5
     )
     
@@ -229,13 +229,13 @@ def plot_memory_and_duration(lengths, data):
     }).reset_index()
     
     powersig_df = data[POWERSIG_RESULTS].groupby(LENGTH).agg({
-        PYTORCH_MEMORY: ['mean']
+        GPU_MEMORY: ['mean']
     }).reset_index()
     
     # Memory plot
     ax1.plot(ksig_df[LENGTH], ksig_df[CUPY_MEMORY]['mean'], 'g-o', label='KSig (CuPy)')
     ax1.plot(ksig_pde_df[LENGTH], ksig_pde_df[CUPY_MEMORY]['mean'], 'b-o', label='KSig PDE (CuPy)')
-    ax1.plot(powersig_df[LENGTH], powersig_df[PYTORCH_MEMORY]['mean'], 'r-o', label='PowerSig (PyTorch)')
+    ax1.plot(powersig_df[LENGTH], powersig_df[GPU_MEMORY]['mean'], 'r-o', label='PowerSig (PyTorch)')
     
     ax1.set_xscale('log', base=2)
     ax1.set_yscale('log')

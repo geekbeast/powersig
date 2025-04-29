@@ -1,5 +1,4 @@
 Cython==3.0.11
-tokenizers
 numpy==1.26.4
 scipy
 torch>=2.2.2
@@ -7,14 +6,7 @@ torchvision
 torchaudio
 scikit-learn
 wheel
-matplotlib
 setuptools
-datasets
-transformers
-sentencepiece==0.2.0
-iisignature
-git+https://github.com/crispitagorico/sigkernel.git
-git+https://github.com/geekbeast/KSig.git
 aeon
 numba==0.61.2
 cupy-cuda12x==13.4.1
