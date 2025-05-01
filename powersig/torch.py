@@ -5,8 +5,8 @@ import time
 from concurrent.futures.process import ProcessPoolExecutor
 from math import factorial
 from typing import Optional, Tuple
-import torch._dynamo
 import torch
+import torch._dynamo
 
 from .util.grid import get_diagonal_range
 
@@ -14,9 +14,12 @@ from .util.series import torch_compute_dot_prod_batch
 
 torch._dynamo.config.capture_scalar_outputs = True
 
-@torch.compile()
 def batch_ADM_for_diagonal(
-    rho: torch.Tensor, U_buf: torch.Tensor, S: torch.Tensor, T: torch.Tensor, stencil: torch.Tensor
+    rho: torch.Tensor,
+    U_buf: torch.Tensor,
+    S: torch.Tensor,
+    T: torch.Tensor,
+    stencil: torch.Tensor
 ) -> torch.Tensor:
     """
     Use ADM to compute the truncated power series representation for each tile on the diagonal with refinement determined by the shape of stencil.
@@ -28,20 +31,20 @@ def batch_ADM_for_diagonal(
         stencil: Tensor of shape (n, n) containing the initial condition
     """
     # length of current diagonal is batch_size and determined by rho
-    batch_size = rho.shape[0]  
+    batch_size = rho.shape[0]
     n = stencil.shape[0]
-    U = U_buf[:batch_size,:,:]
+    U = U_buf[:batch_size, :, :]
     U[:] = stencil
-    # U = stencil.unsqueeze(0).repeat(batch_size, 1, 1)
-
-    # Create Vandermonde vectors for the longest diagonal (main diagonal) once
-    powers = torch.arange(n, device=rho.device).view(1, -1)
-    vandermonde_full = rho.view(batch_size, 1) ** powers  # shape: (batch_size, n)
+    # rho = rho.view(batch_size,1)
+    rho_powers = rho.view(batch_size,1) ** torch.arange(n, device=rho.device, dtype=rho.dtype)
+    # for exponent in range(n):
+    #     U[:, exponent, exponent+1:] *= S[:, 1:S.shape[1]-exponent] * (rho ** exponent)
+    #     U[:, exponent:, exponent] *= T[:, :T.shape[1]-exponent] * (rho ** exponent)
 
     # Iterate over all diagonals from -(n-1) (bottom-left diagonal) to (n-1) (top-right diagonal)
     for k in range(-(n - 1), n):
         # multiply_diagonal(U, k, S, T, vandermonde_full)
-        
+
         # Calculate the length of the diagonal
         diag_length = n - abs(k)
 
@@ -49,21 +52,22 @@ def batch_ADM_for_diagonal(
         diagonal_view = torch.diagonal(U, offset=k, dim1=1, dim2=2)
 
         # Take the appropriate slice of the full Vandermonde matrix
-        vandermonde_slice = vandermonde_full[:, :diag_length]
+        rho_diag = rho_powers[:, :diag_length]
 
         # Get the coefficient and reshape for broadcasting
         if k > 0:
             # Use S for upper diagonals (k > 0)
             # Map k to index in S (1 to n-1)
-            coefficients = S[:, k].view(batch_size, 1)
+            # coefficients = S[:, k].view(batch_size, 1)
+            diagonal_view.mul_(S[:,k].view(batch_size, 1))
         else:
             # Use T for main and lower diagonals (k <= 0)
             # Map k to index in T (0 to n-1)
-            coefficients = T[:, -k].view(batch_size, 1)
+            # coefficients = T[:, -k].view(batch_size, 1)
+            diagonal_view.mul_(T[:, -k].view(batch_size, 1))
 
         # In-place multiplication: diagonal * coefficient * vandermonde_slice
-        diagonal_view.mul_(coefficients) 
-        diagonal_view.mul_(vandermonde_slice)
+        diagonal_view.mul_(rho_diag)
 
     return U
 
@@ -76,6 +80,7 @@ def compute_vandermonde_vectors(
     v_s = ds**powers
     v_t = dt**powers
     return v_s, v_t
+
 
 @torch.compile()
 def build_stencil(
@@ -182,32 +187,34 @@ def batch_compute_boundaries(
 
     return S, T
 
+
 @torch.compile(mode="max-autotune", fullgraph=True,disable=True)
 def batch_compute_gram_entry(
-    dX_i: torch.Tensor, dY_j: torch.Tensor, scales: Optional[torch.Tensor], order: int = 32
-) -> float:
+    dX_i: torch.Tensor,
+    dY_j: torch.Tensor,
+    scales: Optional[torch.Tensor],
+    order: int = 32,
+) -> torch.Tensor:
     # Preprocessing
     dX_i[:] = dX_i.flip(0)
     longest_diagonal = max(dX_i.shape[0], dY_j.shape[0])
     stencil = build_stencil(order, dX_i.device, dX_i.dtype)
-
     # Initial tile
-    # u = torch.zeros([1, order, order], dtype=dX_i.dtype, device=dX_i.device)
     u_buf = torch.empty(
-        [longest_diagonal, stencil.shape[0], stencil.shape[1]], dtype=dX_i.dtype, device=dX_i.device
+        [longest_diagonal, stencil.shape[0], stencil.shape[1]],
+        dtype=dX_i.dtype,
+        device=dX_i.device,
     )
-    # S = torch.zeros([1, order], dtype=dX_i.dtype, device=dX_i.device)
-    # T = torch.zeros([1, order], dtype=dX_i.dtype, device=dX_i.device)
     S_buf = torch.zeros([longest_diagonal, order], dtype=dX_i.dtype, device=dX_i.device)
     T_buf = torch.zeros([longest_diagonal, order], dtype=dX_i.dtype, device=dX_i.device)
-    u = u_buf[:1,:,:]
-    S = S_buf[:1,:]
-    T = T_buf[:1,:]
+    u = u_buf[:1, :, :]
+    S = S_buf[:1, :]
+    T = T_buf[:1, :]
     S[0, 0] = 1
     T[0, 0] = 1
 
     # Generate the stencil and Vandermonde vectors
-   
+
     ds = 1 / dX_i.shape[0]
     dt = 1 / dY_j.shape[0]
     v_s, v_t = compute_vandermonde_vectors(ds, dt, order, u.dtype, u.device)
@@ -239,4 +246,4 @@ def batch_compute_gram_entry(
         # del old_S, old_T
 
     # return torch.matmul(torch.matmul(v_t, u), v_s).item()
-    return torch.einsum('i,bij,j->', v_t, u, v_s)
+    return torch.einsum("i,bij,j->", v_t, u, v_s)

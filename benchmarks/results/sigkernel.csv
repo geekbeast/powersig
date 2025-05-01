@@ -1,4 +1,4 @@
-length,duration,pytorch_memory,cupy_memory,cpu_memory,order,dyadic_order,signature_kernel
+length,duration,gpu_memory,cupy_memory,cpu_memory,order,dyadic_order,signature_kernel
 3,0.2850019931793213,8.12841796875,0.0,129.0,,0,1.00414405391308
 5,0.0006985664367675781,8.12841796875,0.0,0.0,,0,1.0013888793967323
 9,0.0006017684936523438,8.12890625,0.0,0.0,,0,1.0017342937880793

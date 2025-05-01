@@ -1,9 +1,20 @@
 import csv
 import os
 import time
+import argparse
 
 import cupy as cp
+# Import our JAX configuration first
+import powersig.jax_config
+
+# Configure JAX with optimal settings for benchmarking
+# Using maximum speed optimization
+jax_config = powersig.jax_config.configure_jax()
+
 import jax
+import numpy as np
+
+import powersig
 import jax.numpy as jnp
 from contextlib import contextmanager
 from operator import lshift
@@ -35,6 +46,7 @@ from benchmarks.configuration import (
 from benchmarks.util import generate_brownian_motion, TrackingMemoryPool
 from powersig.matrixsig import build_scaling_for_integration, tensor_compute_gram_entry, centered_compute_gram_entry
 from powersig.torch import batch_compute_gram_entry, build_stencil, compute_vandermonde_vectors
+from powersig.jax import batch_compute_gram_entry
 from powersig.util.series import torch_compute_derivative_batch
 from tests.utils import setup_torch
 
@@ -139,6 +151,24 @@ def benchmark_ksig_on_length(X: torch.Tensor) -> dict[str, float]:
 
     return stats
 
+def benchmark_powersig_on_length_jax(X: torch.Tensor) -> dict[str, float]:
+    stats = {"length": X.shape[1], "order": POLYNOMIAL_ORDER}
+
+    print(f"Order: {POLYNOMIAL_ORDER}")
+    dX_i = torch_compute_derivative_batch(X).squeeze().cpu()
+    dX_i_clone = np.copy(dX_i)
+    # ds = 1 / dX_i.shape[0]
+    # dt = 1 / dX_i.shape[0]
+    # v_s, v_t = compute_vandermonde_vectors(ds, dt, POLYNOMIAL_ORDER, X.dtype, X.device)
+    """Context manager to track peak CPU memory usage"""
+    with track_peak_memory(POWERSIG_BACKEND, stats):
+        result = powersig.jax.batch_compute_gram_entry(dX_i.numpy(), dX_i_clone, None, POLYNOMIAL_ORDER).item()
+        stats[SIGNATURE_KERNEL] = result
+
+        print(f"PowerSig computation of gram Matrix: \n {result}")
+
+    return stats
+
 def benchmark_powersig_on_length(X: torch.Tensor) -> dict[str, float]:
     stats = {"length": X.shape[1], "order": POLYNOMIAL_ORDER}
 
@@ -150,7 +180,7 @@ def benchmark_powersig_on_length(X: torch.Tensor) -> dict[str, float]:
     # v_s, v_t = compute_vandermonde_vectors(ds, dt, POLYNOMIAL_ORDER, X.dtype, X.device)
     """Context manager to track peak CPU memory usage"""
     with track_peak_memory(POWERSIG_BACKEND, stats):
-        result = tcge(dX_i, dX_i_clone, None, POLYNOMIAL_ORDER)
+        result = tcge(dX_i, dX_i_clone, None, POLYNOMIAL_ORDER).item()
         stats[SIGNATURE_KERNEL] = result
 
         print(f"PowerSig computation of gram Matrix: \n {result}")
@@ -166,7 +196,9 @@ def benchmark_polysig_on_length(X: torch.Tensor) -> dict[str, float]:
     X_jax = jnp.array(X.cpu().numpy())
     
     with track_peak_memory(POLYSIG_BACKEND, stats):
-        result = polysig_sk.kernel_matrix(X_jax, X_jax)    
+        result = polysig_sk.kernel_matrix(X_jax, X_jax)
+        assert result.dtype == jnp.float64, "Result dtype is not float64"    
+        print(f"PolySig result dtype: {result.dtype}")
         if result.shape[0] == 1 and result.shape[1] == 1:
             stats[SIGNATURE_KERNEL] = float(result[0, 0])
         print(f"PolySig computation of gram Matrix: \n {result}")
@@ -225,44 +257,44 @@ if __name__== '__main__':
 
             print(f"Time series shape: {X.shape}")
             for run_id in range(X.shape[0]):
-                if length <= SIG_KERNEL_MAX_LENGTH:
-                    try:
-                        stats = benchmark_sigkernel_on_length(X[run_id:run_id+1])
-                        stats[RUN_ID] = run_id
-                        writer_skf.writerow(stats)
-                        skf.flush()
-                    except OutOfMemoryError as ex:
-                        print(f"SigKernel ran out of memory for time series of length {X.shape[1]}: {ex}")
+                # if length <= SIG_KERNEL_MAX_LENGTH:
+                #     try:
+                #         stats = benchmark_sigkernel_on_length(X[run_id:run_id+1])
+                #         stats[RUN_ID] = run_id
+                #         writer_skf.writerow(stats)
+                #         skf.flush()
+                #     except OutOfMemoryError as ex:
+                #         print(f"SigKernel ran out of memory for time series of length {X.shape[1]}: {ex}")
 
-                if length <= KSIG_MAX_LENGTH:
-                    try:
-                        stats = benchmark_ksig_pde_on_length(X[run_id:run_id+1])
-                        stats[RUN_ID] = run_id
-                        writer_ksf_pde.writerow(stats)
-                        ksfpde.flush()
-                    except OutOfMemoryError as ex:
-                        print(f"KSigPDE ran out of memory for time series of length {X.shape[1]}: {ex}")
+                # if length <= KSIG_MAX_LENGTH:
+                #     try:
+                #         stats = benchmark_ksig_pde_on_length(X[run_id:run_id+1])
+                #         stats[RUN_ID] = run_id
+                #         writer_ksf_pde.writerow(stats)
+                #         ksfpde.flush()
+                #     except OutOfMemoryError as ex:
+                #         print(f"KSigPDE ran out of memory for time series of length {X.shape[1]}: {ex}")
 
-                    try:
-                        stats = benchmark_ksig_on_length(X[run_id:run_id+1])
-                        stats[RUN_ID] = run_id
-                        writer_ksf.writerow(stats)
-                        ksfpde.flush()
-                    except OutOfMemoryError as ex:
-                        print(f"KSig ran out of memory for time series of length {X.shape[1]}: {ex}")
+                #     try:
+                #         stats = benchmark_ksig_on_length(X[run_id:run_id+1])
+                #         stats[RUN_ID] = run_id
+                #         writer_ksf.writerow(stats)
+                #         ksfpde.flush()
+                #     except OutOfMemoryError as ex:
+                #         print(f"KSig ran out of memory for time series of length {X.shape[1]}: {ex}")
 
-                if length <= POLYSIG_MAX_LENGTH:
-                    try:
-                        stats = benchmark_polysig_on_length(X[run_id:run_id+1])
-                        stats[RUN_ID] = run_id
-                        writer_polysig.writerow(stats)
-                        polysig.flush()
-                    except OutOfMemoryError as ex:
-                        print(f"PolySig ran out of memory for time series of length {X.shape[1]}: {ex}")
+                # if length <= POLYSIG_MAX_LENGTH:
+                #     try:
+                #         stats = benchmark_polysig_on_length(X[run_id:run_id+1])
+                #         stats[RUN_ID] = run_id
+                #         writer_polysig.writerow(stats)
+                #         polysig.flush()
+                #     except OutOfMemoryError as ex:
+                #         print(f"PolySig ran out of memory for time series of length {X.shape[1]}: {ex}")
 
                 if length <= POWERSIG_MAX_LENGTH:
                     try:
-                        stats = benchmark_powersig_on_length(X.to('cuda:1')[run_id:run_id+1])
+                        stats = benchmark_powersig_on_length_jax(X.to('cuda:1')[run_id:run_id+1])
                         stats[RUN_ID] = run_id
                         writer_psf.writerow(stats)
                         psf.flush()

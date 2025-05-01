@@ -70,6 +70,7 @@ class TestBatchADMForDiagonal(unittest.TestCase):
         ], dtype=torch.float64)  # n x n stencil
         # Pre-allocated buffer for 4x4 case
         self.U_buf_4x4 = torch.empty((3, 4, 4), dtype=torch.float64)
+        
 
     def test_2x2_shape(self):
         """Test that the output shape is correct for 2x2 case"""
