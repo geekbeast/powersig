@@ -14,6 +14,7 @@ from .util.series import torch_compute_dot_prod_batch
 
 torch._dynamo.config.capture_scalar_outputs = True
 
+@torch.compile(mode="max-autotune", fullgraph=True,disable=True)
 def batch_ADM_for_diagonal(
     rho: torch.Tensor,
     U_buf: torch.Tensor,
@@ -72,7 +73,7 @@ def batch_ADM_for_diagonal(
     return U
 
 
-@torch.compile()
+@torch.compile(mode="max-autotune", fullgraph=True,disable=True)
 def compute_vandermonde_vectors(
     ds: float, dt: float, n: int, dtype: torch.dtype, device: torch.device
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -82,7 +83,7 @@ def compute_vandermonde_vectors(
     return v_s, v_t
 
 
-@torch.compile()
+@torch.compile(mode="max-autotune", fullgraph=True,disable=True)
 def build_stencil(
     order: int = 32, device: torch.device = None, dtype: torch.dtype = torch.float64
 ) -> torch.Tensor:
@@ -103,7 +104,7 @@ def build_stencil(
     return stencil
 
 
-@torch.compile()
+@torch.compile(mode="max-autotune", fullgraph=True,disable=True)
 def batch_compute_boundaries(
     U: torch.Tensor,
     S_buf: torch.Tensor,
@@ -158,46 +159,46 @@ def batch_compute_boundaries(
         torch.matmul(v_t, U, out=S[1:, :])
         S[0, 0] = 1
         S[0, 1:] = 0
-
-    elif skip_first or skip_last:
+    elif skip_first and not skip_last:
         # Staying the same size
         next_dlen = U.shape[0]
         # T = torch.empty((next_dlen, U.shape[1]), dtype=U.dtype, device=U.device)
         # S = torch.empty((next_dlen, U.shape[1]), dtype=U.dtype, device=U.device)
         T = T_buf[:next_dlen, :]
         S = S_buf[:next_dlen, :]
-
-        if skip_first:
-            # Top tile, not propagating top boundary, but bottom tile receives initial bottom boundary
-            torch.matmul(U[1:, :, :], v_s, out=T[1:, :])
-            T[0, 0] = 1
-            T[0, 1:] = 0
-        else:
-            # Top boundaries are all propagating
-            torch.matmul(U, v_s, out=T)
-
-        if skip_last:
-            # Bottom tile, not propagating right boundary, but top tile receives initial left boundary
-            torch.matmul(v_t, U[:-1, :, :], out=S[:-1, :])
-            S[-1, 0] = 1
-            S[-1, 1:] = 0
-        else:
-            # Bottom boundaries are all propagating
-            torch.matmul(v_t, U, out=S)
+        # Bottom tile not propagating right boundary, but top tile receives initial left boundary
+        torch.matmul(v_t, U, out=S)
+        torch.matmul(U[1:, :, :], v_s, out=T[:-1, :])
+        T[-1, 0] = 1
+        T[-1, 1:] = 0            # Top boundaries are all propagating
+    else:
+        # Staying the same size
+        next_dlen = U.shape[0]
+        # T = torch.empty((next_dlen, U.shape[1]), dtype=U.dtype, device=U.device)
+        # S = torch.empty((next_dlen, U.shape[1]), dtype=U.dtype, device=U.device)
+        T = T_buf[:next_dlen, :]
+        S = S_buf[:next_dlen, :]
+        # Top tile not propagating top boundary, but bottom tile receives initial bottom boundary
+        torch.matmul(v_t, U[:-1, :, :], out=S[1:, :])
+        S[0, 0] = 1
+        S[0, 1:] = 0
+        torch.matmul(U, v_s, out=T)                
 
     return S, T
 
 
-@torch.compile(mode="max-autotune", fullgraph=True,disable=True)
+bcb = torch.compile(batch_compute_boundaries)
+cdp = torch.compile(torch_compute_dot_prod_batch)
+adm = torch.compile(batch_ADM_for_diagonal)
+
 def batch_compute_gram_entry(
     dX_i: torch.Tensor,
     dY_j: torch.Tensor,
-    scales: Optional[torch.Tensor],
     order: int = 32,
 ) -> torch.Tensor:
     # Preprocessing
     dX_i[:] = dX_i.flip(0)
-    longest_diagonal = max(dX_i.shape[0], dY_j.shape[0])
+    longest_diagonal = min(dX_i.shape[0], dY_j.shape[0])
     stencil = build_stencil(order, dX_i.device, dX_i.dtype)
     # Initial tile
     u_buf = torch.empty(
@@ -228,19 +229,19 @@ def batch_compute_gram_entry(
         dX_L = dX_i.shape[0] - (s_start + 1)
         # print(f"dX_L = {dX_L}")
         # print(f"s_start = {s_start}")
-        rho = torch_compute_dot_prod_batch(
+        rho = cdp(
             dX_i[dX_L : dX_L + dlen].unsqueeze(1),
             dY_j[t_start : (t_start + dlen)].unsqueeze(1),
         )
 
         # prev_u = u
-        u = batch_ADM_for_diagonal(rho, u_buf, S, T, stencil)
+        u = adm(rho, u_buf, S, T, stencil)
         # del prev_u
 
         skip_first = (s_start + 1) >= dX_i.shape[0]
         skip_last = (t_start + dlen) >= dY_j.shape[0]
         # old_S, old_T = S, T
-        S, T = batch_compute_boundaries(
+        S, T = bcb(
             u, S_buf, T_buf, v_s, v_t, skip_first=skip_first, skip_last=skip_last
         )
         # del old_S, old_T

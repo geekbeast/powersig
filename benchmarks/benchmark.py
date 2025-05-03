@@ -6,6 +6,8 @@ import argparse
 import cupy as cp
 # Import our JAX configuration first
 import powersig.jax_config
+from powersig.util.cupy_series import cupy_compute_derivative_batch
+from powersig.util.jax_series import jax_compute_derivative_batch
 
 # Configure JAX with optimal settings for benchmarking
 # Using maximum speed optimization
@@ -45,8 +47,9 @@ from benchmarks.configuration import (
     GPU_MEMORY, CUPY_MEMORY, ksig_kernel, NUM_PATHS, RUN_ID)
 from benchmarks.util import generate_brownian_motion, TrackingMemoryPool
 from powersig.matrixsig import build_scaling_for_integration, tensor_compute_gram_entry, centered_compute_gram_entry
-from powersig.torch import batch_compute_gram_entry, build_stencil, compute_vandermonde_vectors
+from powersig.torch import batch_compute_gram_entry as torch_batch_compute_gram_entry, build_stencil, compute_vandermonde_vectors
 from powersig.jax import batch_compute_gram_entry
+from powersig.cuda import cuda_compute_gram_entry
 from powersig.util.series import torch_compute_derivative_batch
 from tests.utils import setup_torch
 
@@ -151,18 +154,63 @@ def benchmark_ksig_on_length(X: torch.Tensor) -> dict[str, float]:
 
     return stats
 
-def benchmark_powersig_on_length_jax(X: torch.Tensor) -> dict[str, float]:
+def benchmark_powersig_on_length_cp(X: torch.Tensor) -> dict[str, float]:
     stats = {"length": X.shape[1], "order": POLYNOMIAL_ORDER}
 
     print(f"Order: {POLYNOMIAL_ORDER}")
-    dX_i = torch_compute_derivative_batch(X).squeeze().cpu()
-    dX_i_clone = np.copy(dX_i)
+    # Convert PyTorch tensor to NumPy array first
+    X_np = X.cpu().numpy()   
+    # Convert NumPy array to CuPy array
+    X_cp = cp.array(X_np)
+    dX_i = cupy_compute_derivative_batch(X_cp).squeeze()
+    dX_i_clone = cp.copy(dX_i)
     # ds = 1 / dX_i.shape[0]
     # dt = 1 / dX_i.shape[0]
     # v_s, v_t = compute_vandermonde_vectors(ds, dt, POLYNOMIAL_ORDER, X.dtype, X.device)
     """Context manager to track peak CPU memory usage"""
     with track_peak_memory(POWERSIG_BACKEND, stats):
-        result = powersig.jax.batch_compute_gram_entry(dX_i.numpy(), dX_i_clone, None, POLYNOMIAL_ORDER).item()
+        result = powersig.powersig_cupy.batch_compute_gram_entry(dX_i, dX_i_clone, None, POLYNOMIAL_ORDER).item()
+        stats[SIGNATURE_KERNEL] = result
+
+        print(f"PowerSig computation of gram Matrix: \n {result}")
+
+    return stats
+
+def benchmark_powersig_on_length_cuda(X: torch.Tensor) -> dict[str, float]:
+    stats = {"length": X.shape[1], "order": POLYNOMIAL_ORDER}
+
+    print(f"Order: {POLYNOMIAL_ORDER}")
+    # Convert PyTorch tensor to NumPy array first
+    X_np = X.cpu().numpy()   
+    # Convert NumPy array to CuPy array
+    X_cp = cp.array(X_np)
+    dX_i = cupy_compute_derivative_batch(X_cp).squeeze()
+    dX_i_clone = cp.copy(dX_i)
+    # ds = 1 / dX_i.shape[0]
+    # dt = 1 / dX_i.shape[0]
+    # v_s, v_t = compute_vandermonde_vectors(ds, dt, POLYNOMIAL_ORDER, X.dtype, X.device)
+    """Context manager to track peak CPU memory usage"""
+    with track_peak_memory(POWERSIG_BACKEND, stats):
+        result = cuda_compute_gram_entry(dX_i, dX_i_clone, POLYNOMIAL_ORDER).item()
+        stats[SIGNATURE_KERNEL] = result
+
+        print(f"PowerSig computation of gram Matrix: \n {result}")
+
+    return stats
+
+def benchmark_powersig_on_length_jax(X: torch.Tensor) -> dict[str, float]:
+    stats = {"length": X.shape[1], "order": POLYNOMIAL_ORDER}
+
+    print(f"Order: {POLYNOMIAL_ORDER}")
+    X_np = X.cpu().numpy()
+    dX_i = jax_compute_derivative_batch(X_np).squeeze()
+    dX_i_clone = jnp.copy(dX_i)
+    # ds = 1 / dX_i.shape[0]
+    # dt = 1 / dX_i.shape[0]
+    # v_s, v_t = compute_vandermonde_vectors(ds, dt, POLYNOMIAL_ORDER, X.dtype, X.device)
+    """Context manager to track peak CPU memory usage"""
+    with track_peak_memory(POWERSIG_BACKEND, stats):
+        result = powersig.jax.batch_compute_gram_entry(dX_i, dX_i_clone, None, POLYNOMIAL_ORDER).item()
         stats[SIGNATURE_KERNEL] = result
 
         print(f"PowerSig computation of gram Matrix: \n {result}")
@@ -180,7 +228,8 @@ def benchmark_powersig_on_length(X: torch.Tensor) -> dict[str, float]:
     # v_s, v_t = compute_vandermonde_vectors(ds, dt, POLYNOMIAL_ORDER, X.dtype, X.device)
     """Context manager to track peak CPU memory usage"""
     with track_peak_memory(POWERSIG_BACKEND, stats):
-        result = tcge(dX_i, dX_i_clone, None, POLYNOMIAL_ORDER).item()
+        result = torch_batch_compute_gram_entry(dX_i, dX_i_clone, POLYNOMIAL_ORDER).item()
+        # result = tcge(dX_i, dX_i_clone, None, POLYNOMIAL_ORDER).item()
         stats[SIGNATURE_KERNEL] = result
 
         print(f"PowerSig computation of gram Matrix: \n {result}")
@@ -294,7 +343,7 @@ if __name__== '__main__':
 
                 if length <= POWERSIG_MAX_LENGTH:
                     try:
-                        stats = benchmark_powersig_on_length_jax(X.to('cuda:1')[run_id:run_id+1])
+                        stats = benchmark_powersig_on_length_cuda(X.to('cuda:1')[run_id:run_id+1])
                         stats[RUN_ID] = run_id
                         writer_psf.writerow(stats)
                         psf.flush()

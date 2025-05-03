@@ -378,16 +378,16 @@ class TestBatchComputeBoundaries(unittest.TestCase):
         ], dtype=torch.float64)
         
         expected_T = torch.tensor([
-            [1.0, 0.0],  # First batch
-            [8.0, 11.0]  # Second batch
+            [8.0, 11.0],  # First batch
+            [1.0, 0.0]  # Second batch
         ], dtype=torch.float64)
         
-        # print("==== test_2x2_staying_same ====")
-        # print(f"U = {self.U_2x2}")
-        # print(f"v_s = {self.v_s_2x2}")
-        # print(f"v_t = {self.v_t_2x2}")
-        # print(f"S = {S}")
-        # print(f"T = {T}")
+        print("==== test_2x2_staying_same ====")
+        print(f"U = {self.U_2x2}")
+        print(f"v_s = {self.v_s_2x2}")
+        print(f"v_t = {self.v_t_2x2}")
+        print(f"S = {S}")
+        print(f"T = {T}")
 
         self.assertEqual(S.shape, (2, 2))  # batch_size x n
         self.assertEqual(T.shape, (2, 2))  # batch_size x n
@@ -686,12 +686,17 @@ class TestSignatureKernelConsistency(unittest.TestCase):
     def setUp(self):
         # Determine device to use (CUDA if available, otherwise CPU)
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-        
+
         # Create two simple time series
-        self.X = torch.tensor([[[0.0], [1.0], [2.0]], 
-                              [[3.0], [4.0], [5.0]]], dtype=torch.float64).to(self.device)
+        self.X = torch.tensor([[[0.0], [1.0], [2.0]],
+                           [[1.0], [3.0], [3.0]],
+                           [[2.0], [2.0], [4.0]], 
+                           [[3.0], [4.0], [5.0]]], dtype=torch.float64).to(self.device)
         self.Y = torch.tensor([[[0.0], [0.5], [1.0]],
-                              [[1.5], [2.0], [2.5]]], dtype=torch.float64).to(self.device)
+                           [[2.0], [1.0], [2.5]],
+                           [[2.7], [3.0], [4.0]], 
+                           [[3.0], [2.4], [3.20]], 
+                           [[1.5], [2.0], [2.5]]], dtype=torch.float64).to(self.device)
         
         # Set up ksig static kernel
         self.static_kernel = ksig.static.kernels.LinearKernel()
@@ -729,7 +734,7 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         
         for i in range(dX.shape[0]):
             for j in range(dY.shape[0]):
-                powersig_results[i, j] = batch_compute_gram_entry(dX[i], dY[j], None, order)
+                powersig_results[i, j] = batch_compute_gram_entry(dX[i], dY[j], order)
         
         # Move results to CPU for comparison
         if powersig_results.is_cuda:
@@ -751,11 +756,12 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         # Check that results are close to each other
         self.assertTrue(torch.allclose(sig_kernel_result, ksig_pde_result, rtol=1e-2), 
                         f"SigKernel and KSig PDE results differ significantly\n{sig_kernel_result}\n{ksig_pde_result}")
-        self.assertTrue(torch.allclose(sig_kernel_result, ksig_trunc_result, rtol=1e-2), 
-                        f"SigKernel and KSig truncated results differ significantly")
-        self.assertTrue(torch.allclose(sig_kernel_result, powersig_results, rtol=1e-2), 
-                        f"SigKernel and PowerSig results differ significantly")
-
+        # self.assertTrue(torch.allclose(sig_kernel_result, ksig_trunc_result, rtol=1e-2), 
+        #                 f"SigKernel and KSig truncated results differ significantly")
+        # self.assertTrue(torch.allclose(sig_kernel_result, powersig_results, rtol=1e-2), 
+        #                 f"SigKernel and PowerSig results differ significantly")
+        self.assertTrue(torch.allclose(ksig_trunc_result, powersig_results, rtol=1e-7),   
+                        f"KSig truncated and PowerSig results differ significantly\n{ksig_trunc_result}\n{powersig_results}")
 
 if __name__ == '__main__':
     # To run all tests

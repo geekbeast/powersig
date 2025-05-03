@@ -672,9 +672,14 @@ class TestBuildStencil(unittest.TestCase):
 class TestSignatureKernelConsistency(unittest.TestCase):
     def setUp(self):
         # Create two simple time series
-        self.X = jnp.array([[[0.0], [1.0], [2.0]], 
+        self.X = jnp.array([[[0.0], [1.0], [2.0]],
+                           [[1.0], [3.0], [3.0]],
+                           [[2.0], [2.0], [4.0]], 
                            [[3.0], [4.0], [5.0]]], dtype=jnp.float64)
         self.Y = jnp.array([[[0.0], [0.5], [1.0]],
+                           [[2.0], [1.0], [2.5]],
+                           [[2.7], [3.0], [4.0]], 
+                           [[3.0], [2.4], [3.20]], 
                            [[1.5], [2.0], [2.5]]], dtype=jnp.float64)
         
         # Set up ksig static kernel

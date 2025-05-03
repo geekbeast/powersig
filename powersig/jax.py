@@ -201,8 +201,7 @@ def batch_compute_gram_entry(
 
     diagonal_count = dX_i.shape[0] + dY_j.shape[0] - 1
 
-    # Process each diagonal
-    for d in range(diagonal_count):
+    def loop_body(d):
         s_start, t_start, dlen = get_diagonal_range(d, dX_i.shape[0], dY_j.shape[0])
 
         dX_L = dX_i.shape[0] - (s_start + 1)
@@ -222,6 +221,29 @@ def batch_compute_gram_entry(
         S_buf, T_buf = batch_compute_boundaries(
             u_buf[:dlen], S_buf, T_buf, v_s, v_t, skip_first=skip_first, skip_last=skip_last
         )
+
+    jax.lax.fori_loop(0, diagonal_count, lambda d: loop_body)
+    # Process each diagonal
+    # for d in range(diagonal_count):
+        # s_start, t_start, dlen = get_diagonal_range(d, dX_i.shape[0], dY_j.shape[0])
+
+        # dX_L = dX_i.shape[0] - (s_start + 1)
+        
+        # # Compute dot products efficiently
+        # rho = jax_compute_dot_prod_batch(
+        #     dX_i[dX_L : dX_L + dlen].reshape(-1, 1, dX_i.shape[1]),
+        #     dY_j[t_start : (t_start + dlen)].reshape(-1, 1, dY_j.shape[1]),
+        # )
+
+        # # Process with ADM diagonal computation
+        # u_buf = batch_ADM_for_diagonal(rho, u_buf, S_buf, T_buf, stencil)
+
+        # # Compute boundaries with branching optimizations
+        # skip_first = (s_start + 1) >= dX_i.shape[0]
+        # skip_last = (t_start + dlen) >= dY_j.shape[0]
+        # S_buf, T_buf = batch_compute_boundaries(
+        #     u_buf[:dlen], S_buf, T_buf, v_s, v_t, skip_first=skip_first, skip_last=skip_last
+        # )
 
     # Final result is always in the first element since final diagonal length is always 1
     return jnp.einsum('i,bij,j->', v_t, u_buf[:1], v_s) 
