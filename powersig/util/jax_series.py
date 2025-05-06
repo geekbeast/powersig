@@ -1,5 +1,7 @@
+from functools import partial
 from typing import Tuple
 
+import jax
 import jax.numpy as jnp
 from jax import jit
 
@@ -39,3 +41,14 @@ def jax_compute_derivative_batch(X, dt=None) -> jnp.ndarray:
         diff = diff * (X.shape[1] - 1)
 
     return diff 
+
+@jit
+def derivative_vmap_core(X1: jnp.ndarray, X2: jnp.ndarray) -> jnp.ndarray:
+    return X2 - X1
+
+def derivative_vmap(X1: jnp.ndarray,X2: jnp.ndarray) -> jnp.ndarray:
+    return jax.vmap(derivative_vmap_core)(X2,X1)
+
+def jax_compute_derivative_vmap(X: jnp.ndarray) -> jnp.ndarray:
+    X2, X1 = X[:, 1:, :], X[:, :-1, :]
+    return jax.vmap(derivative_vmap)(X1,X2) * (X.shape[1] - 1)

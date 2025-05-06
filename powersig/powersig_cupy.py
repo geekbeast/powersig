@@ -35,13 +35,15 @@ def batch_ADM_for_diagonal(
     # Loop over exponents
     for exponent in range(n):
         # Compute rho^exponent
-        rho_power = cp.power(rho, exponent)
+        # rho_power = cp.power(rho, exponent)
         
         # Update rows using broadcasting
-        U_buf[:batch_size, exponent, exponent+1:] *= S_buf[:batch_size, 1:S_buf.shape[1]-exponent] * rho_power
+        U_buf[:batch_size, exponent, exponent+1:] *= S_buf[:batch_size, 1:S_buf.shape[1]-exponent] * (rho ** exponent)
+        
         
         # Update columns using broadcasting
-        U_buf[:batch_size, exponent:, exponent]*= T_buf[:batch_size, :T_buf.shape[1]-exponent] * rho_power
+        U_buf[:batch_size, exponent:, exponent] *= T_buf[:batch_size, :T_buf.shape[1]-exponent] * (rho ** exponent)
+       
     
     return U_buf
 
@@ -109,36 +111,40 @@ def batch_compute_boundaries(
     batch_size = U.shape[0]
     n = U.shape[1]
         
-    U_vs = cp.matmul(U, v_s)
-    vt_U = cp.matmul(v_t, U)
+    # U_vs = cp.matmul(U, v_s)
+    # vt_U = cp.matmul(v_t, U)
     
     if skip_first and skip_last:
         # Shrinking
-        # cp.matmul(v_t,U[:-1],S_buf[:batch_size-1])
-        # cp.matmul(U[1:],v_s,T_buf[:batch_size-1])
-        S_buf[:batch_size-1] = vt_U[:-1]
-        T_buf[:batch_size-1] = U_vs[1:]
+        next_dlen = batch_size - 1
+        cp.matmul(v_t,U[:-1],out=cp.expand_dims(S_buf[:next_dlen], 1))
+        cp.matmul(U[1:],v_s,out=cp.expand_dims(T_buf[:next_dlen], 2))
+        # S_buf[:batch_size-1] = vt_U[:-1]
+        # T_buf[:batch_size-1] = U_vs[1:]
 
     elif not skip_first and not skip_last:
         # Growing
-        # cp.matmul(v_t,U,S_buf[1:batch_size+1])
-        # cp.matmul(U,v_s,T_buf[:batch_size])
-        S_buf[1:batch_size+1] = vt_U
-        T_buf[:batch_size] = U_vs
-        S_buf[0,0] = 1.0
-        T_buf[batch_size,0] = 1.0
-        S_buf[0,1:] = 0.0
-        T_buf[batch_size,1:] = 0.0
+        next_dlen = batch_size + 1
+        print(f"U.shape = {U.shape}")
+        print(f"U_vs.shape = {(U @ v_s).shape}")
+        print(f"S_buf.shape = {cp.expand_dims(S_buf,1).shape}")
+        cp.matmul(v_t,U,out=cp.expand_dims(S_buf[1:next_dlen], 1))
+        cp.matmul(U,v_s,out=cp.expand_dims(T_buf[:next_dlen-1], 2))
+        # S_buf[1:batch_size+1] = vt_U
+        # T_buf[:batch_size] = U_vs
     elif skip_first and not skip_last:
-        S_buf[:,:] = vt_U
-        T_buf[:-1,:] = U_vs[1:]
-        T_buf[-1,0] = 1.0
-        T_buf[-1,1:] = 0.0
+        next_dlen = batch_size
+        cp.matmul(v_t,U,out=cp.expand_dims(S_buf[:next_dlen], 1))
+        cp.matmul(U[1:],v_s,out=cp.expand_dims(T_buf[:next_dlen-1], 2))
+        # S_buf[:,:] = vt_U
+        # T_buf[:-1,:] = U_vs[1:]
     else:
-        S_buf[1:,:] = vt_U[:-1]
-        T_buf[:, :] = U_vs
-        S_buf[0,0] = 1.0
-        S_buf[0,1:] = 0.0
+        next_dlen = batch_size
+        cp.matmul(v_t,U[:-1],out=cp.expand_dims(S_buf[1:next_dlen], 1))
+        cp.matmul(U,v_s,out=cp.expand_dims(T_buf[:next_dlen], 2))
+        # S_buf[1:,:] = vt_U[:-1]
+        # T_buf[:, :] = U_vs
+        
 
     return S_buf, T_buf
 
@@ -160,21 +166,21 @@ def batch_compute_gram_entry(
     """
     # Preprocessing
     dX_i = cp.flip(dX_i, axis=0)
-    shortest_diagonal = min(dX_i.shape[0], dY_j.shape[0])
+    longest_diagonal = min(dX_i.shape[0], dY_j.shape[0])
     
     # Build stencil once
     stencil = build_stencil(order)
 
     # Initialize buffers once with proper shapes
     u_buf = cp.zeros(
-        [shortest_diagonal, stencil.shape[0], stencil.shape[1]], dtype=dX_i.dtype
+        [longest_diagonal, stencil.shape[0], stencil.shape[1]], dtype=dX_i.dtype
     )
-    S_buf = cp.zeros([shortest_diagonal, order], dtype=dX_i.dtype)
-    T_buf = cp.zeros([shortest_diagonal, order], dtype=dX_i.dtype)
+    S_buf = cp.zeros([longest_diagonal, order], dtype=dX_i.dtype)
+    T_buf = cp.zeros([longest_diagonal, order], dtype=dX_i.dtype)
     
     # Initialize first elements with single operations
-    S_buf[:1, 0] = 1.0
-    T_buf[:1, 0] = 1.0
+    S_buf[:, 0] = 1.0
+    T_buf[:, 0] = 1.0
 
     # Generate Vandermonde vectors with high precision
     ds = 1.0 / dX_i.shape[0]
@@ -198,12 +204,15 @@ def batch_compute_gram_entry(
         # Process with ADM diagonal computation
         u_buf = batch_ADM_for_diagonal(rho, u_buf, S_buf, T_buf, stencil)
 
+        if d == diagonal_count - 1:
+            return cp.einsum('i,ij,j->', v_t, u_buf[0], v_s)
+        
         # Compute boundaries with branching optimizations
         skip_first = (s_start + 1) >= dX_i.shape[0]
         skip_last = (t_start + dlen) >= dY_j.shape[0]
+        
+        
         S_buf, T_buf = batch_compute_boundaries(
             u_buf[:dlen], S_buf, T_buf, v_s, v_t, skip_first=skip_first, skip_last=skip_last
         )
 
-    # Final result is always in the first element since final diagonal length is always 1
-    return cp.einsum('i,bij,j->', v_t, u_buf[:1], v_s) 
