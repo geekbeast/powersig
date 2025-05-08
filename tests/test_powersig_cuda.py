@@ -138,11 +138,11 @@ class TestCudaKernel(unittest.TestCase):
         # Loop over exponents
         for exponent in range(self.order):
                         
-            # Update rows using broadcasting
-            U[:, exponent, exponent+1:] *= S_in[:, 1:S_in.shape[1]-exponent] * rho_powers[:,exponent].reshape(-1,1)
+            # # Update rows using broadcasting
+            # U[:, exponent, exponent+1:] *= S_in[:, exponent+1:] * rho_powers[:,exponent].reshape(-1,1)
             
-            # Update columns using broadcasting
-            U[:, exponent:, exponent] *= T_in[:, :T_in.shape[1]-exponent] * rho_powers[:,exponent].reshape(-1,1)
+            # # Update columns using broadcasting
+            # U[:, exponent:, exponent] *= T_in[:, exponent:] * rho_powers[:,exponent].reshape(-1,1)
             rho_power =  rho_powers[:,exponent].reshape(-1,1)
             s = S_in[:, 1:S_in.shape[1]-exponent]  
             t = T_in[:, :T_in.shape[1]-exponent]
@@ -156,12 +156,19 @@ class TestCudaKernel(unittest.TestCase):
             U_t[:, exponent:, exponent] *= t
             U_t[:, exponent:, exponent] *= rho_power
 
-        expected_S = cp.matmul(self.v_t.reshape(1,-1),U)
-        expected_T = cp.matmul(U, self.v_s.reshape(-1,1))
+        expected_U_t = U_t.sum(axis=1)
+        expected_U_s = U_s.sum(axis=2)
+        expected_S = self.v_t @ U
+        expected_T = U @ self.v_s
         
         # batch_compute_boundaries(U, S_in, T_in, self.v_s, self.v_t, skip_first, skip_last)
         
         # Assertions
+
+        self.assertTrue(cp.allclose(expected_U_s, cp1_s.sum(axis=2)))
+        self.assertTrue(cp.allclose(expected_U_t, cp2_t.sum(axis=1)))
+        self.assertTrue(cp.allclose(expected_U_s, T_out))
+        self.assertTrue(cp.allclose(expected_U_t, S_out))
        
         # Assertions for test_staying_same_skip_last
         # Check that S_in and S_out are equal

@@ -420,8 +420,8 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         #                    [[2.7], [3.0], [4.0]], 
         #                    [[3.0], [2.4], [3.20]], 
         #                    [[1.5], [2.0], [2.5]]], dtype=torch.float64).to(self.device)
-        self.X = torch.randn(4, 3, 2, dtype=torch.float64).to(self.device)/8
-        self.Y = torch.randn(4, 3, 2, dtype=torch.float64).to(self.device)/8
+        self.X = torch.randn(4, 3, 2, dtype=torch.float64).to(self.device)/2
+        self.Y = torch.randn(4, 3, 2, dtype=torch.float64).to(self.device)/2
         
         # Set up ksig static kernel
         self.static_kernel = ksig.static.kernels.LinearKernel()
@@ -444,7 +444,7 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         ksig_pde_result = ksig_pde_kernel(X_cpu, Y_cpu)
         
         # 3. KSig truncated signature implementation
-        ksig_trunc_kernel = ksig.kernels.SignatureKernel(n_levels=21, order=0, normalize=False, 
+        ksig_trunc_kernel = ksig.kernels.SignatureKernel(n_levels=50, order=0, normalize=False, 
                                                         static_kernel=self.static_kernel)
         ksig_trunc_result = ksig_trunc_kernel(X_cpu, Y_cpu)
         
