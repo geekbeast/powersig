@@ -58,6 +58,15 @@ def compute_vandermonde_vectors(
     v_t = cp.power(dt, powers)
     return v_s, v_t
 
+def build_stencil_s(v_s: cp.ndarray, order: int, dtype=cp.float64) -> cp.ndarray:
+    """Build stencil matrix with optimized implementation."""
+    stencil = build_stencil(order, dtype)
+    return stencil * v_s
+
+def build_stencil_t(v_t: cp.ndarray, order: int, dtype=cp.float64) -> cp.ndarray:
+    """Build stencil matrix with optimized implementation."""
+    stencil = build_stencil(order, dtype)
+    return stencil * v_t.reshape(-1, 1)
 
 def build_stencil(
     order: int = 32, dtype=cp.float64

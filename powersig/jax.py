@@ -19,7 +19,7 @@ from .util.grid import get_diagonal_range
 from .util.jax_series import jax_compute_dot_prod_batch
 
 
-DIAGONAL_CHUNK_SIZE = 16
+DIAGONAL_CHUNK_SIZE = 8
 
 # class PowerSigJax:
 #     def __init__(self, order: int = 32, device: jax.Device = jax.devices()[0], dtype: jnp.dtype = jnp.float64):

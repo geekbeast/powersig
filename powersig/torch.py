@@ -255,8 +255,8 @@ def compute_boundary(
 
     for exponent in range(n):
         rho_power = rho ** exponent
-        t = T[:, :T.shape[1]-exponent]
         s = S[:, 1:S.shape[1]-exponent]  
+        t = T[:, :T.shape[1]-exponent]
         U_s[:, exponent, exponent+1:] *= s
         U_s[:, exponent, exponent+1:] *= rho_power
         U_s[:, exponent:, exponent] *= t

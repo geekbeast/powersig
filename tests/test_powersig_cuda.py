@@ -4,7 +4,7 @@ import cupy as cp
 from numba import cuda
 
 from powersig.cuda import cuda_compute_next_boundary_inplace, MAX_ORDER, cuda_compute_gram_entry
-from powersig.powersig_cupy import batch_ADM_for_diagonal, batch_compute_boundaries, build_stencil, compute_vandermonde_vectors
+from powersig.powersig_cupy import batch_ADM_for_diagonal, batch_compute_boundaries, build_stencil, build_stencil_s, build_stencil_t, compute_vandermonde_vectors
 
 class TestCudaKernel(unittest.TestCase):
     def setUp(self):
@@ -16,9 +16,11 @@ class TestCudaKernel(unittest.TestCase):
         self.S_debug = cp.zeros((3, self.order), dtype=cp.float64)
         self.T_debug = cp.zeros((3, self.order), dtype=cp.float64)
         # Create Vandermonde vectors
-        ds = 0.1
-        dt = 0.1
+        ds = 10
+        dt = 10
         self.v_s, self.v_t = compute_vandermonde_vectors(ds, dt, self.order, cp.float64)
+        self.psi_s = build_stencil_s(self.v_s, self.order, cp.float64)
+        self.psi_t = build_stencil_t(self.v_t, self.order, cp.float64)
         
         # Create dummy rho values
         self.rho = cp.array([0.5, 0.6, 0.7], dtype=cp.float64)
@@ -44,7 +46,8 @@ class TestCudaKernel(unittest.TestCase):
         cuda_compute_next_boundary_inplace[blockspergrid, threadsperblock](
             self.v_s, 
             self.v_t, 
-            self.stencil, 
+            self.psi_s, 
+            self.psi_t, 
             self.rho[:dlen], 
             S_in, 
             T_in, 
@@ -78,7 +81,8 @@ class TestCudaKernel(unittest.TestCase):
         cuda_compute_next_boundary_inplace[blockspergrid, threadsperblock](
             self.v_s, 
             self.v_t, 
-            self.stencil, 
+            self.psi_s, 
+            self.psi_t, 
             self.rho[:dlen], 
             S_in, 
             T_in, 
@@ -102,8 +106,12 @@ class TestCudaKernel(unittest.TestCase):
         T_in = cp.random.random((dlen, self.order), dtype=cp.float64)
         S_out = cp.zeros((dlen, self.order), dtype=cp.float64)  # Same size
         T_out = cp.zeros((dlen, self.order), dtype=cp.float64)  # Same size
-       
-        
+        cp1_s = cp.zeros((dlen, self.order, self.order), dtype=cp.float64)
+        cp2_t = cp.zeros((dlen, self.order, self.order), dtype=cp.float64)
+        U_s = cp.zeros((dlen, self.order, self.order), dtype=cp.float64)
+        U_t = cp.zeros((dlen, self.order, self.order), dtype=cp.float64)
+        U_s[:] = self.psi_s
+        U_t[:] = self.psi_t
         # Run kernel
         threadsperblock = (32, 32)
         blockspergrid = (dlen,)
@@ -111,7 +119,8 @@ class TestCudaKernel(unittest.TestCase):
         cuda_compute_next_boundary_inplace[blockspergrid, threadsperblock](
             self.v_s, 
             self.v_t, 
-            self.stencil, 
+            self.psi_s, 
+            self.psi_t, 
             self.rho[:dlen], 
             S_in, 
             T_in, 
@@ -119,20 +128,47 @@ class TestCudaKernel(unittest.TestCase):
             T_out, 
             skip_first, 
             skip_last,
+            cp1_s,
+            cp2_t,
         )
 
         U = cp.zeros((dlen, self.order, self.order), dtype=cp.float64)
         U = batch_ADM_for_diagonal(self.rho[:dlen], U, S_in, T_in, self.stencil)
-        batch_compute_boundaries(U, S_in, T_in, self.v_s, self.v_t, skip_first, skip_last)
+        rho_powers = self.rho[:dlen].reshape(-1,1) ** cp.arange(self.order)
+        # Loop over exponents
+        for exponent in range(self.order):
+                        
+            # Update rows using broadcasting
+            U[:, exponent, exponent+1:] *= S_in[:, 1:S_in.shape[1]-exponent] * rho_powers[:,exponent].reshape(-1,1)
+            
+            # Update columns using broadcasting
+            U[:, exponent:, exponent] *= T_in[:, :T_in.shape[1]-exponent] * rho_powers[:,exponent].reshape(-1,1)
+            rho_power =  rho_powers[:,exponent].reshape(-1,1)
+            s = S_in[:, 1:S_in.shape[1]-exponent]  
+            t = T_in[:, :T_in.shape[1]-exponent]
+            U_s[:, exponent, exponent+1:] *= s
+            U_s[:, exponent, exponent+1:] *= rho_power
+            U_s[:, exponent:, exponent] *= t
+            U_s[:, exponent:, exponent] *= rho_power
+        
+            U_t[:, exponent, exponent+1:] *= s
+            U_t[:, exponent, exponent+1:] *= rho_power
+            U_t[:, exponent:, exponent] *= t
+            U_t[:, exponent:, exponent] *= rho_power
+
+        expected_S = cp.matmul(self.v_t.reshape(1,-1),U)
+        expected_T = cp.matmul(U, self.v_s.reshape(-1,1))
+        
+        # batch_compute_boundaries(U, S_in, T_in, self.v_s, self.v_t, skip_first, skip_last)
         
         # Assertions
        
         # Assertions for test_staying_same_skip_last
         # Check that S_in and S_out are equal
-        self.assertTrue(cp.allclose(S_in, S_out), "S_in and S_out should be equal")
+        self.assertTrue(cp.allclose(expected_S, S_out), f"expected_S and S_out should be equal.\nexpected_S:\n{expected_S}\nS_out:\n{S_out}")
         
         # Check that T_in and T_out are equal
-        self.assertTrue(cp.allclose(T_in, T_out), "T_in and T_out should be equal")
+        self.assertTrue(cp.allclose(expected_T, T_out), f"expected_T and T_out should be equal.\nexpected_T:\n{expected_T}\nT_out:\n{T_out}")
         
 
     def test_shrinking_diagonal(self):
@@ -155,7 +191,8 @@ class TestCudaKernel(unittest.TestCase):
         cuda_compute_next_boundary_inplace[blockspergrid, threadsperblock](
             self.v_s, 
             self.v_t, 
-            self.stencil, 
+            self.psi_s, 
+            self.psi_t, 
             self.rho[:dlen], 
             S_in, 
             T_in, 
@@ -191,7 +228,8 @@ class TestCudaKernel(unittest.TestCase):
         cuda_compute_next_boundary_inplace[blockspergrid, threadsperblock](
             self.v_s, 
             self.v_t, 
-            self.stencil, 
+            self.psi_s, 
+            self.psi_t, 
             self.rho[:dlen], 
             S_in, 
             T_in, 
@@ -257,4 +295,12 @@ class TestCudaGramEntry(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    unittest.main() 
+    # unittest.main() 
+    suite = unittest.TestSuite()
+    # suite.addTest(TestCudaKernel('test_growing_diagonal'))
+    # suite.addTest(TestCudaKernel('test_staying_same_skip_first'))
+    suite.addTest(TestCudaKernel('test_staying_same_skip_last'))
+    # suite.addTest(TestCudaKernel('test_shrinking_diagonal'))
+    # suite.addTest(TestCudaKernel('test_terminal_case'))
+    # suite.addTest(TestCudaGramEntry('test_cuda_compute_gram_entry'))
+    unittest.TextTestRunner().run(suite)
