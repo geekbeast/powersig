@@ -279,46 +279,53 @@ def batch_compute_boundaries(
     return S_buf, T_buf
 
 
-def compute_boundaries(S_buf: jnp.ndarray, T_buf: jnp.ndarray, S_out_buf: jnp.ndarray, T_out_buf: jnp.ndarray, v_s: jnp.ndarray, v_t: jnp.ndarray, rho_buf: jnp.ndarray):
-    """
-    Compute the boundary tensor power series for a fixed-size chunk.
-    
-    Args:
-        S_buf: Fixed-size chunk from larger preallocated S buffer
-        T_buf: Fixed-size chunk from larger preallocated T buffer
-        S_out_buf: Preallocated output buffer for S
-        T_out_buf: Preallocated output buffer for T
-        v_s: Vandermonde vector for s direction
-        v_t: Vandermonde vector for t direction
-        rho_buf: Buffer containing dot products between the two time series
-        
-    Returns:
-        None - results are stored in-place in S_out_buf and T_out_buf
-    """
-    # Compute the matrix-vector products for boundary propagation
-    # These are the same core operations as in batch_compute_boundaries
-    # but operating on fixed-size chunks
-    U_vs = jnp.matmul(S_buf, v_s)
-    vt_U = jnp.matmul(v_t, T_buf)
-    
-    # Update the output buffers in-place
-    S_out_buf = S_out_buf.at[:].set(vt_U)
-    T_out_buf = T_out_buf.at[:].set(U_vs)
-    
-    return S_out_buf, T_out_buf
-
-# @partial(jit, static_argnums=(2,))
 def compute_gram_entry(dX_i: jnp.ndarray, dY_j: jnp.ndarray, order: int = 32) -> jnp.ndarray:
     """
-    Compute the gram matrix entry using a batched approach.
+    Preprocess the input arrays for diagonal computation.
+    
+    Args:
+        dX_i: Input array of shape (n,)
+        dY_j: Input array of shape (m,)
+        order: Order of the signature
+        
+    Returns:
+        Tuple of preprocessed arrays (dX_i, dY_j)
     """
-    # Preprocessing
+    # Reverse dX_i in place along axis=0
     dX_i = jnp.flip(dX_i, axis=0)
+    
+    # Calculate values we need before padding
+    diagonal_count = dX_i.shape[0] + dY_j.shape[0] - 1
     longest_diagonal = max(dX_i.shape[0], dY_j.shape[0])
+    # Calculate the padding needed to make lengths multiple of DIAGONAL_CHUNK_SIZE
+    dX_pad_length = ((dX_i.shape[0] + DIAGONAL_CHUNK_SIZE - 1) // DIAGONAL_CHUNK_SIZE) * DIAGONAL_CHUNK_SIZE
+    dY_pad_length = ((dY_j.shape[0] + DIAGONAL_CHUNK_SIZE - 1) // DIAGONAL_CHUNK_SIZE) * DIAGONAL_CHUNK_SIZE
     
-    # Round up to the next multiple of DIAGONAL_CHUNK_SIZE
+    # Pad the arrays to be multiples of DIAGONAL_CHUNK_SIZE
+    dX_pad = dX_pad_length - dX_i.shape[0]
+    dY_pad = dY_pad_length - dY_j.shape[0]
+    
+    # Pad with zeros
+    dX_i_padded = jnp.pad(dX_i, (0, dX_pad), mode='constant', constant_values=0)
+    dY_j_padded = jnp.pad(dY_j, (0, dY_pad), mode='constant', constant_values=0)
+
+    return gram_entry_worker(dX_i_padded, dY_j_padded, order)
+    
+def gram_entry_worker(dX_i: jnp.ndarray, dY_j: jnp.ndarray, diagonal_count: int, longest_diagonal: int, order: int = 32) -> jnp.ndarray:
+    """
+    Compute the gram matrix entry using a batched approach.
+    
+    Args:
+        dX_i: First time series derivatives (padded)
+        dY_j: Second time series derivatives (padded)
+        diagonal_count: Total number of diagonals to process
+        longest_diagonal: Length of the longest diagonal
+        order: Order of the polynomial approximation
+        
+    Returns:
+        Gram matrix entry (scalar)
+    """
     padded_length = ((longest_diagonal + DIAGONAL_CHUNK_SIZE - 1) // DIAGONAL_CHUNK_SIZE) * DIAGONAL_CHUNK_SIZE
-    
     # Generate Vandermonde vectors with high precision
     ds = 1.0 / dX_i.shape[0]
     dt = 1.0 / dY_j.shape[0]
@@ -336,8 +343,46 @@ def compute_gram_entry(dX_i: jnp.ndarray, dY_j: jnp.ndarray, order: int = 32) ->
     S_buf = S_buf.at[:, 0].set(1.0)
     T_buf = T_buf.at[:, 0].set(1.0)
 
-    # Process each diagonal
-    diagonal_count = dX_i.shape[0] + dY_j.shape[0] - 1
+    for d in range(diagonal_count):
+        s_start, t_start, dlen = get_diagonal_range(d, dX_i.shape[0], dY_j.shape[0])
+        skip_first = (s_start + 1) >= dX_i.shape[0]
+        skip_last = (t_start + dlen) >= dY_j.shape[0]
+
+        dX_L = dX_i.shape[0] - (s_start + 1)
+
+# @partial(jit, static_argnums=(2,))
+def old_gram_entry_worker(dX_i: jnp.ndarray, dY_j: jnp.ndarray, diagonal_count: int, longest_diagonal: int, order: int = 32) -> jnp.ndarray:
+    """
+    Compute the gram matrix entry using a batched approach.
+    
+    Args:
+        dX_i: First time series derivatives (padded)
+        dY_j: Second time series derivatives (padded)
+        diagonal_count: Total number of diagonals to process
+        longest_diagonal: Length of the longest diagonal
+        order: Order of the polynomial approximation
+        
+    Returns:
+        Gram matrix entry (scalar)
+    """
+    padded_length = ((longest_diagonal + DIAGONAL_CHUNK_SIZE - 1) // DIAGONAL_CHUNK_SIZE) * DIAGONAL_CHUNK_SIZE
+    # Generate Vandermonde vectors with high precision
+    ds = 1.0 / dX_i.shape[0]
+    dt = 1.0 / dY_j.shape[0]
+    v_s, v_t = compute_vandermonde_vectors(ds, dt, order, dX_i.dtype)
+
+    # Create the stencil matrices with Vandermonde scaling
+    psi_s = build_stencil_s(v_s, order, dX_i.dtype)
+    psi_t = build_stencil_t(v_t, order, dY_j.dtype)
+
+    # Initialize buffers with proper shapes
+    S_buf = jnp.zeros([padded_length+1, order], dtype=dX_i.dtype)
+    T_buf = jnp.zeros([padded_length+1, order], dtype=dX_i.dtype)
+
+    # Initialize first elements with 1.0
+    S_buf = S_buf.at[:, 0].set(1.0)
+    T_buf = T_buf.at[:, 0].set(1.0)
+
 
     for d in range(diagonal_count):
         s_start, t_start, dlen = get_diagonal_range(d, dX_i.shape[0], dY_j.shape[0])
@@ -380,18 +425,20 @@ def compute_gram_entry(dX_i: jnp.ndarray, dY_j: jnp.ndarray, order: int = 32) ->
         #     S_buf = S_buf.at[1:dlen].set(S_result[:-1])
         #     T_buf = T_buf.at[:dlen].set(T_result)
 
+        # Why not vmap entire diagonal at once?
         # Calculate number of full chunks and remainder
         num_chunks = (dlen + DIAGONAL_CHUNK_SIZE - 1) // DIAGONAL_CHUNK_SIZE
         total_padded_size = num_chunks * DIAGONAL_CHUNK_SIZE
         
         # Pad the arrays for the diagonal
         dX_padded = jnp.pad(
-            dX_i[dX_L:dX_L+dlen], 
+            jax.lax.dynamic_slice(dX_i, (dX_L, 0), (dlen, dX_i.shape[1])), 
             ((0, total_padded_size - dlen), (0, 0)), 
             mode='constant'
         )
+
         dY_padded = jnp.pad(
-            dY_j[t_start:t_start+dlen], 
+            jax.lax.dynamic_slice(dY_j, (t_start, 0), (dlen, dY_j.shape[1])), 
             ((0, total_padded_size - dlen), (0, 0)), 
             mode='constant'
         )
@@ -405,11 +452,13 @@ def compute_gram_entry(dX_i: jnp.ndarray, dY_j: jnp.ndarray, order: int = 32) ->
         T_batch = jnp.zeros((num_chunks, DIAGONAL_CHUNK_SIZE, order), dtype=T_buf.dtype)
 
         for i in range(num_chunks):
-            S_batch = S_batch.at[i,:DIAGONAL_CHUNK_SIZE,:].set(S_buf[i*DIAGONAL_CHUNK_SIZE:(i+1)*DIAGONAL_CHUNK_SIZE,:])
-            T_batch = T_batch.at[i,:DIAGONAL_CHUNK_SIZE,:].set(T_buf[i*DIAGONAL_CHUNK_SIZE:(i+1)*DIAGONAL_CHUNK_SIZE,:])
+            S_batch = jax.lax.dynamic_slice(S_buf, (0,i*DIAGONAL_CHUNK_SIZE, 0), (num_chunks, DIAGONAL_CHUNK_SIZE, order))
+            T_batch = jax.lax.dynamic_slice(T_buf, (0,i*DIAGONAL_CHUNK_SIZE, 0), (num_chunks, DIAGONAL_CHUNK_SIZE, order))
+            # S_batch = S_batch.at[i,:DIAGONAL_CHUNK_SIZE,:].set(S_buf[i*DIAGONAL_CHUNK_SIZE:(i+1)*DIAGONAL_CHUNK_SIZE,:])
+            # T_batch = T_batch.at[i,:DIAGONAL_CHUNK_SIZE,:].set(T_buf[i*DIAGONAL_CHUNK_SIZE:(i+1)*DIAGONAL_CHUNK_SIZE,:])
 
         # Define a function that processes a single chunk with masking
-        def process_chunk(dX_chunk, dY_chunk, S_batch, T_batch):   
+        def process_chunk(dX_padded, dY_padded, S_batch, T_batch):   
             # Compute dot products for valid entries
             rho = jax_compute_dot_prod_batch(dX_chunk, dY_chunk)
             # Process valid entries with compute_boundary
