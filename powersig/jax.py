@@ -15,11 +15,10 @@ from jax import jit, vmap, lax
 from jax.scipy.linalg import toeplitz
 from functools import partial
 
-from .util.grid import get_diagonal_range
 from .util.jax_series import jax_compute_dot_prod_batch
 
 
-DIAGONAL_CHUNK_SIZE = 8
+DIAGONAL_CHUNK_SIZE = 32
 
 # class PowerSigJax:
 #     def __init__(self, order: int = 32, device: jax.Device = jax.devices()[0], dtype: jnp.dtype = jnp.float64):
@@ -278,18 +277,44 @@ def batch_compute_boundaries(
 
     return S_buf, T_buf
 
+@jit
+def get_diagonal_range(d: int, rows: int, cols: int) -> Tuple[int, int, int]:
+    # d, s_start, t_start are 0 based indexes while rows/cols are shapes.
+    t_start = jnp.where(d<cols, 0, d-cols +1)
+    s_start = jnp.where(d<cols, d, cols - 1)
+    dlen = jnp.minimum(rows - t_start, s_start + 1)
+    # if d < cols:
+    #     # if d < cols, then we haven't hit the right edge of the grid
+    #     t_start = 0
+    #     s_start = d
+    # else:
+    #     # if d >= cols then we have the right edge and wrapped around the corner
+    #     t_start = d - cols + 1  # diag index - cols + 1
+    #     s_start = cols - 1
+    # return s_start, t_start, min(rows - t_start, s_start + 1)
+    return s_start, t_start, dlen
 
+@jit
+def pad_if_needed(arr, target_size, current_size):
+    return jax.lax.cond(
+        current_size == target_size,
+        lambda x: x,  # True branch: return as is
+        lambda x: jnp.pad(x, ((0, target_size - current_size), (0, 0)), mode='constant'),  # False branch: pad
+        arr
+    )
+
+@partial(jit, static_argnums=(2,))
 def compute_gram_entry(dX_i: jnp.ndarray, dY_j: jnp.ndarray, order: int = 32) -> jnp.ndarray:
     """
-    Preprocess the input arrays for diagonal computation.
+    Compute the gram matrix entry using a batched approach.
     
     Args:
-        dX_i: Input array of shape (n,)
-        dY_j: Input array of shape (m,)
-        order: Order of the signature
+        dX_i: First time series derivatives (padded)
+        dY_j: Second time series derivatives (padded)
+        order: Order of the polynomial approximation
         
     Returns:
-        Tuple of preprocessed arrays (dX_i, dY_j)
+        Gram matrix entry (scalar)
     """
     # Reverse dX_i in place along axis=0
     dX_i = jnp.flip(dX_i, axis=0)
@@ -297,35 +322,7 @@ def compute_gram_entry(dX_i: jnp.ndarray, dY_j: jnp.ndarray, order: int = 32) ->
     # Calculate values we need before padding
     diagonal_count = dX_i.shape[0] + dY_j.shape[0] - 1
     longest_diagonal = max(dX_i.shape[0], dY_j.shape[0])
-    # Calculate the padding needed to make lengths multiple of DIAGONAL_CHUNK_SIZE
-    dX_pad_length = ((dX_i.shape[0] + DIAGONAL_CHUNK_SIZE - 1) // DIAGONAL_CHUNK_SIZE) * DIAGONAL_CHUNK_SIZE
-    dY_pad_length = ((dY_j.shape[0] + DIAGONAL_CHUNK_SIZE - 1) // DIAGONAL_CHUNK_SIZE) * DIAGONAL_CHUNK_SIZE
     
-    # Pad the arrays to be multiples of DIAGONAL_CHUNK_SIZE
-    dX_pad = dX_pad_length - dX_i.shape[0]
-    dY_pad = dY_pad_length - dY_j.shape[0]
-    
-    # Pad with zeros
-    dX_i_padded = jnp.pad(dX_i, (0, dX_pad), mode='constant', constant_values=0)
-    dY_j_padded = jnp.pad(dY_j, (0, dY_pad), mode='constant', constant_values=0)
-
-    return gram_entry_worker(dX_i_padded, dY_j_padded, order)
-    
-def gram_entry_worker(dX_i: jnp.ndarray, dY_j: jnp.ndarray, diagonal_count: int, longest_diagonal: int, order: int = 32) -> jnp.ndarray:
-    """
-    Compute the gram matrix entry using a batched approach.
-    
-    Args:
-        dX_i: First time series derivatives (padded)
-        dY_j: Second time series derivatives (padded)
-        diagonal_count: Total number of diagonals to process
-        longest_diagonal: Length of the longest diagonal
-        order: Order of the polynomial approximation
-        
-    Returns:
-        Gram matrix entry (scalar)
-    """
-    padded_length = ((longest_diagonal + DIAGONAL_CHUNK_SIZE - 1) // DIAGONAL_CHUNK_SIZE) * DIAGONAL_CHUNK_SIZE
     # Generate Vandermonde vectors with high precision
     ds = 1.0 / dX_i.shape[0]
     dt = 1.0 / dY_j.shape[0]
@@ -336,61 +333,22 @@ def gram_entry_worker(dX_i: jnp.ndarray, dY_j: jnp.ndarray, diagonal_count: int,
     psi_t = build_stencil_t(v_t, order, dY_j.dtype)
 
     # Initialize buffers with proper shapes
-    S_buf = jnp.zeros([padded_length+1, order], dtype=dX_i.dtype)
-    T_buf = jnp.zeros([padded_length+1, order], dtype=dX_i.dtype)
+    S_buf = jnp.zeros([longest_diagonal+1, order], dtype=dX_i.dtype)
+    T_buf = jnp.zeros([longest_diagonal+1, order], dtype=dX_i.dtype)
 
     # Initialize first elements with 1.0
     S_buf = S_buf.at[:, 0].set(1.0)
     T_buf = T_buf.at[:, 0].set(1.0)
 
-    for d in range(diagonal_count):
-        s_start, t_start, dlen = get_diagonal_range(d, dX_i.shape[0], dY_j.shape[0])
-        skip_first = (s_start + 1) >= dX_i.shape[0]
-        skip_last = (t_start + dlen) >= dY_j.shape[0]
-
+    def compute_diagonal(d, carry):
+        S_buf, T_buf = carry
+        cols = dY_j.shape[0]
+        rows = dX_i.shape[0]
+        # s_start, t_start, dlen = get_diagonal_range(d, dX_i.shape[0], dY_j.shape[0])
+        t_start = jnp.where(d<cols, 0, d-cols +1)
+        s_start = jnp.where(d<cols, d, cols - 1)
+        dlen = jnp.minimum(rows - t_start, s_start + 1)
         dX_L = dX_i.shape[0] - (s_start + 1)
-
-# @partial(jit, static_argnums=(2,))
-def old_gram_entry_worker(dX_i: jnp.ndarray, dY_j: jnp.ndarray, diagonal_count: int, longest_diagonal: int, order: int = 32) -> jnp.ndarray:
-    """
-    Compute the gram matrix entry using a batched approach.
-    
-    Args:
-        dX_i: First time series derivatives (padded)
-        dY_j: Second time series derivatives (padded)
-        diagonal_count: Total number of diagonals to process
-        longest_diagonal: Length of the longest diagonal
-        order: Order of the polynomial approximation
-        
-    Returns:
-        Gram matrix entry (scalar)
-    """
-    padded_length = ((longest_diagonal + DIAGONAL_CHUNK_SIZE - 1) // DIAGONAL_CHUNK_SIZE) * DIAGONAL_CHUNK_SIZE
-    # Generate Vandermonde vectors with high precision
-    ds = 1.0 / dX_i.shape[0]
-    dt = 1.0 / dY_j.shape[0]
-    v_s, v_t = compute_vandermonde_vectors(ds, dt, order, dX_i.dtype)
-
-    # Create the stencil matrices with Vandermonde scaling
-    psi_s = build_stencil_s(v_s, order, dX_i.dtype)
-    psi_t = build_stencil_t(v_t, order, dY_j.dtype)
-
-    # Initialize buffers with proper shapes
-    S_buf = jnp.zeros([padded_length+1, order], dtype=dX_i.dtype)
-    T_buf = jnp.zeros([padded_length+1, order], dtype=dX_i.dtype)
-
-    # Initialize first elements with 1.0
-    S_buf = S_buf.at[:, 0].set(1.0)
-    T_buf = T_buf.at[:, 0].set(1.0)
-
-
-    for d in range(diagonal_count):
-        s_start, t_start, dlen = get_diagonal_range(d, dX_i.shape[0], dY_j.shape[0])
-        skip_first = (s_start + 1) >= dX_i.shape[0]
-        skip_last = (t_start + dlen) >= dY_j.shape[0]
-
-        dX_L = dX_i.shape[0] - (s_start + 1)
-
         # rho = jax_compute_dot_prod_batch(
         #     dX_i[(dX_L):(dX_L + dlen)],
         #     dY_j[(t_start):(t_start + dlen)]
@@ -398,209 +356,54 @@ def old_gram_entry_worker(dX_i: jnp.ndarray, dY_j: jnp.ndarray, diagonal_count: 
 
         # # Update boundaries with the computed values
         # S_result, T_result = compute_boundary(psi_s, psi_t, S_buf[:dlen,:], T_buf[:dlen,:], rho)
-
-        # # print(f"S_result = {S_result}")
-        # # print(f"T_result = {T_result}")
-
-        # if d == diagonal_count - 1:
-        #     # print(f"v_s = {v_s}")
-        #     # print(f"S_buf = {S_buf}")
-        #     # print(f"result = {jnp.matmul(S_result[0], v_s)}")
-        #     return S_result[0] @ v_s
-
-        # if skip_first and skip_last:
-        #     # Shrinking
-        #     S_buf = S_buf.at[:dlen-1].set(S_result[:-1])
-        #     T_buf = T_buf.at[:dlen-1].set(T_result[1:])
-        # elif not skip_first and not skip_last:
-        #     # Growing
-        #     S_buf = S_buf.at[1:dlen+1].set(S_result)
-        #     T_buf = T_buf.at[:dlen].set(T_result)
-        # elif skip_first and not skip_last:
-        #     # Staying the same size
-        #     S_buf = S_buf.at[:dlen].set(S_result)
-        #     T_buf = T_buf.at[:dlen-1].set(T_result[1:])
-        # else:
-        #     # Staying the same size
-        #     S_buf = S_buf.at[1:dlen].set(S_result[:-1])
-        #     T_buf = T_buf.at[:dlen].set(T_result)
-
-        # Why not vmap entire diagonal at once?
-        # Calculate number of full chunks and remainder
-        num_chunks = (dlen + DIAGONAL_CHUNK_SIZE - 1) // DIAGONAL_CHUNK_SIZE
-        total_padded_size = num_chunks * DIAGONAL_CHUNK_SIZE
         
-        # Pad the arrays for the diagonal
-        dX_padded = jnp.pad(
-            jax.lax.dynamic_slice(dX_i, (dX_L, 0), (dlen, dX_i.shape[1])), 
-            ((0, total_padded_size - dlen), (0, 0)), 
-            mode='constant'
-        )
+        # for chunk_index in range(0, d, DIAGONAL_CHUNK_SIZE):
+        def process_chunk(index, carry):
+            chunk_index = index * DIAGONAL_CHUNK_SIZE
+            S_buf, T_buf = carry
+            valid_size = jnp.minimum(DIAGONAL_CHUNK_SIZE, dlen - chunk_index)
+            mask = jnp.arange(DIAGONAL_CHUNK_SIZE) < valid_size
+            x_indices = jnp.arange(dX_L+chunk_index, dX_L+chunk_index + DIAGONAL_CHUNK_SIZE)
+            y_indices = jnp.arange(t_start+chunk_index, t_start+chunk_index + DIAGONAL_CHUNK_SIZE)
 
-        dY_padded = jnp.pad(
-            jax.lax.dynamic_slice(dY_j, (t_start, 0), (dlen, dY_j.shape[1])), 
-            ((0, total_padded_size - dlen), (0, 0)), 
-            mode='constant'
-        )
+            x_indices = jnp.where(mask, x_indices, jnp.zeros_like(x_indices))
+            y_indices = jnp.where(mask, y_indices, jnp.zeros_like(y_indices))
+
+            dX_chunk = jnp.take(dX_i, x_indices, axis=0)
+            dY_chunk = jnp.take(dY_j, y_indices, axis=0)
+
+            # # dX_chunk = jax.lax.cond(
+            # #         valid_size == DIAGONAL_CHUNK_SIZE,
+            #         lambda x: jax.lax.dynamic_slice(x, (dX_L + chunk_index, 0), (valid_size, x.shape[1])),  # True branch: return as is
+            #         lambda x: jnp.pad(jax.lax.dynamic_slice(x, (dX_L + chunk_index, 0), (valid_size, x.shape[1])), ((0, DIAGONAL_CHUNK_SIZE - valid_size), (0, 0)), mode='constant'),  # False branch: pad
+            #         dX_i
+            # )
+
+            # dY_chunk = jax.lax.cond(
+            #         valid_size == DIAGONAL_CHUNK_SIZE,
+            #         lambda x: jax.lax.dynamic_slice(x, (t_start + chunk_index, 0), (DIAGONAL_CHUNK_SIZE, x.shape[1])),  # True branch: return as is
+            #         lambda x: jnp.pad(jax.lax.dynamic_slice(x, (t_start + chunk_index, 0), (valid_size, x.shape[1])), ((0, DIAGONAL_CHUNK_SIZE - valid_size), (0, 0)), mode='constant'),  # False branch: pad
+            #         dY_j
+            # )
+            
+            S_batch = pad_if_needed(jax.lax.dynamic_slice(S_buf, (t_start, 0), (valid_size, order)), valid_size, valid_size)
+            T_batch = pad_if_needed(jax.lax.dynamic_slice(T_buf, (t_start, 0), (valid_size, order)), valid_size, valid_size)
         
-        # Reshape for batch processing
-        dX_batched = dX_padded.reshape(num_chunks, DIAGONAL_CHUNK_SIZE, -1)
-        dY_batched = dY_padded.reshape(num_chunks, DIAGONAL_CHUNK_SIZE, -1)
-
-        # Load from S_buf and T_buf the chunks that we are going to process
-        S_batch = jnp.zeros((num_chunks, DIAGONAL_CHUNK_SIZE, order), dtype=S_buf.dtype)
-        T_batch = jnp.zeros((num_chunks, DIAGONAL_CHUNK_SIZE, order), dtype=T_buf.dtype)
-
-        for i in range(num_chunks):
-            S_batch = jax.lax.dynamic_slice(S_buf, (0,i*DIAGONAL_CHUNK_SIZE, 0), (num_chunks, DIAGONAL_CHUNK_SIZE, order))
-            T_batch = jax.lax.dynamic_slice(T_buf, (0,i*DIAGONAL_CHUNK_SIZE, 0), (num_chunks, DIAGONAL_CHUNK_SIZE, order))
-            # S_batch = S_batch.at[i,:DIAGONAL_CHUNK_SIZE,:].set(S_buf[i*DIAGONAL_CHUNK_SIZE:(i+1)*DIAGONAL_CHUNK_SIZE,:])
-            # T_batch = T_batch.at[i,:DIAGONAL_CHUNK_SIZE,:].set(T_buf[i*DIAGONAL_CHUNK_SIZE:(i+1)*DIAGONAL_CHUNK_SIZE,:])
-
-        # Define a function that processes a single chunk with masking
-        def process_chunk(dX_padded, dY_padded, S_batch, T_batch):   
             # Compute dot products for valid entries
-            rho = jax_compute_dot_prod_batch(dX_chunk, dY_chunk)
+            rho = jax_compute_dot_prod_batch(dX_chunk * mask, dY_chunk * mask)
             # Process valid entries with compute_boundary
             S_result, T_result = compute_boundary(psi_s, psi_t, S_batch, T_batch, rho)
-            return S_result, T_result
-            
-        # Use vmap to process all chunks at once
-        S_result, T_result = vmap(process_chunk)(
-            dX_batched, 
-            dY_batched, 
-            S_batch,
-            T_batch
-        )
-
-        for i in range(num_chunks):
-            offset = i * DIAGONAL_CHUNK_SIZE
-            first_chunk = offset == 0 
-            last_chunk  = offset + DIAGONAL_CHUNK_SIZE >= dlen
-
-            # S_buf = S_buf.at[offset:offset+DIAGONAL_CHUNK_SIZE,:].set(S_result[i])
-            # T_buf = T_buf.at[offset:offset+DIAGONAL_CHUNK_SIZE,:].set(T_result[i])
-
-            if d == diagonal_count - 1 and last_chunk: 
-                # print(f"v_s = {v_s}")
-                # print(f"S_result = {S_result}")
-                # print(f"S_buf = {S_buf}")
-                # print(f"result = {jnp.matmul(S_result[0], v_s)}")
-                return S_result[0,0] @ v_s
-
-            if skip_first and skip_last:
-                # Shrinking
-                # S starts at 0 and stops at 1 before the last element
-                # T starts at 1 and stops at the last element
-                # All chunks after the first need to be shifted down by 1
-                if first_chunk:
-                    T_buf = T_buf.at[offset:offset+DIAGONAL_CHUNK_SIZE-1].set(T_result[i,1:,:])
-                else:
-                    T_buf = T_buf.at[offset-1:offset+DIAGONAL_CHUNK_SIZE-1].set(T_result[i,:,:])
-
-                if last_chunk:
-                    S_buf = S_buf.at[offset:offset+DIAGONAL_CHUNK_SIZE-1].set(S_result[i,:-1,:])
-                else:
-                    S_buf = S_buf.at[offset:offset+DIAGONAL_CHUNK_SIZE,:].set(S_result[i,:,:])
-            elif not skip_first and not skip_last:
-                # Growing
-                # S is shifted by 1 if it's the first chunk, since it will just take
-                # initial bottom boundary for that tile.
-                S_buf = S_buf.at[offset+1:offset+DIAGONAL_CHUNK_SIZE+1,:].set(S_result[i,:,:])
-                # T is just straight assignment
-                T_buf = T_buf.at[offset:offset+DIAGONAL_CHUNK_SIZE,:].set(T_result[i,:,:])
-            elif skip_first and not skip_last:
-                # Staying the same size
-                S_buf = S_buf.at[offset:offset+DIAGONAL_CHUNK_SIZE,:].set(S_result[i,:,:])
-                # This one is simpler since we skip first and just keep writing chunk size for T
-                # while S operation stays the same
-                if first_chunk:
-                    T_buf = T_buf.at[offset:offset+DIAGONAL_CHUNK_SIZE-1,:].set(T_result[i,1:,:])
-                else:
-                    # Since first chunk was shifted by 1, we need to shift T_buf by 1 for future updates
-                    T_buf = T_buf.at[offset-1:offset+DIAGONAL_CHUNK_SIZE-1,:].set(T_result[i,:,:])
-            else:
-                # Staying the same size
-                if first_chunk and not last_chunk:
-                    S_buf = S_buf.at[1+offset:offset+DIAGONAL_CHUNK_SIZE+1,:].set(S_result[i,:,:])
-                elif first_chunk and last_chunk:
-                    # S_result will be chunk_size elements, but we are skipping last, which lines up with offset
-                    S_buf = S_buf.at[1+offset:offset+DIAGONAL_CHUNK_SIZE,:].set(S_result[i,:-1,:])
-                else: # first_chunk is false and last_chunk is false
-                    S_buf = S_buf.at[1+offset:offset+DIAGONAL_CHUNK_SIZE+1,:].set(S_result[i,:-1,:])
-                # T is just straight assignement
-                T_buf = T_buf.at[offset:offset+DIAGONAL_CHUNK_SIZE,:].set(T_result[i,:,:])
-
-        # # Process each chunk of the diagonal
-        # for offset in range(0, dlen, DIAGONAL_CHUNK_SIZE):
-        #     first_chunk = offset == 0 
-        #     last_chunk  = offset + DIAGONAL_CHUNK_SIZE >= dlen
-        #     chunk_size = min(DIAGONAL_CHUNK_SIZE, dlen - offset)
-        #     # Compute dot products for the current chunk
-        #     rho = jax_compute_dot_prod_batch(
-        #         dX_i[(dX_L + offset):(dX_L + offset + chunk_size)],
-        #         dY_j[(t_start + offset):(t_start + offset + chunk_size)]
-        #     )
-
-        #     # Update boundaries with the computed values
-        #     S_batch = S_buf[offset:offset+chunk_size]
-        #     T_batch = T_buf[offset:offset+chunk_size]
-
-        #     # print(f"S_batch.shape = {S_batch.shape}")
-        #     # print(f"T_batch.shape = {T_batch.shape}")
-        #     # print(f"rho.shape = {rho.shape}")
-
-        #     S_result, T_result = compute_boundary(psi_s, psi_t, S_batch, T_batch, rho)
-
-        #     if d == diagonal_count - 1 and last_chunk: 
-        #         # print(f"v_s = {v_s}")
-        #         # print(f"S_result = {S_result}")
-        #         # print(f"S_buf = {S_buf}")
-        #         # print(f"result = {jnp.matmul(S_result[0], v_s)}")
-        #         return S_result[0] @ v_s
-
-        #     if skip_first and skip_last:
-        #         # Shrinking
-        #         # S starts at 0 and stops at 1 before the last element
-        #         # T starts at 1 and stops at the last element
-        #         # All chunks after the first need to be shifted down by 1
-        #         if first_chunk:
-        #             T_buf = T_buf.at[offset:offset+chunk_size-1].set(T_result[1:])
-        #         else:
-        #             T_buf = T_buf.at[offset-1:offset+chunk_size-1].set(T_result)
-
-        #         if last_chunk:
-        #             S_buf = S_buf.at[offset:offset+chunk_size-1].set(S_result[:-1])
-        #         else:
-        #             S_buf = S_buf.at[offset:offset+chunk_size].set(S_result)
-        #     elif not skip_first and not skip_last:
-        #         # Growing
-        #         # S is shifted by 1 if it's the first chunk, since it will just take
-        #         # initial bottom boundary for that tile.
-        #         S_buf = S_buf.at[offset+1:offset+chunk_size+1].set(S_result)
-        #         # T is just straight assignment
-        #         T_buf = T_buf.at[offset:offset+chunk_size].set(T_result)
-        #     elif skip_first and not skip_last:
-        #         # Staying the same size
-        #         S_buf = S_buf.at[offset:offset+chunk_size].set(S_result)
-        #         # This one is simpler since we skip first and just keep writing chunk size for T
-        #         # while S operation stays the same
-        #         if first_chunk:
-        #             T_buf = T_buf.at[offset:offset+chunk_size-1].set(T_result[1:])
-        #         else:
-        #             # Since first chunk was shifted by 1, we need to shift T_buf by 1 for future updates
-        #             T_buf = T_buf.at[offset-1:offset+chunk_size-1].set(T_result)
-        #     else:
-        #         # Staying the same size
-        #         if first_chunk and not last_chunk:
-        #             S_buf = S_buf.at[1+offset:offset+chunk_size+1].set(S_result)
-        #         elif first_chunk and last_chunk:
-        #             # S_result will be chunk_size elements, but we are skipping last, which lines up with offset
-        #             S_buf = S_buf.at[1+offset:offset+chunk_size].set(S_result[:-1])
-        #         else: # first_chunk is false and last_chunk is false
-        #             S_buf = S_buf.at[1+offset:offset+chunk_size+1].set(S_result[:-1])
-        #         # T is just straight assignement
-        #         T_buf = T_buf.at[offset:offset+chunk_size].set(T_result)
+            S_buf = jax.lax.dynamic_update_slice(S_buf, S_result, (t_start+1, 0))
+            T_buf = jax.lax.dynamic_update_slice(T_buf, T_result, (t_start, 0))
+        
+            return S_buf, T_buf
+        
+        return jax.lax.fori_loop(0, (dlen + DIAGONAL_CHUNK_SIZE - 1) // DIAGONAL_CHUNK_SIZE, process_chunk, (S_buf, T_buf))
+        # if d == diagonal_count - 1:
+        #     return jax.lax.dynamic_index_in_dim(S_buf, t_start+1, axis=0) @ v_s
+    S, _ = jax.lax.fori_loop(0, diagonal_count, compute_diagonal, (S_buf, T_buf))
+    return S[dY_j.shape[0]] @ v_s
+      
 
 
 def process_diagonal(
