@@ -1,4 +1,3 @@
-from benchmarks.base import Benchmark
 from benchmarks.benchmarks import (
     KSigBenchmark,
     KSigPDEBenchmark,

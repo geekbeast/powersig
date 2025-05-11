@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import cupy as cp
 import os
 
-from benchmarks.base import Benchmark
+from benchmarks.benchmark_base import Benchmark
 from benchmarks.util import Backend
 from benchmarks.configuration import (
     BENCHMARKS_RESULTS_DIR,
