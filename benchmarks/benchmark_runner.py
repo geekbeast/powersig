@@ -1,12 +1,9 @@
-import csv
-import os
-import time
-import argparse
-
 import cupy as cp
+
+from benchmarks.benchmark import Benchmark
 # Import our JAX configuration first
-from benchmarks import (
-    Benchmark,
+
+from benchmarks.kernel_benchmarks import (
     KSigBenchmark,
     KSigPDEBenchmark,
     PolySigBenchmark,
@@ -15,7 +12,7 @@ from benchmarks import (
 )
 import powersig.jax_config
 from powersig.util.cupy_series import cupy_compute_derivative_batch
-from powersig.util.jax_series import jax_compute_derivative_vmap
+from powersig.util.jax_series import jax_compute_derivative_batch
 
 # Configure JAX with optimal settings for benchmarking
 # Using maximum speed optimization
@@ -29,7 +26,6 @@ import jax.numpy as jnp
 from contextlib import contextmanager
 from operator import lshift
 
-import psutil
 import torch.cuda
 from cupy.cuda.memory import OutOfMemoryError
 from jinja2.compiler import generate
@@ -50,10 +46,10 @@ from benchmarks.configuration import (
     KSIG_PDE_RESULTS,
     POLYSIG_RESULTS,
     polysig_sk,
-    signature_kernel, CPU_MEMORY, SIG_KERNEL_MAX_LENGTH, dyadic_order, \
+    CPU_MEMORY, SIG_KERNEL_MAX_LENGTH, dyadic_order, \
     ksig_pde_kernel, ORDER, SIGNATURE_KERNEL, DURATION, CSV_FIELDS, POWERSIG_MAX_LENGTH, KSIG_MAX_LENGTH, MAX_LENGTH, \
     GPU_MEMORY, CUPY_MEMORY, ksig_kernel, NUM_PATHS, RUN_ID)
-from benchmarks.util import generate_brownian_motion, TrackingMemoryPool
+from benchmarks.util import generate_brownian_motion, TrackingMemoryPool, track_peak_memory
 from powersig.matrixsig import build_scaling_for_integration, tensor_compute_gram_entry, centered_compute_gram_entry
 from powersig.torch import batch_compute_gram_entry as torch_batch_compute_gram_entry, build_stencil, compute_vandermonde_vectors
 from powersig.jax import batch_compute_gram_entry
@@ -158,7 +154,7 @@ def benchmark_powersig_on_length_jax(X: torch.Tensor) -> dict[str, float]:
 
     print(f"Order: {POLYNOMIAL_ORDER}")
     X_np = X.cpu().numpy()
-    dX_i = jax_compute_derivative_vmap(X_np).squeeze()
+    dX_i = jax_compute_derivative_batch(X_np).squeeze()
     dX_i_clone = jnp.copy(dX_i)
     # ds = 1 / dX_i.shape[0]
     # dt = 1 / dX_i.shape[0]
@@ -234,6 +230,7 @@ if __name__== '__main__':
             for run_id in range(X.shape[0]):
                 benchmark.benchmark(X[run_id:run_id+1], run_id)
         
+            # benchmark.cleanup() # close the files.
 
                 # if length <= SIG_KERNEL_MAX_LENGTH:
                 #     try:

@@ -16,14 +16,6 @@ def resize(array: jnp.ndarray, new_shape) -> jnp.ndarray:
     return new_array
 
 @jit
-def jax_compute_derivative(X):
-    diff = (X[1:,:] - X[:-1,:])
-    if X.shape[0] == 1:
-        return diff
-    else:
-        return diff * (X.shape[0] - 1)
-
-@jit
 def jax_compute_dot_prod(X, Y):
     assert X.shape == Y.shape, "X and Y must have the same shape."
     return jnp.sum(X * Y)
@@ -35,6 +27,10 @@ def jax_compute_dot_prod_batch(X, Y):
 @jit
 def jax_compute_derivative_batch(X) -> jnp.ndarray:
     return (X[:, 1:, :] - X[:, :-1, :]) * (X.shape[1] - 1)
+
+@jit
+def jax_compute_derivative(X) -> jnp.ndarray:
+    return (X[1:, :] - X[:-1, :]) * (X.shape[0] - 1)
 
 # @jit
 # def derivative_vmap_core(X1: jnp.ndarray, X2: jnp.ndarray) -> jnp.ndarray:

@@ -10,7 +10,6 @@ from . import jax
 from . import powersig_cupy
 
 # Utility functions
-from .util.jax_series import jax_compute_derivative_vmap
 from .util.cupy_series import cupy_compute_derivative_batch
 
 __all__ = [

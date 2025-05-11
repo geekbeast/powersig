@@ -19,7 +19,7 @@ from jax import jit, vmap, lax
 from jax.scipy.linalg import toeplitz
 from functools import partial
 
-from .util.jax_series import jax_compute_derivative_batch, jax_compute_dot_prod_batch
+from .util.jax_series import jax_compute_derivative, jax_compute_derivative_batch, jax_compute_dot_prod_batch
 
 
 class PowerSigJax:
@@ -34,8 +34,8 @@ class PowerSigJax:
             self.device = device
         self.exponents = build_increasing_matrix(self.order, dtype=jnp.float64)
     
-    @jit
-    def compute_signature_kernel(self, X: jnp.ndarray, Y: jnp.ndarray) -> float:
+    @partial(jit, static_argnums=(0,))
+    def compute_signature_kernel(self, X: jnp.ndarray, Y: jnp.ndarray) -> jnp.ndarray:
         """
         Compute the signature kernel between two sets of time series. 
         Args:
@@ -47,8 +47,8 @@ class PowerSigJax:
             A float representing the signature kernel between X and Y
 
         """
-        dX = jax_compute_derivative_batch(X)
-        dY = jax_compute_derivative_batch(Y)
+        dX = jax_compute_derivative(X.squeeze(0))
+        dY = jax_compute_derivative(Y.squeeze(0))
          # Calculate values we need before padding
         diagonal_count = dX.shape[0] + dY.shape[0] - 1
         longest_diagonal = min(dX.shape[0], dY.shape[0])
@@ -65,7 +65,7 @@ class PowerSigJax:
         
         exponents = jnp.arange(self.order)
         # self.exponents = build_increasing_matrix(self.order, dX.dtype)
-        return compute_gram_entry(dX, dY, v_s, v_t, psi_s, psi_t, diagonal_count, longest_diagonal, ic, indices, exponents, order=self.order).item()
+        return compute_gram_entry(dX, dY, v_s, v_t, psi_s, psi_t, diagonal_count, longest_diagonal, ic, indices, exponents, order=self.order)
 
     # TODO: Think about jitting this
     def compute_gram_matrix(self, X: jnp.ndarray, Y: jnp.ndarray, symmetric: bool = False) -> jnp.ndarray:
@@ -93,10 +93,10 @@ class PowerSigJax:
         indices = jnp.arange(longest_diagonal)
         exponents = jnp.arange(self.order)
 
+        dX = jax_compute_derivative_batch(X[i])
+        dY = jax_compute_derivative_batch(Y[j])
         for i in range(X.shape[0]):
             for j in range(Y.shape[0]):
-                dX = jax_compute_derivative_batch(X[i])
-                dY = jax_compute_derivative_batch(Y[j])
                 gram_matrix[i,j] = compute_gram_entry(dX, dY, v_s, v_t, psi_s, psi_t, diagonal_count, longest_diagonal, ic, indices, exponents)
 
         return gram_matrix
@@ -414,7 +414,7 @@ def map_diagonal_entry(dX_i, dY_j, psi_s, psi_t,exponents, s_coeff, t_coeff, s_s
         
 
 
-@jit
+@partial(jit, static_argnums=(6,7,11))
 def compute_gram_entry(
     dX_i: jnp.ndarray, 
     dY_j: jnp.ndarray, 
@@ -439,7 +439,6 @@ def compute_gram_entry(
     Returns:
         Gram matrix entry (scalar)
     """
-   
 
     # Initialize buffers with proper shapes
     S_buf = jnp.zeros([longest_diagonal, order], dtype=dX_i.dtype)
@@ -780,7 +779,7 @@ def batch_compute_gram_entry(
     # Final result is always in the first element since final diagonal length is always 1
     return jnp.einsum('i,bij,j->', v_t, u_buf[:1], v_s) 
 
-@partial(jit, static_argnums=(0,))
+@partial(jit, static_argnums=(0,1,))
 def build_increasing_matrix(n: int, dtype=jnp.float64) -> jnp.ndarray:
     """
     Build an n x n matrix where each value is the maximum of its row and column indices.
