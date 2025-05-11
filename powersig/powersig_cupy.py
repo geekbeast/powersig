@@ -10,6 +10,46 @@ import cupy as cp
 from .util.grid import get_diagonal_range
 from .util.cupy_series import cupy_compute_dot_prod_batch
 
+
+def compute_boundary(
+    psi_s: cp.ndarray,
+    psi_t: cp.ndarray,
+    S: cp.ndarray,
+    T: cp.ndarray,
+    rho
+):
+    """
+    Compute the boundary tensor power series for a fixed-size chunk.
+    
+    Args:
+        U_s: Fixed-size chunk from larger preallocated U buffer
+        U_t: Fixed-size chunk from larger preallocated U buffer
+        S: Tensor of shape (batch_size, n) containing coefficients for upper diagonals
+        T: Tensor of shape (batch_size, n) containing coefficients for main and lower diagonals
+        rho: Tensor of shape (batch_size,) containing the rho values
+        offset: Offset in the larger buffer
+    """
+
+    n = psi_s.shape[0]
+    U_s = psi_s.copy()
+    U_t = psi_t.copy()
+
+    for exponent in range(n):
+        rho_power = rho ** exponent
+        s = S[1:S.shape[0]-exponent]  
+        t = T[:T.shape[0]-exponent]
+        U_s[exponent, exponent+1:] *= s
+        U_s[exponent, exponent+1:] *= rho_power
+        U_s[exponent:, exponent] *= t
+        U_s[exponent:, exponent] *= rho_power
+    
+        U_t[exponent, exponent+1:] *= s
+        U_t[exponent, exponent+1:] *= rho_power
+        U_t[exponent:, exponent] *= t
+        U_t[exponent:, exponent] *= rho_power
+
+    return U_t.sum(axis=0), U_s.sum(axis=1)
+
 def batch_ADM_for_diagonal(
     rho: cp.ndarray, U_buf: cp.ndarray, S_buf: cp.ndarray, T_buf: cp.ndarray, stencil: cp.ndarray
 ) -> cp.ndarray:

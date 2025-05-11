@@ -1,9 +1,26 @@
 import csv
 import os
+import time
 from typing import Tuple
+from enum import Enum, auto
 
+from contextlib import contextmanager
 from cupy.cuda.memory import MemoryPool
+import psutil
 import torch
+import cupy as cp
+import jax
+
+from benchmarks.configuration import CPU_MEMORY, CUPY_MEMORY, DURATION, GPU_MEMORY, POLYSIG_BACKEND
+from benchmarks.generators import generate_brownian_motion
+
+class Backend(Enum):
+    CPU = "cpu"
+    TORCH = "torch"
+    JAX = "jax"
+    CUPY = "cupy"
+    TORCH_CUDA = "torch_cuda"
+    JAX_CUDA = "jax_cuda"
 
 
 def save_stats(stats, filename):
@@ -15,39 +32,6 @@ def save_stats(stats, filename):
         if not file_exists:
             writer.writeheader()
         writer.writerow(stats)
-
-
-def generate_brownian_motion(n_steps, n_paths=1, cuda: bool = True, dim: int = 1) -> Tuple[torch.tensor, float]:
-    """
-    Generate multi-dimensional Brownian motion paths.
-
-    Args:
-        n_steps (int): Number of time steps
-        n_paths (int): Number of paths to generate
-        cuda (bool): Whether to use CUDA (GPU) or CPU
-        dim (int): Dimension of the Brownian motion (default: 1)
-
-    Returns:
-        torch.Tensor: Brownian paths of shape (n_paths, n_steps + 1, dim)
-        float: Time step size (dt)
-    """
-    dt = (.5/n_steps)**2
-    device = 'cuda' if cuda else 'cpu'
-    
-    # Generate random increments for each dimension
-    dW = torch.normal(
-        mean=0, 
-        std=torch.sqrt(torch.tensor(dt, device=device, dtype=torch.float64)),
-        size=(n_paths, n_steps, dim),
-        device=device, 
-        dtype=torch.float64
-    )
-
-    # Compute cumulative sum to get Brownian motion
-    zeros = torch.zeros(n_paths, 1, dim, device=device, dtype=torch.float64)
-    W = torch.cat([zeros, torch.cumsum(dW, dim=1)], dim=1)
-
-    return W, dt
 
 
 class TrackingMemoryPool(MemoryPool):
@@ -68,22 +52,64 @@ class TrackingMemoryPool(MemoryPool):
 
         return memptr
 
-if __name__== '__main__':
-    # Example usage:
-    n_steps = 1000
-    n_paths = 5
-    dt = 1/(n_steps)
+# Global tracking pool - only initialized once when module is first imported
+tracking_pool = TrackingMemoryPool()
+cp.cuda.set_allocator(tracking_pool.malloc)
 
-    paths, _ = generate_brownian_motion(n_steps, n_paths, dt)
+@contextmanager
+def track_peak_memory(backend: Backend, stats):
+    cupy_initial_mem = 0
 
-    # If you want to visualize it:
-    import matplotlib.pyplot as plt
+    process = psutil.Process(os.getpid())
+    # Get CPU initial memory in byte
+    cpu_initial_mem = process.memory_info().rss
 
-    t = torch.arange(n_steps + 1) * dt
-    print(f"t_max = {t.max()}")
-    for i in range(n_paths):
-        plt.plot(t, paths[i].cpu().numpy())
-    plt.xlabel('Time')
-    plt.ylabel('Position')
-    plt.title('Brownian Motion Paths')
-    plt.show()
+    if cp.is_available():
+        tracking_pool.reset_peak_usage()
+        # Get cupy initial memory in bytes
+        cupy_initial_mem = tracking_pool.peak_usage
+
+    # Context manager to track peak GPU memory usage
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+        torch.cuda.synchronize()
+    
+    jax_cuda_available = any(device.platform == 'gpu' for device in jax.devices())
+
+    start = time.time()
+
+    try:
+        yield
+    finally:
+        stats[DURATION] = time.time() - start
+
+        print(f"{backend} computation took: {stats[DURATION]}s")
+
+        peak_cpu_mem = (process.memory_info().rss - cpu_initial_mem) / (1024 * 1024)  # MB
+        stats[CPU_MEMORY] = peak_cpu_mem
+        print(f"Peak CPU memory usage: {peak_cpu_mem:.1f} MB")
+        
+        if  cp.is_available() and backend == Backend.CUPY:
+            peak_cupy_mem = tracking_pool.peak_usage / (1024 * 1024)  # MB
+            stats[GPU_MEMORY] = peak_cupy_mem - cupy_initial_mem
+            # Shim for existing code that expects CUPY_MEMORY
+            stats[CUPY_MEMORY] = peak_cupy_mem - cupy_initial_mem
+            print(f"Peak cupy memory usage: {peak_cupy_mem - cupy_initial_mem:.1f} MB")
+
+        if torch.cuda.is_available() and backend == Backend.TORCH_CUDA:
+            torch.cuda.synchronize()
+            peak_pytorch_memory = torch.cuda.max_memory_allocated() / (1024 ** 2)  # Convert to MB
+            stats[GPU_MEMORY] = peak_pytorch_memory
+            print(f"Peak pytorch memory usage: {peak_pytorch_memory:.2f} MB")
+        
+        # TODO: This is a hack to get the peak memory usage for PolySig, the problem is we have to reset device memory before each run of the kernel
+        # and that means we have to rewarm the compilation cache to be fair.
+        if jax_cuda_available and backend == Backend.JAX_CUDA:
+            peak_jax_memory = 0
+            for device in jax.devices():
+                if device.platform == 'gpu':
+                    peak_jax_memory += device.memory_stats()['peak_bytes_in_use'] / (1024 ** 2)  # Convert to MB
+            stats[GPU_MEMORY] = peak_jax_memory
+            print(f"Peak jax memory usage: {peak_jax_memory:.2f} MB")
+
+

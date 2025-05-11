@@ -23,7 +23,8 @@ def torch_compute_dot_prod(X,Y):
     assert X.shape == Y.shape, "X and Y must have the same shape."
     return (X*Y).sum()
 
-@torch.compile(mode="max-autotune", fullgraph=True,disable=False)
+# @torch.compile(mode="max-autotune", fullgraph=True,disable=False)
+@torch.compile(dynamic=True)
 def torch_compute_dot_prod_batch(X,Y):
     return (X*Y).sum(dim=len(X.shape)-1)
     # return torch.einsum("bd,bd->b", X, Y)

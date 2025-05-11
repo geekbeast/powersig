@@ -9,9 +9,7 @@ from polysigkernel import SigKernel
 _batch, _len_x, _len_y, _dim = 1, 100000, 100, 2
 _fresh = True
 torch.random.manual_seed(1)
-static_kernel = sigkernel.LinearKernel()
 dyadic_order = 0
-signature_kernel = sigkernel.SigKernel(static_kernel, dyadic_order)
 
 ksig_static_kernel = ksig.static.kernels.LinearKernel()
 POLYNOMIAL_ORDER = 8
@@ -58,8 +56,11 @@ CSV_EXTENSION = ".csv"
 
 # Benchmark result files
 POWERSIG_RESULTS = "powersig_results.csv"
+POWERSIG_TORCH_RESULTS = "powersig_torch_results.csv"
+POWERSIG_CUPY_RESULTS = "powersig_cupy_results.csv"
 SIGKERNEL_RESULTS = "sigkernel_results.csv"
 KSIG_RESULTS = "ksig_results.csv"
+KSIG_CPU_RESULTS = "ksig_cpu_results.csv"
 KSIG_PDE_RESULTS = "ksig_pde_results.csv"
 POLYSIG_RESULTS = "polysig_results.csv"
 

@@ -3,8 +3,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import torch
+import cupy as cp
 
-from powersig.jax import batch_ADM_for_diagonal, compute_gram_entry, process_diagonal, process_diagonal_chunks
+from powersig.jax import batch_ADM_for_diagonal, build_stencil_s, build_stencil_t, compute_boundary, compute_gram_entry, process_diagonal, process_diagonal_chunks
 from powersig.jax import batch_compute_boundaries
 from powersig.jax import compute_vandermonde_vectors
 from powersig.jax import build_stencil
@@ -14,6 +15,7 @@ from powersig.util.jax_series import jax_compute_derivative_vmap
 import ksig
 import ksig.static.kernels
 from sigkernel import sigkernel
+import powersig.powersig_cupy
 
 class TestBatchADMForDiagonal(unittest.TestCase):
     def setUp(self):
@@ -784,6 +786,8 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         # Set up sigkernel
         self.dyadic_order = 0
         self.signature_kernel = sigkernel.SigKernel(sigkernel.LinearKernel(), self.dyadic_order)
+        # self.X = X[:,:2,:]
+        # self.Y = Y[:,:2,:]
         
     def test_signature_kernel_consistency(self):
         """Test that different signature kernel implementations give consistent results"""
@@ -819,7 +823,7 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         for i in range(dX.shape[0]):
             for j in range(dY.shape[0]):
                 powersig_results = powersig_results.at[i, j].set(
-                    compute_gram_entry(dX[i], dY[j], order)
+                     compute_gram_entry(dX[i], dY[j], order).item()
                 )
         
         # Convert JAX array to numpy for comparison
@@ -849,6 +853,79 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         self.assertTrue(np.allclose(ksig_trunc_result, powersig_results_np, rtol=1e-2), 
                         f"KSig truncated and PowerSig JAX results differ significantly")
 
+class TestComputeBoundary(unittest.TestCase):
+    def setUp(self):
+        # Set up test data for a 3x3 case
+        self.order = 8
+        self.dtype = jnp.float64
+        
+        # Create Vandermonde vectors
+        self.ds = 1.0 / 3  # For a 3x3 matrix
+        self.dt = 1.0 / 3
+        self.v_s, self.v_t = compute_vandermonde_vectors(self.ds, self.dt, self.order, self.dtype)
+        
+        # Create stencil matrices
+        self.psi_s = build_stencil_s(self.v_s, self.order, self.dtype)
+        self.psi_t = build_stencil_t(self.v_t, self.order, self.dtype)
+        
+        # Create random S and T matrices using JAX's random number generation
+        key = jax.random.PRNGKey(42)
+        key, subkey1 = jax.random.split(key)
+        key, subkey2 = jax.random.split(key)
+        
+        # Generate random matrices with shape (order,)
+        self.S = jax.random.normal(subkey1, (self.order,), dtype=self.dtype)
+        self.T = jax.random.normal(subkey2, (self.order,), dtype=self.dtype)
+        
+        # Create test rho value
+        self.rho = jnp.array(1.337, dtype=self.dtype)
+        
+        # Create exponents array as integers
+        self.exponents = jnp.arange(self.order, dtype=jnp.int32)
+
+    def test_compute_boundary_against_cupy(self):
+        """Test that JAX compute_boundary matches CuPy implementation"""
+        # Get JAX results
+        jax_S, jax_T = compute_boundary(
+            self.psi_s,
+            self.psi_t,
+            self.exponents,
+            self.S,
+            self.T,
+            self.rho
+        )
+        
+        # Convert inputs to CuPy
+        cp_psi_s = cp.array(self.psi_s)
+        cp_psi_t = cp.array(self.psi_t)
+        cp_S = cp.array(self.S)
+        cp_T = cp.array(self.T)
+        cp_rho = cp.array(self.rho)
+        
+        # Get CuPy results
+        cp_S, cp_T = powersig.powersig_cupy.compute_boundary(
+            cp_psi_s,
+            cp_psi_t,
+            cp_S,
+            cp_T,
+            cp_rho
+        )
+        
+        # Convert CuPy results back to numpy for comparison
+        cp_S_np = cp.asnumpy(cp_S)
+        cp_T_np = cp.asnumpy(cp_T)
+        
+        # Print results for comparison
+        print("\nJAX Results:")
+        print("S:", np.array(jax_S))
+        print("T:", np.array(jax_T))
+        print("\nCuPy Results:")
+        print("S:", cp_S_np)
+        print("T:", cp_T_np)
+        
+        # Compare results
+        self.assertTrue(np.allclose(np.array(jax_S), cp_S_np, rtol=1e-5))
+        self.assertTrue(np.allclose(np.array(jax_T), cp_T_np, rtol=1e-5))
 
 if __name__ == '__main__':
     # To run all tests

@@ -74,7 +74,8 @@ def batch_ADM_for_diagonal(
     return U
 
 
-@torch.compile(mode="max-autotune", fullgraph=True)
+# @torch.compile(mode="max-autotune", fullgraph=True)
+@torch.compile()
 def compute_vandermonde_vectors(
     ds: torch.tensor, dt: torch.tensor, n: int
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -84,7 +85,8 @@ def compute_vandermonde_vectors(
     return v_s, v_t
 
 
-@torch.compile(mode="max-autotune", fullgraph=True)
+# @torch.compile(mode="max-autotune", fullgraph=True)
+@torch.compile()
 def build_stencil(
     order: int = 32, device: torch.device=torch.device("cpu"), dtype: torch.dtype = torch.float64
 ) -> torch.Tensor:
@@ -104,7 +106,8 @@ def build_stencil(
 
     return stencil
 
-@torch.compile(mode="max-autotune", fullgraph=True,disable=False)
+# @torch.compile(mode="max-autotune", fullgraph=True,disable=False)
+@torch.compile()
 def build_stencil_t(v_t: torch.Tensor, order: int = 32, device: torch.device = None, dtype: torch.dtype = torch.float64) -> torch.Tensor:
     """
     Build stencil matrix and multiply each row by v_t in place.
@@ -128,7 +131,8 @@ def build_stencil_t(v_t: torch.Tensor, order: int = 32, device: torch.device = N
     
     return stencil
 
-@torch.compile(mode="max-autotune", fullgraph=True,disable=False)
+# @torch.compile(mode="max-autotune", fullgraph=True,disable=False)
+@torch.compile()
 def build_stencil_s(v_s: torch.Tensor, order: int = 32, device: torch.device = None, dtype: torch.dtype = torch.float64) -> torch.Tensor:
     """
     Build stencil matrix and multiply each column by v_s in place.
@@ -219,7 +223,8 @@ def batch_compute_boundaries(
     return S, T
 
 
-@torch.compile(mode="max-autotune", fullgraph=True,disable=False)
+# @torch.compile(mode="max-autotune", fullgraph=True,disable=False)
+@torch.compile(dynamic=True)
 def compute_boundary(
     psi_s: torch.Tensor,
     psi_t: torch.Tensor,
@@ -443,7 +448,54 @@ def compute_gram_entry(
                 # T is just straight assignement
                 T_buf[offset:offset+chunk_size]=T_result
 
+@torch.compile(mode="max-autotune", fullgraph=True,dynamic=True)
+def batch_compute_gram_entry_psi(
+    dX_i: torch.Tensor,
+    dY_j: torch.Tensor,
+    order: int = 32,
+) -> torch.Tensor:
+    # Preprocessing
+    dX_i[:] = dX_i.flip(0)
+    longest_diagonal = min(dX_i.shape[0], dY_j.shape[0])
     
+    # Initial tile
+    S_buf = torch.zeros([longest_diagonal+1, order], dtype=dX_i.dtype, device=dX_i.device)
+    T_buf = torch.zeros([longest_diagonal+1, order], dtype=dX_i.dtype, device=dX_i.device)
+    S_buf[:, 0] = 1
+    T_buf[:, 0] = 1
+
+    
+
+    # Generate the stencil and Vandermonde vectors
+    ds = torch.tensor([1 / dX_i.shape[0]], dtype=dX_i.dtype, device=dX_i.device)
+    dt = torch.tensor([1 / dY_j.shape[0]], dtype=dY_j.dtype, device=dY_j.device)
+    torch.compiler.cudagraph_mark_step_begin()
+    v_s, v_t = compute_vandermonde_vectors(ds, dt, order)
+    psi_s = build_stencil_s(v_s, order, dX_i.device, dX_i.dtype)
+    psi_t = build_stencil_t(v_t, order, dY_j.device, dY_j.dtype)
+    
+    diagonal_count = dX_i.shape[0] + dY_j.shape[0] - 1
+
+    for d in range(diagonal_count):
+        s_start, t_start, dlen = get_diagonal_range(d, dX_i.shape[0], dY_j.shape[0])
+        S = S_buf[t_start:t_start+dlen, :]
+        T = T_buf[t_start:t_start+dlen, :]
+
+        dX_L = dX_i.shape[0] - (s_start + 1)
+
+        rho = torch_compute_dot_prod_batch(
+            dX_i[dX_L : dX_L + dlen],
+            dY_j[t_start : (t_start + dlen)],
+        )
+
+        S_next, T_next = compute_boundary(psi_s, psi_t, S, T, rho)
+        
+        S_buf[t_start+1:t_start+dlen+1,:] = S_next
+        T_buf[t_start:t_start+dlen,:] = T_next
+    
+        if dlen == 1 and d == diagonal_count - 1:
+            return v_t @ S_buf[t_start+1]        
+
 
 def batch_compute_gram_entry(
     dX_i: torch.Tensor,

@@ -9,7 +9,7 @@ os.environ["POWERSIG_TESTING"] = "1"
 
 import torch
 
-from powersig.torch import batch_ADM_for_diagonal
+from powersig.torch import batch_ADM_for_diagonal, batch_compute_gram_entry_psi
 from powersig.torch import batch_compute_boundaries
 from powersig.torch import compute_vandermonde_vectors
 from powersig.torch import build_stencil
@@ -460,7 +460,7 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         
         for i in range(dX.shape[0]):
             for j in range(dY.shape[0]):
-                powersig_results[i, j] = compute_gram_entry(dX[i], dY[j], order)
+                powersig_results[i, j] = batch_compute_gram_entry_psi(dX[i], dY[j], order)
                 powersig_cupy_results[i, j] = torch.tensor(batch_compute_gram_entry_cupy(cp.array(dX[i].cpu().numpy()), cp.array(dY[j].cpu().numpy()), order),dtype=torch.float64, device=self.device)
         # # Move results to CPU for comparison
         # if powersig_results.is_cuda:

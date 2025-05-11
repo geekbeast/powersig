@@ -1,9 +1,8 @@
 import unittest
 import numpy as np
 import cupy as cp
-from numba import cuda
 
-from powersig.cuda import cuda_compute_next_boundary_inplace, MAX_ORDER, cuda_compute_gram_entry
+from powersig.cuda import cuda_compute_gram_entry_cooperative, cuda_compute_next_boundary_inplace, MAX_ORDER, cuda_compute_gram_entry
 from powersig.powersig_cupy import batch_ADM_for_diagonal, batch_compute_boundaries, build_stencil, build_stencil_s, build_stencil_t, compute_vandermonde_vectors
 
 class TestCudaKernel(unittest.TestCase):
@@ -271,7 +270,7 @@ class TestCudaGramEntry(unittest.TestCase):
         order = 4
         
         # Run the function
-        result = cuda_compute_gram_entry(dX, dY, order)
+        result = cuda_compute_gram_entry_cooperative(dX, dY, order)
         
         # Assertions
         # Result should be a scalar
@@ -291,7 +290,7 @@ class TestCudaGramEntry(unittest.TestCase):
         dX2 = cp.random.random((12, 2)).astype(cp.float64)
         dY2 = cp.random.random((6, 2)).astype(cp.float64)
         
-        result2 = cuda_compute_gram_entry(dX2, dY2, order)
+        result2 = cuda_compute_gram_entry_cooperative(dX2, dY2, order)
         self.assertIn(type(result2), (float, np.float64, cp.ndarray))
         
         # Result should be different for different inputs
@@ -306,8 +305,8 @@ if __name__ == '__main__':
     suite = unittest.TestSuite()
     # suite.addTest(TestCudaKernel('test_growing_diagonal'))
     # suite.addTest(TestCudaKernel('test_staying_same_skip_first'))
-    suite.addTest(TestCudaKernel('test_staying_same_skip_last'))
+    # suite.addTest(TestCudaKernel('test_staying_same_skip_last'))
     # suite.addTest(TestCudaKernel('test_shrinking_diagonal'))
     # suite.addTest(TestCudaKernel('test_terminal_case'))
-    # suite.addTest(TestCudaGramEntry('test_cuda_compute_gram_entry'))
+    suite.addTest(TestCudaGramEntry('test_cuda_compute_gram_entry'))
     unittest.TextTestRunner().run(suite)
