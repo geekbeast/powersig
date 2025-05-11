@@ -32,6 +32,7 @@ class PowerSigJax:
             self.device = cuda_devices[0] if cuda_devices else devices[0]
         else:
             self.device = device
+        # self.exponents = jnp.arange(self.order)
         self.exponents = build_increasing_matrix(self.order, dtype=jnp.float64)
     
     @partial(jit, static_argnums=(0,))
@@ -63,9 +64,8 @@ class PowerSigJax:
         psi_s = build_stencil_s(v_s, self.order, dX.dtype)
         psi_t = build_stencil_t(v_t, self.order, dY.dtype)
         
-        exponents = jnp.arange(self.order)
-        # self.exponents = build_increasing_matrix(self.order, dX.dtype)
-        return compute_gram_entry(dX, dY, v_s, v_t, psi_s, psi_t, diagonal_count, longest_diagonal, ic, indices, exponents, order=self.order)
+        
+        return compute_gram_entry(dX, dY, v_s, v_t, psi_s, psi_t, diagonal_count, longest_diagonal, ic, indices, self.exponents, order=self.order)
 
     # TODO: Think about jitting this
     def compute_gram_matrix(self, X: jnp.ndarray, Y: jnp.ndarray, symmetric: bool = False) -> jnp.ndarray:
@@ -91,13 +91,13 @@ class PowerSigJax:
         longest_diagonal = min(X.shape[1], Y.shape[1])
         diagonal_count = X.shape[1] + Y.shape[1] - 1
         indices = jnp.arange(longest_diagonal)
-        exponents = jnp.arange(self.order)
+        
 
         dX = jax_compute_derivative_batch(X[i])
         dY = jax_compute_derivative_batch(Y[j])
         for i in range(X.shape[0]):
             for j in range(Y.shape[0]):
-                gram_matrix[i,j] = compute_gram_entry(dX, dY, v_s, v_t, psi_s, psi_t, diagonal_count, longest_diagonal, ic, indices, exponents)
+                gram_matrix[i,j] = compute_gram_entry(dX, dY, v_s, v_t, psi_s, psi_t, diagonal_count, longest_diagonal, ic, indices, self.exponents)
 
         return gram_matrix
             
@@ -241,6 +241,34 @@ def build_rho_powers(order: int = 32, device=None):
 
 @jit
 def compute_boundary(psi_s: jnp.ndarray, psi_t: jnp.ndarray, exponents: jnp.ndarray, S: jnp.ndarray, T: jnp.ndarray, rho: jnp.ndarray):
+    """
+    Compute the boundary tensor power series for a fixed-size chunk.
+    
+    Args:
+        psi_s: Fixed-size chunk from larger preallocated U buffer
+        psi_t: Fixed-size chunk from larger preallocated U buffer
+        S: Tensor of shape (batch_size, n) containing coefficients for upper diagonals
+        T: Tensor of shape (batch_size, n) containing coefficients for main and lower diagonals
+        rho: Tensor of shape (batch_size,) containing the rho values
+        offset: Offset in the larger buffer
+    """
+    R = rho ** exponents
+    U = toeplitz(T, S) * R
+    # Use direct broadcasting for element-wise multiplication
+    # JAX will automatically broadcast psi_s and psi_t [n, n] to match U [batch_size, n, n]
+    U_s = U * psi_s # Broadcasting happens automatically
+    U_t = U * psi_t # Broadcasting happens automatically
+    
+    # Sum all rows of U_s and all columns of U_t within each batch and store directly in S and T
+    S, T = jnp.sum(U_t, axis=0), jnp.sum(U_s, axis=1)
+
+    # print("Results from compute_boundary:")
+    # print(f"S.shape = {S.shape}")
+    # print(f"T.shape = {T.shape}")
+    return S, T
+
+@jit
+def compute_boundary_vmap(psi_s: jnp.ndarray, psi_t: jnp.ndarray, exponents: jnp.ndarray, S: jnp.ndarray, T: jnp.ndarray, rho: jnp.ndarray):
     """
     Compute the boundary tensor power series for a fixed-size chunk.
     

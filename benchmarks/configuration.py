@@ -62,6 +62,7 @@ SIGKERNEL_RESULTS = "sigkernel_results.csv"
 KSIG_RESULTS = "ksig_results.csv"
 KSIG_CPU_RESULTS = "ksig_cpu_results.csv"
 KSIG_PDE_RESULTS = "ksig_pde_results.csv"
+KSIG_PDE_RESULTS = "ksig_pde_cpu_results.csv"
 POLYSIG_RESULTS = "polysig_results.csv"
 
 def get_benchmark_config(fresh=_fresh):

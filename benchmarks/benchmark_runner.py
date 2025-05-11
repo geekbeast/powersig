@@ -11,12 +11,12 @@ from benchmarks.kernel_benchmarks import (
     SigKernelBenchmark
 )
 import powersig.jax_config
-from powersig.util.cupy_series import cupy_compute_derivative_batch
-from powersig.util.jax_series import jax_compute_derivative_batch
 
 # Configure JAX with optimal settings for benchmarking
 # Using maximum speed optimization
-jax_config = powersig.jax_config.configure_jax()
+powersig.jax_config.configure_jax()
+from powersig.util.cupy_series import cupy_compute_derivative_batch
+from powersig.util.jax_series import jax_compute_derivative_batch
 
 import jax
 import numpy as np
@@ -207,7 +207,7 @@ def benchmark_polysig_on_length(X: torch.Tensor) -> dict[str, float]:
 
 
 if __name__== '__main__':
-    powersig.jax_config.configure_jax()
+    
     setup_torch()
 
     active_benchmarks : list[Benchmark] = [
@@ -227,6 +227,7 @@ if __name__== '__main__':
 
         print(f"Time series shape: {X.shape}")
         for benchmark in active_benchmarks:
+            # We run all the benchmarks in sequence to be fairer on JIT.
             for run_id in range(X.shape[0]):
                 benchmark.benchmark(X[run_id:run_id+1], run_id)
         
