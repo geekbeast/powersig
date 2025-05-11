@@ -5,9 +5,11 @@ from benchmarks.benchmark import Benchmark
 
 from benchmarks.kernel_benchmarks import (
     KSigBenchmark,
+    KSigCPUBenchmark,
     KSigPDEBenchmark,
     PolySigBenchmark,
     PowerSigBenchmark,
+    PowerSigCupyBenchmark,
     SigKernelBenchmark
 )
 import powersig.jax_config
@@ -211,11 +213,13 @@ if __name__== '__main__':
     setup_torch()
 
     active_benchmarks : list[Benchmark] = [
-        PowerSigBenchmark(debug=True),
-        PolySigBenchmark(debug=True),
-        KSigBenchmark(debug=True),
-        KSigPDEBenchmark(debug=True),
-        SigKernelBenchmark(debug=True)
+        # KSigBenchmark(debug=False),
+        # KSigPDEBenchmark(debug=False),
+        # SigKernelBenchmark(debug=False),
+        # KSigCPUBenchmark(debug=False)
+        PowerSigCupyBenchmark(debug=False),
+        # PowerSigBenchmark(debug=False),
+        # PolySigBenchmark(debug=False),
     ]
 
     length = 2

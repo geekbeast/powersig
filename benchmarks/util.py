@@ -91,10 +91,10 @@ def track_peak_memory(backend: Backend, stats):
         
         if  cp.is_available() and backend == Backend.CUPY:
             peak_cupy_mem = tracking_pool.peak_usage / (1024 * 1024)  # MB
-            stats[GPU_MEMORY] = peak_cupy_mem - cupy_initial_mem
+            stats[GPU_MEMORY] = peak_cupy_mem
             # Shim for existing code that expects CUPY_MEMORY
-            stats[CUPY_MEMORY] = peak_cupy_mem - cupy_initial_mem
-            print(f"Peak cupy memory usage: {peak_cupy_mem - cupy_initial_mem:.1f} MB")
+            stats[CUPY_MEMORY] = peak_cupy_mem
+            print(f"Peak cupy memory usage: {peak_cupy_mem:.1f} MB")
 
         if torch.cuda.is_available() and backend == Backend.TORCH_CUDA:
             torch.cuda.synchronize()

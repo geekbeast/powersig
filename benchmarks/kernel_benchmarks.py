@@ -10,6 +10,7 @@ from benchmarks.util import Backend
 from benchmarks.configuration import (
     BENCHMARKS_RESULTS_DIR,
     KSIG_CPU_RESULTS,
+    KSIG_PDE_CPU_RESULTS,
     POWERSIG_CUPY_RESULTS,
     POWERSIG_TORCH_RESULTS,
     SIGKERNEL_BACKEND,
@@ -109,7 +110,7 @@ class PowerSigCupyBenchmark(Benchmark):
         return cp.copy(dX_i)
 
     def compute_signature_kernel(self, data: cp.ndarray) -> float:
-        return powersig_cupy.compute_gram_entry(data, data, POLYNOMIAL_ORDER).item()
+        return powersig_cupy.batch_compute_gram_entry(data, data, POLYNOMIAL_ORDER).item()
         
 
 class PowerSigTorchBenchmark(Benchmark):

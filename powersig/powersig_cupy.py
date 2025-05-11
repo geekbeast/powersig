@@ -174,9 +174,9 @@ def batch_compute_boundaries(
     elif not skip_first and not skip_last:
         # Growing
         next_dlen = batch_size + 1
-        print(f"U.shape = {U.shape}")
-        print(f"U_vs.shape = {(U @ v_s).shape}")
-        print(f"S_buf.shape = {cp.expand_dims(S_buf,1).shape}")
+        # print(f"U.shape = {U.shape}")
+        # print(f"U_vs.shape = {(U @ v_s).shape}")
+        # print(f"S_buf.shape = {cp.expand_dims(S_buf,1).shape}")
         cp.matmul(v_t,U,out=cp.expand_dims(S_buf[1:next_dlen], 1))
         cp.matmul(U,v_s,out=cp.expand_dims(T_buf[:next_dlen-1], 2))
         # S_buf[1:batch_size+1] = vt_U
