@@ -266,10 +266,11 @@ def compute_boundary(psi_s: jnp.ndarray, psi_t: jnp.ndarray, exponents: jnp.ndar
     # print(f"T.shape = {T.shape}")
     return S, T
 
+
 @jit
 def compute_boundary_vmap(psi_s: jnp.ndarray, psi_t: jnp.ndarray, exponents: jnp.ndarray, S: jnp.ndarray, T: jnp.ndarray, rho: jnp.ndarray):
     """
-    Compute the boundary tensor power series for a fixed-size chunk.
+    Deprecated.Compute the boundary tensor power series for a fixed-size chunk. Use vmap, but it is better to use a single fused kernel.
     
     Args:
         psi_s: Fixed-size chunk from larger preallocated U buffer
@@ -279,31 +280,10 @@ def compute_boundary_vmap(psi_s: jnp.ndarray, psi_t: jnp.ndarray, exponents: jnp
         rho: Tensor of shape (batch_size,) containing the rho values
         offset: Offset in the larger buffer
     """
-    # assert psi_s.shape[0] == psi_t.shape[0], f"psi_s and psi_t must have the same batch size, but got {psi_s.shape[0]} and {psi_t.shape[0]}"
-    # assert S.shape[1] == psi_s.shape[1], f"S must have the same number of elements as psi_s and psi_t have columns {S.shape[0]} and {psi_s.shape[1]}"
-    # assert T.shape[1] == psi_s.shape[0], f"T must have the same number of elements as psi_s and psi_t have rows {T.shape[0]} and {psi_s.shape[0]}"
-
-    n = psi_s.shape[0]
-    # batch_size = rho.shape[0]
-    # print(f"rho.shape = {rho.shape}")
-    # print(f"S.shape = {S.shape}")
-    # print(f"T.shape = {T.shape}")
-    # Create the Toeplitz matrix U using vmap with the full T and S
-    # U = vmap(lambda c, r: toeplitz(c, r))(T, S)
     U = toeplitz(T, S)
+    U_s = U * psi_s  
+    U_t = U * psi_t  
     
-    # Use direct broadcasting for element-wise multiplication
-    # JAX will automatically broadcast psi_s and psi_t [n, n] to match U [batch_size, n, n]
-    U_s = U * psi_s  # Broadcasting happens automatically
-    U_t = U * psi_t  # Broadcasting happens automatically
-    
-    # Fix JAX syntax for rho_powers and add the broadcast dimension
-    # Shape goes from (batch_size, n) to (batch_size, n, 1) for broadcasting
-    # rho_powers = jnp.power(jnp.reshape(rho, (batch_size, 1)), jnp.arange(n, dtype=rho.dtype))
-    # rho_powers = jnp.power(rho, jnp.arange(n, dtype=rho.dtype))
-    # rho_powers = jnp.reshape(rho_powers, (batch_size, n, 1))
-
-
     def process_row(r):
         def process_column(c):
             p = jnp.minimum(r, c)
