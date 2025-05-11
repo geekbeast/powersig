@@ -213,13 +213,13 @@ if __name__== '__main__':
     setup_torch()
 
     active_benchmarks : list[Benchmark] = [
-        # KSigBenchmark(debug=False),
-        # KSigPDEBenchmark(debug=False),
-        # SigKernelBenchmark(debug=False),
+        KSigBenchmark(debug=False),
+        KSigPDEBenchmark(debug=False),
+        SigKernelBenchmark(debug=False),
         # KSigCPUBenchmark(debug=False)
-        PowerSigCupyBenchmark(debug=False),
-        # PowerSigBenchmark(debug=False),
-        # PolySigBenchmark(debug=False),
+        # PowerSigCupyBenchmark(debug=False),
+        PowerSigBenchmark(debug=False),
+        PolySigBenchmark(debug=False),
     ]
 
     length = 2

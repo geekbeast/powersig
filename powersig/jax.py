@@ -62,8 +62,7 @@ class PowerSigJax:
 
         # Create the stencil matrices with Vandermonde scaling
         psi_s = build_stencil_s(v_s, self.order, dX.dtype)
-        psi_t = build_stencil_t(v_t, self.order, dY.dtype)
-        
+        psi_t = build_stencil_t(v_t, self.order, dY.dtype) 
         
         return compute_gram_entry(dX, dY, v_s, v_t, psi_s, psi_t, diagonal_count, longest_diagonal, ic, indices, self.exponents, order=self.order)
 
@@ -431,16 +430,56 @@ def get_diagonal_range(d: int, rows: int, cols: int) -> Tuple[int, int, int]:
     return s_start, t_start, dlen
 
 @jit
-def map_diagonal_entry(dX_i, dY_j, psi_s, psi_t,exponents, s_coeff, t_coeff, s_start: int, t_start: int, diagonal_index: int):
-    # Compute dot products for valid entries
-    rho = jnp.dot(dX_i[s_start- diagonal_index,], dY_j[t_start+ diagonal_index,])
+def map_diagonal_entry(dx, dy, psi_s, psi_t,exponents, s, t):
+    """
+    Compute the boundary powers series for a given diagonal tile. This version is more highly parallelizable, but 
+    will likely suffer from numerical instability for rho << 1 or large polynomial orders.
+    
+    Args:
+        dx: s-axis time series derivative vector
+        dy: t-axis time series derivative vector
+        psi_s: First time series vector
+        psi_t: Second time series vector
+        exponents: The exponents to use for representing repeated ADM iterations for the given truncation order.
+        s: Coefficients for bottom boundary
+        t: Coefficients for left boundary
+    """
+    rho = jnp.dot(dx, dy)
+    R = rho ** exponents
+    U = toeplitz(t, s) * R
+    U_s = U * psi_s 
+    U_t = U * psi_t 
+    
+    # Sum all rows of U_s and all columns of U_t within each batch and store directly in S and T
+    s, t = jnp.sum(U_t, axis=0), jnp.sum(U_s, axis=1)
 
-    # Process valid entries with compute_boundary
-    s, t = compute_boundary(psi_s, psi_t, exponents, s_coeff, t_coeff, rho)
-
+    # print("Results from compute_boundary:")
+    # print(f"s.shape = {s.shape}")
+    # print(f"t.shape = {t.shape}")
     return s, t
-        
 
+@jit
+def stable_diagonal_entry(dx,dy,v_s, v_t, exponents, s_coeff, t_coeff):
+    """
+    Compute the diagonal entry for a given time series derivative pair. Not as highly parallelizable as the other version, but
+    in theory this should be more numerically stable rho > 1 and larger polynomial orders.
+    Args:
+        dx: s-axis time series derivative vector
+        dy: t-axis time series derivative vector
+        v_s: Vandermonde vector for s direction
+        v_t: Vandermonde vector for t direction
+        exponents: The exponents to use for representing repeated ADM iterations for the given truncation order.
+        s_coeff: Coefficients for upper diagonals
+        t_coeff: Coefficients for main and lower diagonals
+        
+    Returns:
+        Tuple of (row sum, column sum) for the boundary computation
+    """
+    rho = jnp.dot(dx,dy)
+    R = rho ** exponents
+    U = toeplitz(t_coeff, s_coeff) * R
+    return v_t @ U, U @ v_s
+    
 
 @partial(jit, static_argnums=(6,7,11))
 def compute_gram_entry(
@@ -453,6 +492,160 @@ def compute_gram_entry(
     diagonal_count: int,
     longest_diagonal: int,
     ic: jnp.ndarray,
+    indices: jnp.ndarray, 
+    exponents: jnp.ndarray, 
+    order: int = 32) -> jnp.ndarray:
+    """
+    Compute the gram matrix entry using a batched approach.
+    
+    Args:
+        dX_i: First time series derivatives (padded)
+        dY_j: Second time series derivatives (padded)
+        order: Order of the polynomial approximation
+        
+    Returns:
+        Gram matrix entry (scalar)
+    """
+
+    # Initialize buffers with proper shapes
+    S_buf = jnp.zeros([longest_diagonal, order], dtype=dX_i.dtype)
+    T_buf = jnp.zeros([longest_diagonal, order], dtype=dX_i.dtype)
+
+    # Initialize first elements with 1.0
+    S_buf = S_buf.at[:, 0].set(1.0)
+    T_buf = T_buf.at[:, 0].set(1.0)
+
+    def compute_diagonal(d, carry):
+        S_buf, T_buf = carry
+        cols = dY_j.shape[0]
+        rows = dX_i.shape[0]
+        # s_start, t_start, dlen = get_diagonal_range(d, dX_i.shape[0], dY_j.shape[0])
+        t_start = (d<cols)*0 + (d>=cols)*(d-cols +1)
+        s_start = (d<cols)*d + (d>=cols)*(cols - 1)
+        dlen = jnp.minimum(rows - t_start, s_start + 1)
+        # dX_L = dX_i.shape[0] - (s_start + 1)
+        
+        def next_diagonal_entry(diagonal_index, S, T):
+            # Combine the first two where statements into a single mask
+            is_before_wrap = d < dX_i.shape[0]
+            s_index = diagonal_index - is_before_wrap
+            t_index = diagonal_index + (1 - is_before_wrap)
+            
+            # Avoid branching
+            s = ((t_start + diagonal_index == 0) * ic) + ((t_start + diagonal_index != 0) * S[s_index])
+            t = ((s_start - diagonal_index == 0) * ic) + ((s_start - diagonal_index != 0) * T[t_index])
+            
+            # jax.debug.print("""
+            #     d = {},
+            #     diagonal_index {}:
+            #     s_start = {}
+            #     t_start = {}
+            #     dlen = {}
+            #     is_before_wrap = {}
+            #     s_index = {}
+            #     t_index = {}
+            #     s = {}
+            #     t = {}
+            #     """, d, diagonal_index, s_start, t_start, dlen, is_before_wrap, s_index, t_index, s, t)
+
+            return map_diagonal_entry(dX_i[s_start - diagonal_index], dY_j[t_start + diagonal_index], psi_s, psi_t, exponents, s, t)
+
+        # vmap over 
+        # print(f"indices = {indices}")
+        S_next,T_next = vmap(next_diagonal_entry, in_axes=(0,None,None))(indices, S_buf, T_buf)
+        # jax.debug.print("""
+        #         d = {},
+        #         S_next {}:
+        #         T_next = {}
+        #         S.vs = {}
+        #         vt.T = {}
+        #         """, d, S_next, T_next, S_next @ v_s, T_next @ v_t)
+        return S_next, T_next
+        # rho = jax_compute_dot_prod_batch(
+        #     dX_i[(dX_L):(dX_L + dlen)],
+        #     dY_j[(t_start):(t_start + dlen)]
+        # )
+
+        # # Update boundaries with the computed values
+        # S_result, T_result = compute_boundary(psi_s, psi_t, S_buf[:dlen,:], T_buf[:dlen,:], rho)
+        
+        # We have to use d to generate indices need for the diagonal.
+        # We know t_start, s_start, dlen. 
+
+        # dx_indices = jnp.flip(jnp.arange(s_start+1), axis=0)
+        # dy_indices = jnp.arange(dlen)
+
+        # dx_indices = jnp.where(dx_indices < dX_L, dx_indices, jnp.zeros_like(dx_indices))
+        # dy_indices = jnp.where(dy_indices < t_start, dy_indices, jnp.zeros_like(dy_indices))
+
+        # dx_chunk = jnp.take(dX_i, dx_indices, axis=0)
+        # dy_chunk = jnp.take(dY_j, dy_indices, axis=0)
+
+        # jax.lax.dynamic_slice(dX_i, (dX_L, 0), (d))
+
+        # # for chunk_index in range(0, d, DIAGONAL_CHUNK_SIZE):
+        # def process_chunk(index, carry):
+        #     chunk_index = index * DIAGONAL_CHUNK_SIZE
+        #     S_buf, T_buf = carry
+        #     valid_size = jnp.minimum(DIAGONAL_CHUNK_SIZE, dlen - chunk_index)
+        #     mask = jnp.arange(DIAGONAL_CHUNK_SIZE) < valid_size
+        #     x_indices = jnp.arange(dX_L+chunk_index, dX_L+chunk_index + DIAGONAL_CHUNK_SIZE)
+        #     y_indices = jnp.arange(t_start+chunk_index, t_start+chunk_index + DIAGONAL_CHUNK_SIZE)
+
+        #     x_indices = jnp.where(mask, x_indices, jnp.zeros_like(x_indices))
+        #     y_indices = jnp.where(mask, y_indices, jnp.zeros_like(y_indices))
+
+        #     dX_chunk = jnp.take(dX_i, x_indices, axis=0)
+        #     dY_chunk = jnp.take(dY_j, y_indices, axis=0)
+
+        #     # # dX_chunk = jax.lax.cond(
+        #     # #         valid_size == DIAGONAL_CHUNK_SIZE,
+        #     #         lambda x: jax.lax.dynamic_slice(x, (dX_L + chunk_index, 0), (valid_size, x.shape[1])),  # True branch: return as is
+        #     #         lambda x: jnp.pad(jax.lax.dynamic_slice(x, (dX_L + chunk_index, 0), (valid_size, x.shape[1])), ((0, DIAGONAL_CHUNK_SIZE - valid_size), (0, 0)), mode='constant'),  # False branch: pad
+        #     #         dX_i
+        #     # )
+
+        #     # dY_chunk = jax.lax.cond(
+        #     #         valid_size == DIAGONAL_CHUNK_SIZE,
+        #     #         lambda x: jax.lax.dynamic_slice(x, (t_start + chunk_index, 0), (DIAGONAL_CHUNK_SIZE, x.shape[1])),  # True branch: return as is
+        #     #         lambda x: jnp.pad(jax.lax.dynamic_slice(x, (t_start + chunk_index, 0), (valid_size, x.shape[1])), ((0, DIAGONAL_CHUNK_SIZE - valid_size), (0, 0)), mode='constant'),  # False branch: pad
+        #     #         dY_j
+        #     # )
+            
+        #     S_batch = pad_if_needed(jax.lax.dynamic_slice(S_buf, (t_start, 0), (valid_size, order)), valid_size, valid_size)
+        #     T_batch = pad_if_needed(jax.lax.dynamic_slice(T_buf, (t_start, 0), (valid_size, order)), valid_size, valid_size)
+        
+        #     # Compute dot products for valid entries
+        #     rho = jax_compute_dot_prod_batch(dX_chunk * mask, dY_chunk * mask)
+        #     # Process valid entries with compute_boundary
+        #     S_result, T_result = compute_boundary(psi_s, psi_t, S_batch, T_batch, rho)
+        #     S_buf = jax.lax.dynamic_update_slice(S_buf, S_result, (t_start+1, 0))
+        #     T_buf = jax.lax.dynamic_update_slice(T_buf, T_result, (t_start, 0))
+        
+        #     return S_buf, T_buf
+        
+        # return jax.lax.fori_loop(0, (dlen + DIAGONAL_CHUNK_SIZE - 1) // DIAGONAL_CHUNK_SIZE, process_chunk, (S_buf, T_buf))
+        # if d == diagonal_count - 1:
+        #     return jax.lax.dynamic_index_in_dim(S_buf, t_start+1, axis=0) @ v_s
+    S_buf, T_buf = jax.lax.fori_loop(0, diagonal_count, compute_diagonal, (S_buf, T_buf))
+    # print(f"S_buf.shape = {S_buf.shape}")
+    # print(f"T_buf.shape = {T_buf.shape}")
+    # print(f"S_buf = {S_buf}")
+    # print(f"T_buf = {T_buf}")
+    return S_buf[0] @ v_s
+      
+@partial(jit, static_argnums=(6,7,11,12))
+def chunked_compute_gram_entry(
+    dX_i: jnp.ndarray, 
+    dY_j: jnp.ndarray, 
+    v_s: jnp.ndarray, 
+    v_t: jnp.ndarray, 
+    psi_s: jnp.ndarray, 
+    psi_t: jnp.ndarray, 
+    diagonal_count: int,
+    longest_diagonal: int,
+    ic: jnp.ndarray,
+    offsets: jnp.ndarray,
     indices: jnp.ndarray, 
     exponents: jnp.ndarray, 
     order: int = 32) -> jnp.ndarray:
@@ -594,151 +787,7 @@ def compute_gram_entry(
     # print(f"S_buf = {S_buf}")
     # print(f"T_buf = {T_buf}")
     return S_buf[0] @ v_s
-      
 
-
-def process_diagonal(
-    v_s: jnp.ndarray,
-    v_t: jnp.ndarray,
-    psi_s: jnp.ndarray,
-    psi_t: jnp.ndarray,
-    dX_i: jnp.ndarray,
-    dY_j: jnp.ndarray,
-    S_buf: jnp.ndarray,
-    T_buf: jnp.ndarray,
-    diagonal_count: int,
-    d: int,
-    dX_L: int,
-    t_start: int,
-    dlen: int,
-    skip_first: bool,
-    skip_last: bool,
-) -> jnp.ndarray:
-    rho = jax_compute_dot_prod_batch(
-        dX_i[(dX_L):(dX_L + dlen)],
-        dY_j[(t_start):(t_start + dlen)]
-    )
-
-    # Update boundaries with the computed values
-    S_result, T_result = compute_boundary(psi_s, psi_t, S_buf[:dlen,:], T_buf[:dlen,:], rho)
-    print(f"(full)S_result = {S_result}")
-    print(f"(full)T_result = {T_result}")
-
-    # if d == diagonal_count - 1:
-        # print(f"v_s = {v_s}")
-        # print(f"S_buf = {S_buf}")
-        # print(f"result = {jnp.matmul(S_result[0], v_s)}")
-        # return S_result[0] @ v_s
-
-    if skip_first and skip_last:
-        # Shrinking
-        S_buf = S_buf.at[:dlen-1].set(S_result[:-1])
-        T_buf = T_buf.at[:dlen-1].set(T_result[1:])
-    elif not skip_first and not skip_last:
-        # Growing
-        S_buf = S_buf.at[1:dlen+1].set(S_result)
-        T_buf = T_buf.at[:dlen].set(T_result)
-    elif skip_first and not skip_last:
-        # Staying the same size
-        S_buf = S_buf.at[:dlen].set(S_result)
-        T_buf = T_buf.at[:dlen-1].set(T_result[1:])
-    else:
-        # Staying the same size
-        S_buf = S_buf.at[1:dlen].set(S_result[:-1])
-        T_buf = T_buf.at[:dlen].set(T_result)
-
-    return S_buf, T_buf
-
-def process_diagonal_chunks(
-    v_s: jnp.ndarray,
-    v_t: jnp.ndarray,
-    psi_s: jnp.ndarray,
-    psi_t: jnp.ndarray,
-    dX_i: jnp.ndarray,
-    dY_j: jnp.ndarray,
-    S_buf: jnp.ndarray,
-    T_buf: jnp.ndarray,
-    diagonal_count: int,
-    d: int,
-    dX_L: int,
-    t_start: int,
-    dlen: int,
-    skip_first: bool,
-    skip_last: bool,
-) -> jnp.ndarray:
-    # Process each chunk of the diagonal
-    for offset in range(0, dlen, DIAGONAL_CHUNK_SIZE):
-        first_chunk = offset == 0 
-        last_chunk  = offset + DIAGONAL_CHUNK_SIZE >= dlen
-        chunk_size = min(DIAGONAL_CHUNK_SIZE, dlen - offset)
-        # Compute dot products for the current chunk
-        rho = jax_compute_dot_prod_batch(
-            dX_i[(dX_L + offset):(dX_L + offset + chunk_size)],
-            dY_j[(t_start + offset):(t_start + offset + chunk_size)]
-        )
-
-        # Update boundaries with the computed values
-        S_batch = S_buf[offset:offset+chunk_size]
-        T_batch = T_buf[offset:offset+chunk_size]
-
-        print(f"S_batch.shape = {S_batch.shape}")
-        print(f"T_batch.shape = {T_batch.shape}")
-        print(f"rho.shape = {rho.shape}")
-
-        S_result, T_result = compute_boundary(psi_s, psi_t, S_batch, T_batch, rho)
-        print(f"(chunks)S_result = {S_result}")
-        print(f"(chunks)T_result = {T_result}")
-        # if d == diagonal_count - 1 and last_chunk: 
-        #     print(f"v_s = {v_s}")
-        #     print(f"S_result = {S_result}")
-        #     print(f"S_buf = {S_buf}")
-        #     print(f"result = {jnp.matmul(S_result[0], v_s)}")
-        #     return S_result[0] @ v_s
-
-        if skip_first and skip_last:
-            # Shrinking
-            # S starts at 0 and stops at 1 before the last element
-            # T starts at 1 and stops at the last element
-            # All chunks after the first need to be shifted down by 1
-            if first_chunk:
-                T_buf = T_buf.at[offset:offset+chunk_size-1].set(T_result[1:])
-            else:
-                T_buf = T_buf.at[offset-1:offset+chunk_size-1].set(T_result)
-
-            if last_chunk:
-                S_buf = S_buf.at[offset:offset+chunk_size-1].set(S_result[:-1])
-            else:
-                S_buf = S_buf.at[offset:offset+chunk_size].set(S_result)
-        elif not skip_first and not skip_last:
-            # Growing
-            # S is shifted by 1 if it's the first chunk, since it will just take
-            # initial bottom boundary for that tile.
-            S_buf = S_buf.at[offset+1:offset+chunk_size+1].set(S_result)
-            # T is just straight assignment
-            T_buf = T_buf.at[offset:offset+chunk_size].set(T_result)
-        elif skip_first and not skip_last:
-            # Staying the same size
-            S_buf = S_buf.at[offset:offset+chunk_size].set(S_result)
-            # This one is simpler since we skip first and just keep writing chunk size for T
-            # while S operation stays the same
-            if first_chunk:
-                T_buf = T_buf.at[offset:offset+chunk_size-1].set(T_result[1:])
-            else:
-                # Since first chunk was shifted by 1, we need to shift T_buf by 1 for future updates
-                T_buf = T_buf.at[offset-1:offset+chunk_size-1].set(T_result)
-        else:
-            # Staying the same size
-            if first_chunk and not last_chunk:
-                S_buf = S_buf.at[1+offset:offset+chunk_size+1].set(S_result)
-            elif first_chunk and last_chunk:
-                # S_result will be chunk_size elements, but we are skipping last, which lines up with offset
-                S_buf = S_buf.at[1+offset:offset+chunk_size].set(S_result[:-1])
-            else: # first_chunk is false and last_chunk is false
-                S_buf = S_buf.at[1+offset:offset+chunk_size+1].set(S_result[:-1])
-            # T is just straight assignement
-            T_buf = T_buf.at[offset:offset+chunk_size].set(T_result)
-
-    return S_buf, T_buf
 
 
 @partial(jit, static_argnums=(3,))
