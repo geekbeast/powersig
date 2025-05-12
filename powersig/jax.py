@@ -92,7 +92,7 @@ class PowerSigJax:
         psi_t = build_stencil_t(self.v_t, order=self.order, dtype=jnp.float64)
         ic = jnp.zeros([self.order], dtype=X.dtype, device=X.device).at[0].set(1)
         longest_diagonal = min(X.shape[1], Y.shape[1])
-        diagonal_count = X.shape[1] + Y.shape[1] - 1)
+        diagonal_count = X.shape[1] + Y.shape[1] - 1
         
         # Compute the derivatives for the entire batch at once
         dX = jax_compute_derivative_batch(X)
