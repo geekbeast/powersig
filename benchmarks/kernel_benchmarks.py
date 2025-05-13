@@ -87,10 +87,10 @@ class PowerSigBenchmark(Benchmark):
         
 
     def compute_signature_kernel(self, data) -> float:
-        # if data.shape[1] > 1024:
-        #     return self.powersig.compute_signature_kernel_chunked(data, data).item()
-        # else:
-        return self.powersig.compute_signature_kernel(data, data).item()
+        if data.shape[1] > 1024:
+            return self.powersig.compute_signature_kernel_chunked(data, data).item()
+        else:
+            return self.powersig.compute_signature_kernel(data, data).item()
 
 
 class PowerSigCupyBenchmark(Benchmark):

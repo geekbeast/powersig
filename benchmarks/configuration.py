@@ -28,7 +28,7 @@ DURATION = "duration"
 LENGTH = "length"
 ORDER = "order"
 DYADIC_ORDER = "dyadic_order"
-HURST = "hurst"  # New field for Hurst parameter
+HURST = "hurst" 
 CSV_FIELDS = [LENGTH, RUN_ID, DURATION, GPU_MEMORY, CUPY_MEMORY, CPU_MEMORY, ORDER, DYADIC_ORDER, HURST, SIGNATURE_KERNEL]
 
 POLYSIG_BACKEND = "PolySig"

@@ -826,20 +826,23 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         # Compute gram matrix
         powersig_results = jnp.zeros((self.X.shape[0], self.Y.shape[0]), dtype=jnp.float64)
         ic = jnp.zeros([self.order], dtype=jnp.int32,device = self.X.device).at[0].set(1)
-     
+        longest_diagonal = min(dX.shape[1], dY.shape[1])
         diagonal_count = dX.shape[1] + dY.shape[1] - 1
-        indices = jnp.arange(DIAGONAL_CHUNK_SIZE,device=dX.device)
+        indices = jnp.arange(longest_diagonal,device=dX.device)
         self.powersig_jax = PowerSigJax(self.order, self.X.device)
 
         # Using a loop since we don't have a batched version yet
         for i in range(dX.shape[0]):
             for j in range(dY.shape[0]):
                 powersig_results = powersig_results.at[i, j].set(
-                     chunked_compute_gram_entry(dX[i], dY[j], self.v_s, self.v_t, self.psi_s, self.psi_t, diagonal_count,ic, indices, self.exponents, self.order).item()
+                    #  chunked_compute_gram_entry(dX[i], dY[j], self.v_s, self.v_t, self.psi_s, self.psi_t, diagonal_count, 2, longest_diagonal, ic, indices, self.exponents, self.order).item()
+                     compute_gram_entry(dX[i], dY[j], self.v_s, self.v_t, self.psi_s, self.psi_t, diagonal_count, longest_diagonal, ic, indices, self.exponents, self.order).item()
                 )
 
                 self.assertTrue(jnp.allclose(powersig_results[i, j], self.powersig_jax.compute_signature_kernel_chunked(self.X[i:i+1], self.Y[j:j+1]), rtol=1e-2), f"Powersig JAX chunked result mismatch(i={i}, j={j}): \n{powersig_results[i, j]} != \n{self.powersig_jax.compute_signature_kernel_chunked(self.X[i:i+1], self.Y[j:j+1])}")
                 self.assertTrue(jnp.allclose(powersig_results[i, j], self.powersig_jax.compute_signature_kernel(self.X[i:i+1], self.Y[j:j+1]), rtol=1e-2), f"Powersig JAX result mismatch(i={i}, j={j}): \n{powersig_results[i, j]} != \n{self.powersig_jax.compute_signature_kernel(self.X[i:i+1], self.Y[j:j+1])}")
+        
+        self.assertTrue(jnp.allclose(powersig_results, self.powersig_jax.compute_gram_matrix(self.X, self.Y), rtol=1e-2), f"Powersig JAX class result mismatch: \n{powersig_results} != \n{self.powersig_jax.compute_gram_matrix(self.X, self.Y)}")
         
         # Convert JAX array to numpy for comparison
         powersig_results_np = np.array(powersig_results)

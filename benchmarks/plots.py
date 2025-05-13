@@ -18,6 +18,7 @@ import pandas as pd
 import os
 import matplotlib.pyplot as plt
 import seaborn as sns
+import matplotlib.colors
 
 def generate_plots():
     data = load_csvs()
@@ -179,6 +180,7 @@ def plot_mape(lengths, values):
     plt.legend()
     
     plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'mape_comparison.png'))
+    plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'mape_comparison.svg'))
     plt.close()
 
 def plot_memory_usage(lengths, data):
@@ -251,6 +253,7 @@ def plot_memory_usage(lengths, data):
     plt.legend()
     
     plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'memory_comparison.png'))
+    plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'memory_comparison.svg'))
     plt.close()
 
 def plot_duration(lengths, data):
@@ -323,6 +326,7 @@ def plot_duration(lengths, data):
     plt.legend()
     
     plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'duration_comparison.png'))
+    plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'duration_comparison.svg'))
     plt.close()
 
 def plot_memory_and_duration(lengths, data):
@@ -404,6 +408,7 @@ def plot_memory_and_duration(lengths, data):
     
     # Save the combined plot
     plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'memory_and_duration_comparison.png'))
+    plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'memory_and_duration_comparison.svg'))
     plt.close()
 
 def plot_rough_mape_vs_hurst(data):
@@ -458,6 +463,7 @@ def plot_rough_mape_vs_hurst(data):
     plt.legend()
     
     plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'rough_mape_vs_hurst.png'))
+    plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'rough_mape_vs_hurst.svg'))
     plt.close()
 
 def plot_rough_mape_heatmap(data):
@@ -518,30 +524,39 @@ def plot_rough_mape_heatmap(data):
     tick_indices = np.linspace(0, len(hurst_values)-1, n_ticks, dtype=int)
     tick_labels = [f'{hurst_values[i]:.2f}' for i in tick_indices]
     
-    # Plot heatmaps
+    # Find the global min and max for consistent color scaling
+    valid_data = [d[~np.isnan(d)] for d in [ksig_pde_mape, powersig_mape, powersig_cupy_mape, polysig_mape]]
+    vmin = min(np.min(d) for d in valid_data if len(d) > 0)
+    vmax = max(np.max(d) for d in valid_data if len(d) > 0)
+    
+    # Plot heatmaps with log scale
     sns.heatmap(ksig_pde_mape, ax=axes[0,0], xticklabels=lengths, yticklabels=tick_labels,
-                cmap='viridis', cbar_kws={'label': 'MAPE'}, mask=np.isnan(ksig_pde_mape))
+                cmap='viridis', cbar_kws={'label': 'MAPE'}, mask=np.isnan(ksig_pde_mape),
+                norm=matplotlib.colors.LogNorm(vmin=vmin, vmax=vmax))
     axes[0,0].set_title('KSig PDE')
     axes[0,0].set_xlabel('Length')
     axes[0,0].set_ylabel('Hurst Index')
     axes[0,0].set_yticks(tick_indices)
     
     sns.heatmap(powersig_mape, ax=axes[0,1], xticklabels=lengths, yticklabels=tick_labels,
-                cmap='viridis', cbar_kws={'label': 'MAPE'}, mask=np.isnan(powersig_mape))
+                cmap='viridis', cbar_kws={'label': 'MAPE'}, mask=np.isnan(powersig_mape),
+                norm=matplotlib.colors.LogNorm(vmin=vmin, vmax=vmax))
     axes[0,1].set_title('PowerSig (PyTorch)')
     axes[0,1].set_xlabel('Length')
     axes[0,1].set_ylabel('Hurst Index')
     axes[0,1].set_yticks(tick_indices)
     
     sns.heatmap(powersig_cupy_mape, ax=axes[1,0], xticklabels=lengths, yticklabels=tick_labels,
-                cmap='viridis', cbar_kws={'label': 'MAPE'}, mask=np.isnan(powersig_cupy_mape))
+                cmap='viridis', cbar_kws={'label': 'MAPE'}, mask=np.isnan(powersig_cupy_mape),
+                norm=matplotlib.colors.LogNorm(vmin=vmin, vmax=vmax))
     axes[1,0].set_title('PowerSig (CuPy)')
     axes[1,0].set_xlabel('Length')
     axes[1,0].set_ylabel('Hurst Index')
     axes[1,0].set_yticks(tick_indices)
     
     sns.heatmap(polysig_mape, ax=axes[1,1], xticklabels=lengths, yticklabels=tick_labels,
-                cmap='viridis', cbar_kws={'label': 'MAPE'}, mask=np.isnan(polysig_mape))
+                cmap='viridis', cbar_kws={'label': 'MAPE'}, mask=np.isnan(polysig_mape),
+                norm=matplotlib.colors.LogNorm(vmin=vmin, vmax=vmax))
     axes[1,1].set_title('PolySig')
     axes[1,1].set_xlabel('Length')
     axes[1,1].set_ylabel('Hurst Index')
@@ -549,6 +564,7 @@ def plot_rough_mape_heatmap(data):
     
     plt.tight_layout()
     plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'rough_mape_heatmaps.png'))
+    plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'rough_mape_heatmaps.svg'))
     plt.close()
 
 if __name__ == "__main__": 

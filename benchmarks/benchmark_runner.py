@@ -214,9 +214,9 @@ if __name__== '__main__':
     
     setup_torch()
 
-    benchmark_length = False
+    benchmark_length = True
     benchmark_accuracy = False
-    benchmark_rough_accuracy = True
+    benchmark_rough_accuracy = False
 
     if (benchmark_length):
         active_benchmarks : list[Benchmark] = [
