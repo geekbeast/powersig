@@ -14,7 +14,7 @@ from benchmarks.kernel_benchmarks import (
     SigKernelBenchmark
 )
 import powersig.jax_config
-
+import torch.multiprocessing as mp
 # Configure JAX with optimal settings for benchmarking
 # Using maximum speed optimization
 powersig.jax_config.configure_jax()
@@ -61,153 +61,10 @@ from powersig.cuda import cuda_compute_gram_entry, cuda_compute_gram_entry_coope
 from powersig.util.series import torch_compute_derivative_batch
 from tests.utils import setup_torch
 
-# tcge = torch.compile(tensor_compute_gram_entry)
-tcge = torch.compile(batch_compute_gram_entry)
-
-
-
-
-def benchmark_sigkernel_on_length(X: torch.Tensor) -> dict[str, float]:
-    stats = {"length": X.shape[1], "dyadic_order": dyadic_order}
-
-    print(f"Time series length: {X.shape[1]}")
-    print(f"Dyadic Order: {dyadic_order}")
-
-    with track_peak_memory(SIGKERNEL_BACKEND, stats):
-        sk = signature_kernel.compute_Gram(X, X)
-
-        if sk.shape[0] == 1 and sk.shape[1] == 1:
-            stats[SIGNATURE_KERNEL] = sk.item()
-
-        print(f"SigKernel: \n {sk.tolist()}")
-
-    return stats
-
-def benchmark_ksig_pde_on_length(X: torch.Tensor) -> dict[str, float]:
-    stats = {"length": X.shape[1], "dyadic_order": dyadic_order}
-
-    print(f"Dyadic Order: {dyadic_order}")
-
-    with track_peak_memory(KSIG_PDE_BACKEND, stats):
-        result = ksig_pde_kernel(X, X)
-        if result.shape[0] == 1 and result.shape[1] == 1:
-            stats[SIGNATURE_KERNEL] = result.item()
-        print(f"KSigPDESignatureKernelKSigPDE computation of gram Matrix: \n {result}")
-
-    return stats
-
-def benchmark_ksig_on_length(X: torch.Tensor) -> dict[str, float]:
-    stats = {"length": X.shape[1], "dyadic_order": dyadic_order}
-
-    print(f"Dyadic Order: {dyadic_order}")
-
-    with track_peak_memory(KSIG_BACKEND, stats):
-        result = ksig_kernel(X, X)
-        if result.shape[0] == 1 and result.shape[1] == 1:
-            stats[SIGNATURE_KERNEL] = result.item()
-        print(f"KSigSignatureKernel computation of gram Matrix: \n {result}")
-
-    return stats
-
-def benchmark_powersig_on_length_cp(X: torch.Tensor) -> dict[str, float]:
-    stats = {"length": X.shape[1], "order": POLYNOMIAL_ORDER}
-
-    print(f"Order: {POLYNOMIAL_ORDER}")
-    # Convert PyTorch tensor to NumPy array first
-    X_np = X.cpu().numpy()   
-    # Convert NumPy array to CuPy array
-    X_cp = cp.array(X_np)
-    dX_i = cupy_compute_derivative_batch(X_cp).squeeze()
-    dX_i_clone = cp.copy(dX_i)
-    # ds = 1 / dX_i.shape[0]
-    # dt = 1 / dX_i.shape[0]
-    # v_s, v_t = compute_vandermonde_vectors(ds, dt, POLYNOMIAL_ORDER, X.dtype, X.device)
-    """Context manager to track peak CPU memory usage"""
-    with track_peak_memory(POWERSIG_BACKEND, stats):
-        result = powersig.powersig_cupy.batch_compute_gram_entry(dX_i, dX_i_clone, None, POLYNOMIAL_ORDER).item()
-        stats[SIGNATURE_KERNEL] = result
-
-        print(f"PowerSig computation of gram Matrix: \n {result}")
-
-    return stats
-
-def benchmark_powersig_on_length_cuda(X: torch.Tensor) -> dict[str, float]:
-    stats = {"length": X.shape[1], "order": POLYNOMIAL_ORDER}
-
-    print(f"Order: {POLYNOMIAL_ORDER}")
-    # Convert PyTorch tensor to NumPy array first
-    X_np = X.cpu().numpy()   
-    # Convert NumPy array to CuPy array
-    X_cp = cp.array(X_np)
-    dX_i = cupy_compute_derivative_batch(X_cp).squeeze()
-    dX_i_clone = cp.copy(dX_i)
-    # ds = 1 / dX_i.shape[0]
-    # dt = 1 / dX_i.shape[0]
-    # v_s, v_t = compute_vandermonde_vectors(ds, dt, POLYNOMIAL_ORDER, X.dtype, X.device)
-    """Context manager to track peak CPU memory usage"""
-    with track_peak_memory(POWERSIG_BACKEND, stats):
-        result = cuda_compute_gram_entry_cooperative(dX_i, dX_i_clone, POLYNOMIAL_ORDER).item()
-        stats[SIGNATURE_KERNEL] = result
-
-        print(f"PowerSig computation of gram Matrix: \n {result}")
-
-    return stats
-
-def benchmark_powersig_on_length_jax(X: torch.Tensor) -> dict[str, float]:
-    stats = {"length": X.shape[1], "order": POLYNOMIAL_ORDER}
-
-    print(f"Order: {POLYNOMIAL_ORDER}")
-    X_np = X.cpu().numpy()
-    dX_i = jax_compute_derivative_batch(X_np).squeeze()
-    dX_i_clone = jnp.copy(dX_i)
-    # ds = 1 / dX_i.shape[0]
-    # dt = 1 / dX_i.shape[0]
-    # v_s, v_t = compute_vandermonde_vectors(ds, dt, POLYNOMIAL_ORDER, X.dtype, X.device)
-    """Context manager to track peak CPU memory usage"""
-    with track_peak_memory(POWERSIG_BACKEND, stats):
-        result = powersig.jax.compute_gram_entry(dX_i, dX_i_clone, POLYNOMIAL_ORDER).item()
-        stats[SIGNATURE_KERNEL] = result
-
-        print(f"PowerSig computation of gram Matrix: \n {result}")
-
-    return stats
-
-def benchmark_powersig_on_length(X: torch.Tensor) -> dict[str, float]:
-    stats = {"length": X.shape[1], "order": POLYNOMIAL_ORDER}
-
-    print(f"Order: {POLYNOMIAL_ORDER}")
-    dX_i = torch_compute_derivative_batch(X).squeeze()
-    dX_i_clone = torch.clone(dX_i)
-    # ds = 1 / dX_i.shape[0]
-    # dt = 1 / dX_i.shape[0]
-    # v_s, v_t = compute_vandermonde_vectors(ds, dt, POLYNOMIAL_ORDER, X.dtype, X.device)
-    """Context manager to track peak CPU memory usage"""
-    with track_peak_memory(POWERSIG_BACKEND, stats):
-        result = powersig.torch.compute_gram_entry(dX_i, dX_i_clone, POLYNOMIAL_ORDER).item()
-        # result = tcge(dX_i, dX_i_clone, None, POLYNOMIAL_ORDER).item()
-        stats[SIGNATURE_KERNEL] = result
-
-        print(f"PowerSig computation of gram Matrix: \n {result}")
-
-    return stats
-
-def benchmark_polysig_on_length(X: torch.Tensor) -> dict[str, float]:
-    stats = {"length": X.shape[1], "order": POLYNOMIAL_ORDER}
-
-    print(f"Order: {POLYNOMIAL_ORDER}")
-
-    # Convert PyTorch tensor to JAX array outside of tracking loop
-    X_jax = jnp.array(X.cpu().numpy())
-    
-    with track_peak_memory(POLYSIG_BACKEND, stats):
-        result = polysig_sk.kernel_matrix(X_jax, X_jax)
-        assert result.dtype == jnp.float64, "Result dtype is not float64"    
-        print(f"PolySig result dtype: {result.dtype}")
-        if result.shape[0] == 1 and result.shape[1] == 1:
-            stats[SIGNATURE_KERNEL] = float(result[0, 0])
-        print(f"PolySig computation of gram Matrix: \n {result}")
-
-    return stats
+def mp_benchmark(type: str, benchmark: Benchmark, data: torch.Tensor, hurst: float):
+    print(f"Benchmarking {benchmark.name} on {type} for {data.shape[0]} rounds with length {data.shape[1]} and hurst value {hurst}")
+    for run_id in range(X.shape[0]):
+        benchmark.benchmark(X[run_id:run_id+1], run_id, {HURST: .5})
 
 
 if __name__== '__main__':
@@ -217,68 +74,61 @@ if __name__== '__main__':
     benchmark_length = True
     benchmark_accuracy = False
     benchmark_rough_accuracy = False
+    ctx = mp.get_context('spawn')
 
     if (benchmark_length):
-        active_benchmarks : list[Benchmark] = [
-            KSigBenchmark(debug=False),
-            KSigPDEBenchmark(debug=False),
-            SigKernelBenchmark(debug=False),
-            KSigCPUBenchmark(debug=False),
-            PowerSigCupyBenchmark(debug=False),
-            PowerSigBenchmark(debug=False),
-            PolySigBenchmark(debug=False),
-        ]
-
         for length in [ 2**i for i in range(1, 14)]:
-            print(f"Benchmarking {NUM_PATHS} signature kernels on length {length}")
-            X, _ = fractional_brownian_motion(length,n_paths=NUM_PATHS, dim=2)
-            
-            print(f"Time series shape: {X.shape}")
+            active_benchmarks : list[Benchmark] = [
+                KSigBenchmark(debug=False),
+                KSigPDEBenchmark(debug=False),
+                SigKernelBenchmark(debug=False),
+                KSigCPUBenchmark(debug=False),
+                PowerSigCupyBenchmark(debug=False),
+                PowerSigBenchmark(debug=False),
+                PolySigBenchmark(debug=False),
+            ]
             for benchmark in active_benchmarks:
-                # We run all the benchmarks in sequence to be fairer on JIT.
-                for run_id in range(X.shape[0]):
-                    benchmark.benchmark(X[run_id:run_id+1], run_id)
-            
-            # benchmark.cleanup() # close the files.
+                X, _ = fractional_brownian_motion(length,n_paths=NUM_PATHS, dim=2)
+                p = ctx.Process(target=mp_benchmark, args=("length", benchmark, X, .5))
+                p.start()
+                p.join()
 
 
     if benchmark_accuracy:
-        active_benchmarks : list[Benchmark] = [
-            KSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
-            KSigPDEBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
-            SigKernelBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
-            KSigCPUBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
-            PowerSigCupyBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
-            PowerSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
-            PolySigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
-        ]
-        
-    
         for length in [ 2**i for i in range(1, 14)]:
-            print(f"Benchmarking {NUM_PATHS} signature kernels on length {length}")
+            active_benchmarks : list[Benchmark] = [
+                KSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
+                KSigPDEBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
+                SigKernelBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
+                KSigCPUBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
+                PowerSigCupyBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
+                PowerSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
+                PolySigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
+            ]
             X, _ = fractional_brownian_motion(length,n_paths=NUM_PATHS, dim=2)
             for benchmark in active_benchmarks:
-                for run_id in range(X.shape[0]):
-                    benchmark.benchmark(X[run_id:run_id+1], run_id, {HURST: .5})
+                p = ctx.Process(target=mp_benchmark, args=("accuracy", benchmark, X, .5))
+                p.start()
+                p.join()
 
-    if benchmark_rough_accuracy:
-        active_benchmarks : list[Benchmark] = [
-            KSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
-            KSigPDEBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
-            SigKernelBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
-            KSigCPUBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
-            PowerSigCupyBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
-            PowerSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
-            PolySigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
-        ]
-        
+
+    if benchmark_rough_accuracy:  
         for length in [ 2**i for i in range(1, 12)]:
             for hurst in [ 1/i-.0000000001 for i in range(1, 100)]:
-                print(f"Benchmarking {NUM_PATHS} signature kernels on length {length}")
+                active_benchmarks : list[Benchmark] = [
+                    KSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
+                    KSigPDEBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
+                    SigKernelBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
+                    KSigCPUBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
+                    PowerSigCupyBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
+                    PowerSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
+                    PolySigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
+                ]
                 X, _ = fractional_brownian_motion(length,n_paths=NUM_PATHS, dim=2, hurst=hurst)
                 for benchmark in active_benchmarks:
-                    for run_id in range(X.shape[0]):
-                        benchmark.benchmark(X[run_id:run_id+1], run_id, {HURST: hurst})
+                    p = ctx.Process(target=mp_benchmark_roughness, args=("roughness", hurst, X))
+                    p.start()
+                    p.join()
 
 
         

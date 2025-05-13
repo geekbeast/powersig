@@ -1,3 +1,4 @@
+from math import ceil, sqrt
 import unittest
 import jax
 import jax.numpy as jnp
@@ -5,6 +6,8 @@ import numpy as np
 import torch
 import cupy as cp
 
+import benchmarks
+import benchmarks.generators
 from powersig.jax import DIAGONAL_CHUNK_SIZE, batch_ADM_for_diagonal, build_increasing_matrix, build_stencil_s, build_stencil_t, chunked_compute_gram_entry, compute_boundary, compute_gram_entry
 from powersig.jax import batch_compute_boundaries
 from powersig.jax import compute_vandermonde_vectors
@@ -780,6 +783,10 @@ class TestSignatureKernelConsistency(unittest.TestCase):
                            [[3.0], [2.4], [3.20]], 
                            [[1.5], [2.0], [2.5]]], dtype=jnp.float64)
         
+        X,_ = benchmarks.generators.fractional_brownian_motion(64, 5,False,2)
+        Y,_ = benchmarks.generators.fractional_brownian_motion(64, 5,False,2)
+        self.X = jnp.array(X.numpy(), dtype=jnp.float64)
+        self.Y = jnp.array(Y.numpy(), dtype=jnp.float64)
         # Set up ksig static kernel
         self.static_kernel = ksig.static.kernels.LinearKernel()
         
@@ -830,13 +837,13 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         diagonal_count = dX.shape[1] + dY.shape[1] - 1
         indices = jnp.arange(longest_diagonal,device=dX.device)
         self.powersig_jax = PowerSigJax(self.order, self.X.device)
-
+        batch_size = ceil(sqrt(longest_diagonal))
         # Using a loop since we don't have a batched version yet
         for i in range(dX.shape[0]):
             for j in range(dY.shape[0]):
                 powersig_results = powersig_results.at[i, j].set(
-                    #  chunked_compute_gram_entry(dX[i], dY[j], self.v_s, self.v_t, self.psi_s, self.psi_t, diagonal_count, 2, longest_diagonal, ic, indices, self.exponents, self.order).item()
-                     compute_gram_entry(dX[i], dY[j], self.v_s, self.v_t, self.psi_s, self.psi_t, diagonal_count, longest_diagonal, ic, indices, self.exponents, self.order).item()
+                     chunked_compute_gram_entry(dX[i], dY[j], self.v_s, self.v_t, self.psi_s, self.psi_t, diagonal_count, batch_size, longest_diagonal, ic, indices, self.exponents, self.order).item()
+                    #  compute_gram_entry(dX[i], dY[j], self.v_s, self.v_t, self.psi_s, self.psi_t, diagonal_count, longest_diagonal, ic, indices, self.exponents, self.order).item()
                 )
 
                 self.assertTrue(jnp.allclose(powersig_results[i, j], self.powersig_jax.compute_signature_kernel_chunked(self.X[i:i+1], self.Y[j:j+1]), rtol=1e-2), f"Powersig JAX chunked result mismatch(i={i}, j={j}): \n{powersig_results[i, j]} != \n{self.powersig_jax.compute_signature_kernel_chunked(self.X[i:i+1], self.Y[j:j+1])}")

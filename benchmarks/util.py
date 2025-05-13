@@ -57,7 +57,7 @@ tracking_pool = TrackingMemoryPool()
 cp.cuda.set_allocator(tracking_pool.malloc)
 
 @contextmanager
-def track_peak_memory(backend: Backend, stats):
+def track_peak_memory(backend: Backend, stats, device=None):
     cupy_initial_mem = 0
 
     process = psutil.Process(os.getpid())

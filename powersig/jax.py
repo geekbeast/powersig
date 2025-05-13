@@ -65,7 +65,6 @@ class PowerSigJax:
         psi_s = build_stencil_s(v_s, self.order, dX.dtype, device)
         psi_t = build_stencil_t(v_t, self.order, dY.dtype, device) 
 
-
         indices = jnp.arange(longest_diagonal,device=device)
         return compute_gram_entry(dX, dY, v_s, v_t, psi_s, psi_t, diagonal_count, longest_diagonal, ic, indices, exponents, order=self.order)
 
@@ -479,8 +478,8 @@ def map_diagonal_entry(rho,psi_s, psi_t,exponents, s, t):
     # print(f"t.shape = {t.shape}")
     return s, t
 
-# @jity
-def stable_diagonal_entry(rho,v_s, v_t, exponents, s_coeff, t_coeff):
+@jit
+def stable_diagonal_entry(rho,v_s, v_t, stencil, exponents, s_coeff, t_coeff):
     """
     Compute the diagonal entry for a given time series derivative pair. Not as highly parallelizable as the other version, but
     in theory this should be more numerically stable rho > 1 and larger polynomial orders.
@@ -496,7 +495,7 @@ def stable_diagonal_entry(rho,v_s, v_t, exponents, s_coeff, t_coeff):
     Returns:
         Tuple of (row sum, column sum) for the boundary computation
     """
-    R = rho ** exponents
+    R = stencil *(rho ** exponents)
     U = toeplitz(t_coeff, s_coeff) * R
     return v_t @ U, U @ v_s
 
@@ -579,7 +578,7 @@ def compute_gram_entry(
             #     t = {}
             #     """, d, diagonal_index, s_start, t_start, dlen, is_before_wrap, s_index, t_index, s, t)
             return map_diagonal_entry(rho, psi_s, psi_t, exponents, s, t)
-            # return stable_diagonal_entry(rho, v_s, v_t, exponents, s, t)
+            # return stable_diagonal_entry(rho, v_s, v_t, psi_s, exponents, s, t)
 
         # vmap over
         # print(f"indices = {indices}")
@@ -788,25 +787,30 @@ def chunked_compute_gram_entry(
     cols = dY_j.shape[0]
     rows = dX_i.shape[0]
     
+    # print(f"dX_i.shape = {dX_i.shape}")
+    # print(f"dY_j.shape = {dY_j.shape}")
+    # print(f"diagonal_count = {diagonal_count}")
+    # print(f"longest_diagonal = {longest_diagonal}")
+    # print(f"diagonal_batch_size = {diagonal_batch_size}")
 
     # We will process the diagonals in fixed size batches. If number of diagonals is less than diagonal_batch size this
     # will essentially be the normal for i loop that does everything in 
     for d in range(0,diagonal_count, diagonal_batch_size):
-        print(f"d = {d}")
+        # print(f"d = {d} to {d+diagonal_batch_size}")
         # The reason we slice indices is avoid recompilation for all diagonal sizes.
         # s_start, t_start, dlen = get_diagonal_range(d, dX_i.shape[0], dY_j.shape[0])
 
         # of steps for this unrolled piece of the loop
         # This is the highest diagonal we will get to for this unrolled piece of the loop. 
         max_diag = min(diagonal_count, d + diagonal_batch_size)
-        # This length of the longest diagonal length we will get to for this unrolled piece of the loop.
         
-        if (d+1) <= longest_diagonal and max_diag >= max(rows,cols):
+        # This length of the longest diagonal length we will get to for this unrolled piece of the loop.        
+        if (d+1) >= longest_diagonal and max_diag <= max(rows,cols):
             batch_longest_diag = longest_diagonal
         elif max_diag < longest_diagonal:
-            batch_longest_diag = d+1
+            batch_longest_diag = max_diag
         else:
-            batch_longest_diag = longest_diagonal - ((max_diag) - max(rows,cols))
+            batch_longest_diag =  longest_diagonal - ((d + 1) - max(rows,cols))
             
 
         # print(f"batch_longest_diag = {batch_longest_diag}")
@@ -815,6 +819,7 @@ def chunked_compute_gram_entry(
         # Select the necessary indices for vmap [0, DIAGONAL_LIMIT)
         diagonal_indices = indices[:batch_longest_diag]
         # print(f"diagonal_indices.shape = {diagonal_indices.shape}")
+        # print(f"batch_longest_diag = {batch_longest_diag}")
         def next_diagonal(diagonal_index,carry):
             # jax.debug.print("========================= START OF BATCH {} =========================\n", d)
             t_start = (diagonal_index<cols)*0 + (diagonal_index>=cols)*(diagonal_index-cols +1)
@@ -845,7 +850,7 @@ def chunked_compute_gram_entry(
                 #     t = {}
                 #     """, d, diagonal_index, s_start, t_start, dlen, is_before_wrap, s_index, t_index, s, t)
                 return map_diagonal_entry(rho, psi_s, psi_t, exponents, s, t)
-                # return stable_diagonal_entry(rho, v_s, v_t, exponents, s, t)
+                # return stable_diagonal_entry(rho, v_s, v_t, psi_s, exponents, s, t)
             
             # We will use our reduced diagonal indices to compute the next diagonal.
             S_current, T_current = carry

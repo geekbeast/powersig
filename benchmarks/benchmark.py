@@ -24,9 +24,9 @@ class Benchmark(ABC):
         self.backend = backend
         self.name = name
         self.debug = debug
-        self._setup_writer()
+        self.is_ready = False
     
-    def _setup_writer(self) -> None:
+    def setup_writer(self) -> None:
         """Setup the CSV writer and create file if it doesn't exist."""
         file_exists = os.path.isfile(self.filename)
         
@@ -35,6 +35,8 @@ class Benchmark(ABC):
         
         if not file_exists:
             self.writer.writeheader()
+
+        self.is_ready = True
     
     @abstractmethod
     def setup(self) -> None:
@@ -86,6 +88,10 @@ class Benchmark(ABC):
             run_id: Identifier for this particular benchmark run (required)
             params: Optional dictionary of additional parameters to include in stats
         """
+        # Make sure that the writer is setup for saving benchmark results
+        if not self.is_ready:
+            self.setup_writer()
+
         # Initialize stats with basic info
         stats = {
             "length": data.shape[1],
