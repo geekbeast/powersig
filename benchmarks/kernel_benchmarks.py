@@ -38,11 +38,11 @@ import sigkernel
 
 
 class SigKernelBenchmark(Benchmark):
-    def __init__(self, debug: bool = False):
+    def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR):
         super().__init__(
-            filename=os.path.join(BENCHMARKS_RESULTS_DIR, SIGKERNEL_RESULTS),
+            filename=os.path.join(results_dir, SIGKERNEL_RESULTS),
             csv_fields=CSV_FIELDS,
-            backend=Backend.TORCH,
+            backend=Backend.TORCH_CUDA,
             name=SIGKERNEL_BACKEND,
             debug=debug
         )
@@ -64,9 +64,9 @@ class SigKernelBenchmark(Benchmark):
 
 
 class PowerSigBenchmark(Benchmark):
-    def __init__(self, debug: bool = False):
+    def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR):
         super().__init__(
-            filename=os.path.join(BENCHMARKS_RESULTS_DIR, POWERSIG_RESULTS),
+            filename=os.path.join(results_dir, POWERSIG_RESULTS),
             csv_fields=CSV_FIELDS,
             backend=Backend.JAX_CUDA,
             name="PowerSigJax",
@@ -81,18 +81,22 @@ class PowerSigBenchmark(Benchmark):
         stats["order"] = POLYNOMIAL_ORDER
         # Convert torch tensor to numpy array
         X_np = data.cpu().numpy()
+        
         # Convert numpy array to JAX array
-        return jnp.array(X_np, device=jax.devices("cuda")[1])
+        return jnp.array(X_np, device=jax.devices("cuda")[jax.device_count() - 1])
         
 
     def compute_signature_kernel(self, data) -> float:
+        # if data.shape[1] > 1024:
+        #     return self.powersig.compute_signature_kernel_chunked(data, data).item()
+        # else:
         return self.powersig.compute_signature_kernel(data, data).item()
 
 
 class PowerSigCupyBenchmark(Benchmark):
-    def __init__(self, debug: bool = False):
+    def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR):
         super().__init__(
-            filename=os.path.join(BENCHMARKS_RESULTS_DIR, POWERSIG_CUPY_RESULTS),
+            filename=os.path.join(results_dir, POWERSIG_CUPY_RESULTS),
             csv_fields=CSV_FIELDS,
             backend=Backend.CUPY,
             name="PowerSigCuPy",
@@ -114,9 +118,9 @@ class PowerSigCupyBenchmark(Benchmark):
         
 
 class PowerSigTorchBenchmark(Benchmark):
-    def __init__(self, debug: bool = False):
+    def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR):
         super().__init__(
-            filename=os.path.join(BENCHMARKS_RESULTS_DIR, POWERSIG_TORCH_RESULTS),
+            filename=os.path.join(results_dir, POWERSIG_TORCH_RESULTS),
             csv_fields=CSV_FIELDS,
             backend=Backend.TORCH_CUDA,
             name="PowerSigTorch",
@@ -135,9 +139,9 @@ class PowerSigTorchBenchmark(Benchmark):
 
 
 class PolySigBenchmark(Benchmark):
-    def __init__(self, debug: bool = False):
+    def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR):
         super().__init__(
-            filename=os.path.join(BENCHMARKS_RESULTS_DIR, POLYSIG_RESULTS),
+            filename=os.path.join(results_dir, POLYSIG_RESULTS),
             csv_fields=CSV_FIELDS,
             backend=Backend.JAX_CUDA,
             name="PolySig",
@@ -161,9 +165,9 @@ class PolySigBenchmark(Benchmark):
 
 
 class KSigBenchmark(Benchmark):
-    def __init__(self, debug: bool = False):
+    def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR):
         super().__init__(
-            filename=os.path.join(BENCHMARKS_RESULTS_DIR, KSIG_RESULTS),
+            filename=os.path.join(results_dir, KSIG_RESULTS),
             csv_fields=CSV_FIELDS,
             backend=Backend.CUPY,
             name="KSig",
@@ -184,9 +188,9 @@ class KSigBenchmark(Benchmark):
             raise ValueError("Result is not a scalar")
 
 class KSigCPUBenchmark(Benchmark):
-    def __init__(self, debug: bool = False):
+    def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR):
         super().__init__(
-            filename=os.path.join(BENCHMARKS_RESULTS_DIR, KSIG_CPU_RESULTS),
+            filename=os.path.join(results_dir, KSIG_CPU_RESULTS),
             csv_fields=CSV_FIELDS,
             backend=Backend.CPU,
             name="KSigCPU",
@@ -207,9 +211,9 @@ class KSigCPUBenchmark(Benchmark):
             raise ValueError("Result is not a scalar")
 
 class KSigPDEBenchmark(Benchmark):
-    def __init__(self, debug: bool = False):
+    def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR):
         super().__init__(
-            filename=os.path.join(BENCHMARKS_RESULTS_DIR, KSIG_PDE_RESULTS),
+            filename=os.path.join(results_dir, KSIG_PDE_RESULTS),
             csv_fields=CSV_FIELDS,
             backend=Backend.CUPY,
             name="KSigPDE",
@@ -231,9 +235,9 @@ class KSigPDEBenchmark(Benchmark):
 
 
 class KSigPDECPUBenchmark(Benchmark):
-    def __init__(self, debug: bool = False):
+    def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR):
         super().__init__(
-            filename=os.path.join(BENCHMARKS_RESULTS_DIR, KSIG_PDE_CPU_RESULTS),
+            filename=os.path.join(results_dir, KSIG_PDE_CPU_RESULTS),
             csv_fields=CSV_FIELDS,
             backend=Backend.CPU,
             name="KSigPDE_CPU",

@@ -9,13 +9,13 @@ os.environ["POWERSIG_TESTING"] = "1"
 
 import torch
 
-from powersig.torch import batch_ADM_for_diagonal, batch_compute_gram_entry_psi
+from powersig.torch import batch_ADM_for_diagonal, batch_compute_gram_entry_psi, build_increasing_matrix, compute_gram_entry_vmap
 from powersig.torch import batch_compute_boundaries
 from powersig.torch import compute_vandermonde_vectors
 from powersig.torch import build_stencil
 from powersig.torch import batch_compute_gram_entry, compute_gram_entry
 from powersig.util.series import torch_compute_derivative_batch
-from powersig.powersig_cupy import batch_compute_gram_entry as batch_compute_gram_entry_cupy
+from powersig.powersig_cupy import batch_compute_gram_entry as batch_compute_gram_entry_cupy, build_stencil_s, build_stencil_t
 import cupy as cp
 import ksig
 import ksig.static.kernels
@@ -409,7 +409,7 @@ class TestSignatureKernelConsistency(unittest.TestCase):
     def setUp(self):
         # Determine device to use (CUDA if available, otherwise CPU)
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-
+        print(f"self.device: {self.device}")
         # Create two simple time series
         # self.X = torch.tensor([[[0.0], [1.0], [2.0]],
         #                    [[1.0], [3.0], [3.0]],
@@ -425,7 +425,9 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         
         # Set up ksig static kernel
         self.static_kernel = ksig.static.kernels.LinearKernel()
-        
+        self.order = 32
+        self.dtype = torch.float64
+
         # Set up sigkernel
         self.dyadic_order = 0
         self.signature_kernel = sigkernel.SigKernel(sigkernel.LinearKernel(), self.dyadic_order)
@@ -447,20 +449,36 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         ksig_trunc_kernel = ksig.kernels.SignatureKernel(n_levels=50, order=0, normalize=False, 
                                                         static_kernel=self.static_kernel)
         ksig_trunc_result = ksig_trunc_kernel(X_cpu, Y_cpu)
+        order = self.order
         
         # 5. PowerSig implementation
         # Convert to derivatives
-        dX = torch_compute_derivative_batch(self.X)
-        dY = torch_compute_derivative_batch(self.Y)
+        dX = torch_compute_derivative_batch(self.X).clone()
+        dY = torch_compute_derivative_batch(self.Y).clone()
+        ds = 1/dX.shape[1]
+        dt = 1/dY.shape[1]
+        ds = torch.tensor(ds, dtype=self.dtype, device=self.device)
+        dt = torch.tensor(dt, dtype=self.dtype, device=self.device)
+        v_s, v_t = compute_vandermonde_vectors(ds, dt, self.order)
+        v_s = v_s.clone()
+        v_t = v_t.clone()
+        psi_s = powersig.torch.build_stencil_s(v_s, self.order, self.device, self.dtype).clone()
+        psi_t = powersig.torch.build_stencil_t(v_t, self.order, self.device, self.dtype).clone()
+        ic = torch.zeros((self.order,), dtype=self.dtype, device=self.device)
+        ic[0] = 1
+        exponents = build_increasing_matrix(self.order, self.dtype).clone()
+        longest_diagonal = min(dX.shape[1], dY.shape[1])
+        diagonal_count = dX.shape[1] + dY.shape[1] - 1
+        indices = torch.arange(longest_diagonal)
         
+
         # Compute gram matrix
         powersig_results = torch.zeros((self.X.shape[0], self.Y.shape[0]), dtype=torch.float64, device=self.device)
         powersig_cupy_results = torch.zeros((self.X.shape[0], self.Y.shape[0]), dtype=torch.float64, device=self.device)
-        order = 32
         
         for i in range(dX.shape[0]):
             for j in range(dY.shape[0]):
-                powersig_results[i, j] = batch_compute_gram_entry_psi(dX[i], dY[j], order)
+                powersig_results[i, j] = compute_gram_entry_vmap(dX[i], dY[j],v_s, v_t, psi_s, psi_t, longest_diagonal,diagonal_count, ic, indices,exponents,order)
                 powersig_cupy_results[i, j] = torch.tensor(batch_compute_gram_entry_cupy(cp.array(dX[i].cpu().numpy()), cp.array(dY[j].cpu().numpy()), order),dtype=torch.float64, device=self.device)
         # # Move results to CPU for comparison
         # if powersig_results.is_cuda:

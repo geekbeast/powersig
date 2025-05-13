@@ -75,7 +75,7 @@ class Benchmark(ABC):
         """
         pass
     
-    def benchmark(self, data: Any, run_id: int) -> None:
+    def benchmark(self, data: Any, run_id: int, params: Optional[Dict[str, Any]] = None) -> None:
         """
         Run the actual benchmark on the prepared data.
         This method handles timing and memory tracking.
@@ -84,12 +84,17 @@ class Benchmark(ABC):
             data: The input data to benchmark. Expected shape is (1, length, dim)
                  where length is the length of the time series and dim is its dimension.
             run_id: Identifier for this particular benchmark run (required)
+            params: Optional dictionary of additional parameters to include in stats
         """
-        # Initialize stats
+        # Initialize stats with basic info
         stats = {
             "length": data.shape[1],
             RUN_ID: run_id
         }
+        
+        # Merge in any additional parameters
+        if params is not None:
+            stats.update(params)
         
         try:
             # Prepare the data with stats dictionary

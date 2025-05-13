@@ -5,17 +5,17 @@ import numpy as np
 import torch
 import cupy as cp
 
-from powersig.jax import batch_ADM_for_diagonal, build_stencil_s, build_stencil_t, compute_boundary, compute_gram_entry, process_diagonal, process_diagonal_chunks
+from powersig.jax import DIAGONAL_CHUNK_SIZE, batch_ADM_for_diagonal, build_increasing_matrix, build_stencil_s, build_stencil_t, chunked_compute_gram_entry, compute_boundary, compute_gram_entry
 from powersig.jax import batch_compute_boundaries
 from powersig.jax import compute_vandermonde_vectors
-from powersig.jax import build_stencil
+from powersig.jax import build_stencil, PowerSigJax
 from powersig.jax import batch_compute_gram_entry
 from powersig.util.grid import get_diagonal_range
-from powersig.util.jax_series import jax_compute_derivative_vmap
 import ksig
 import ksig.static.kernels
 from sigkernel import sigkernel
 import powersig.powersig_cupy
+from powersig.util.jax_series import jax_compute_derivative_batch
 
 class TestBatchADMForDiagonal(unittest.TestCase):
     def setUp(self):
@@ -788,6 +788,14 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         self.signature_kernel = sigkernel.SigKernel(sigkernel.LinearKernel(), self.dyadic_order)
         # self.X = X[:,:2,:]
         # self.Y = Y[:,:2,:]
+        self.order = 32
+        self.ds = 1/(self.X.shape[1] - 1)
+        self.dt = 1/(self.Y.shape[1] - 1)
+        self.v_s, self.v_t = compute_vandermonde_vectors(self.ds, self.dt, self.order, jnp.float64, self.X.device)
+        self.psi_s = build_stencil_s(self.v_s, self.order, jnp.float64, self.X.device)
+        self.psi_t = build_stencil_t(self.v_t, self.order, jnp.float64, self.X.device)
+        self.exponents = build_increasing_matrix(self.order, jnp.float64, self.X.device)
+        # self.powersig_jax = powersig.powersig_jax.PowersigJax(self.order, self.dtype, self.X.device)
         
     def test_signature_kernel_consistency(self):
         """Test that different signature kernel implementations give consistent results"""
@@ -812,19 +820,26 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         # 4. PowerSig JAX implementation
         # Convert to derivatives
         
-        dX = jax_compute_derivative_vmap(self.X)   
-        dY = jax_compute_derivative_vmap(self.Y)
+        dX = jax_compute_derivative_batch(self.X)   
+        dY = jax_compute_derivative_batch(self.Y)
         
         # Compute gram matrix
         powersig_results = jnp.zeros((self.X.shape[0], self.Y.shape[0]), dtype=jnp.float64)
-        order = 32
-        
+        ic = jnp.zeros([self.order], dtype=jnp.int32,device = self.X.device).at[0].set(1)
+     
+        diagonal_count = dX.shape[1] + dY.shape[1] - 1
+        indices = jnp.arange(DIAGONAL_CHUNK_SIZE,device=dX.device)
+        self.powersig_jax = PowerSigJax(self.order, self.X.device)
+
         # Using a loop since we don't have a batched version yet
         for i in range(dX.shape[0]):
             for j in range(dY.shape[0]):
                 powersig_results = powersig_results.at[i, j].set(
-                     compute_gram_entry(dX[i], dY[j], order).item()
+                     chunked_compute_gram_entry(dX[i], dY[j], self.v_s, self.v_t, self.psi_s, self.psi_t, diagonal_count,ic, indices, self.exponents, self.order).item()
                 )
+
+                self.assertTrue(jnp.allclose(powersig_results[i, j], self.powersig_jax.compute_signature_kernel_chunked(self.X[i:i+1], self.Y[j:j+1]), rtol=1e-2), f"Powersig JAX chunked result mismatch(i={i}, j={j}): \n{powersig_results[i, j]} != \n{self.powersig_jax.compute_signature_kernel_chunked(self.X[i:i+1], self.Y[j:j+1])}")
+                self.assertTrue(jnp.allclose(powersig_results[i, j], self.powersig_jax.compute_signature_kernel(self.X[i:i+1], self.Y[j:j+1]), rtol=1e-2), f"Powersig JAX result mismatch(i={i}, j={j}): \n{powersig_results[i, j]} != \n{self.powersig_jax.compute_signature_kernel(self.X[i:i+1], self.Y[j:j+1])}")
         
         # Convert JAX array to numpy for comparison
         powersig_results_np = np.array(powersig_results)

@@ -2,4 +2,5 @@ matplotlib
 git+https://github.com/crispitagorico/sigkernel.git
 git+https://github.com/geekbeast/KSig.git
 git+https://github.com/FrancescoPiatti/polysigkernel.git
-jax[cuda12]
+fbm
+seaborn

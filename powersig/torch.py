@@ -10,10 +10,88 @@ import torch._dynamo
 
 from .util.grid import get_diagonal_range
 
-from .util.series import torch_compute_dot_prod_batch
+from .util.series import torch_compute_derivative, torch_compute_derivative_batch, torch_compute_dot_prod_batch
 
 torch._dynamo.config.capture_scalar_outputs = True
 DIAGONAL_CHUNK_SIZE = 16
+
+class PowerSigTorch:
+    def __init__(self, order: int = 32, device: Optional[torch.device] = None):
+        # Select device - prefer CUDA if available, otherwise use CPU
+        self.order = order
+        if device is None:
+            devices = torch.cuda.device_count()
+            self.device = torch.device("cuda:1" if devices == 2 else "cuda" if devices >0 else "cpu")
+        else:
+            self.device = device
+        # self.exponents = jnp.arange(self.order)
+        self.exponents = build_increasing_matrix(self.order, dtype=jnp.float64)
+    
+    @torch.compile(mode="max-autotune", fullgraph=True)
+    def compute_signature_kernel(self, X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
+        """
+        Compute the signature kernel between two sets of time series. 
+        Args:
+            X: JAX array of shape (length, dim) representing the first set of time series
+            Y: JAX array of shape (length, dim) representing the second set of time series
+            symmetric: If True, computes the kernel matrix for the combined set of X and Y. Default is False.
+            
+        Returns:
+            A float representing the signature kernel between X and Y
+
+        """
+        dX = torch_compute_derivative(X.squeeze(0))
+        dY = torch_compute_derivative(Y.squeeze(0))
+         # Calculate values we need before padding
+        diagonal_count = dX.shape[0] + dY.shape[0] - 1
+        longest_diagonal = min(dX.shape[0], dY.shape[0])
+        indices = torch.arange(longest_diagonal)
+        ic = torch.zeros([ self.order], dtype=dX.dtype).at[0].set(1)
+        # Generate Vandermonde vectors with high precision
+        ds = 1.0 / dX.shape[0]
+        dt = 1.0 / dY.shape[0]
+        v_s, v_t = compute_vandermonde_vectors(ds, dt, self.order, dX.dtype)
+
+        # Create the stencil matrices with Vandermonde scaling
+        psi_s = build_stencil_s(v_s, self.order, dX.dtype)
+        psi_t = build_stencil_t(v_t, self.order, dY.dtype)
+        
+        
+        return compute_gram_entry(dX, dY, v_s, v_t, psi_s, psi_t, diagonal_count, longest_diagonal, ic, indices, self.exponents, order=self.order)
+
+    # TODO: Think about jitting this
+    def compute_gram_matrix(self, X: torch.Tensor, Y: torch.Tensor, symmetric: bool = False) -> torch.Tensor:
+        """
+        Compute the Gram matrix between two sets of time series.
+        Args:
+            X: JAX array of shape (batch_size,length, dim) representing the first set of time series
+            Y: JAX array of shape (batch_size, length, dim) representing the second set of time series
+            symmetric: If True, computes the kernel matrix for the combined set of X and Y. Default is False.
+
+        Returns:
+            A JAX array of shape (batch_size, batch_size) containing the Gram matrix between X and Y
+        """
+        gram_matrix = jnp.zeros([X.shape[0], Y.shape[0]], dtype=X.dtype, device=X.device)
+        
+        # These will stay the same for the entire batch
+        ds = 1.0 / X.shape[1]
+        dt = 1.0 / Y.shape[1]
+        v_s, v_t = compute_vandermonde_vectors(ds, dt, self.order, dtype=jnp.float64)
+        psi_s = build_stencil_s(v_s, order=self.order, dtype=X.dtype)
+        psi_t = build_stencil_t(v_t, order=self.order, dtype=X.dtype)
+        ic = torch.zeros([self.order], dtype=X.dtype).at[0].set(1)
+        longest_diagonal = min(X.shape[1], Y.shape[1])
+        diagonal_count = X.shape[1] + Y.shape[1] - 1
+        indices = torch.arange(longest_diagonal)
+        
+
+        dX = torch_compute_derivative_batch(X)
+        dY = torch_compute_derivative_batch(Y)
+        for i in range(X.shape[0]):
+            for j in range(Y.shape[0]):
+                gram_matrix[i,j] = compute_gram_entry(dX, dY, v_s, v_t, psi_s, psi_t, diagonal_count, longest_diagonal, ic, indices, self.exponents)
+
+        return gram_matrix
 
 @torch.compile(mode="max-autotune", fullgraph=True)
 def batch_ADM_for_diagonal(
@@ -289,7 +367,7 @@ def compute_boundary(
     #     diag_length = n - diag_index
     #     diagonals_of_U_s = torch.diagonal(U_s, offset=k, dim1=1, dim2=2)
     #     diagonals_of_U_s.mul_(S[:, diag_index].view(batch_size,1))
-    #     diagonals_of_U_s.mul_(rho_powers[:,:diag_length])
+    #     diagonals_of_U_s.mul_(rho_powers[:,:diag_length])n
 
     #     diagonals_of_U_t = torch.diagonal(U_t, offset=k, dim1=1, dim2=2)
     #     diagonals_of_U_t.mul_(S[:, diag_index].view(batch_size,1))
@@ -298,6 +376,134 @@ def compute_boundary(
     # sum cols, sum rows
     return U_t.sum(dim=1), U_s.sum(dim=2)
 
+    
+def compute_boundary_inplace(psi_s: torch.Tensor, psi_t: torch.Tensor, exponents: torch.Tensor, S: torch.Tensor, T: torch.Tensor, rho: torch.Tensor):
+    """
+    Compute the boundary tensor power series for a fixed-size chunk.
+    
+    Args:
+        psi_s: Fixed-size chunk from larger preallocated U buffer
+        psi_t: Fixed-size chunk from larger preallocated U buffer
+        S: Tensor of shape (n) containing coefficients for upper diagonals
+        T: Tensor of shape (n) containing coefficients for main and lower diagonals
+        rho: Tensor of shape (batch_size,) containing the rho values
+        offset: Offset in the larger buffer
+    """
+    R = rho ** exponents
+    U = torch.zeros_like(R)
+
+    def toeplitz(index):
+        U[:,index:] = T[:T.shape[0]-index]
+        U[index+1:] = S[1:S.shape[0]-index]
+    
+    U = torch.vmap(toeplitz,out_dims=None)(exponents[-1]) 
+    U.mul_(R)
+    # Use direct broadcasting for element-wise multiplication
+    # JAX will automatically broadcast psi_s and psi_t [n, n] to match U [batch_size, n, n]
+    U_s = U * psi_s # Broadcasting happens automatically
+    U_t = U * psi_t # Broadcasting happens automatically
+    
+    # Sum all rows of U_s and all columns of U_t within each batch and store directly in S and T
+    S = torch.sum(U_t, axis=0, out=S)
+    T = torch.sum(U_s, axis=1, out=T)
+
+    return S, T
+
+def map_diagonal_entry(dX_i, dY_j, psi_s, psi_t,exponents, s_coeff, t_coeff, s_start: int, t_start: int, diagonal_index: int):
+    # Compute dot products for valid entries
+    rho = torch.dot(dX_i[s_start- diagonal_index,], dY_j[t_start+ diagonal_index,])
+
+    # Process valid entries with compute_boundary
+    s, t = compute_boundary(psi_s, psi_t, exponents, s_coeff, t_coeff, rho)
+
+
+@torch.compile(mode="max-autotune", fullgraph=True,dynamic=True)
+def compute_gram_entry_vmap(
+    dX_i: torch.Tensor,
+    dY_j: torch.Tensor,
+    v_s: torch.Tensor,
+    v_t: torch.Tensor,
+    psi_s: torch.Tensor,
+    psi_t: torch.Tensor,  
+    diagonal_count: int,
+    longest_diagonal: int,
+    ic: torch.Tensor,
+    indices: torch.Tensor,
+    exponents: torch.Tensor,
+    order: int = 32,
+) -> torch.Tensor:
+    """
+    Compute the gram matrix entry using a batched approach.
+    
+    Args:
+        dX_i: First time series derivatives 
+        dY_j: Second time series derivatives 
+        v_s: Vandermonde vector for s direction
+        v_t: Vandermonde vector for t direction
+        psi_s: First time series power series coefficients
+        psi_t: Second time series power series coefficients
+        diagonal_count: Number of diagonals to compute
+        longest_diagonal: Longest diagonal to compute
+        ic: Initial condition for the power series
+        indices: Indices of the diagonals to compute
+        exponents: Exponents of the power series
+        order: Order of the polynomial approximation
+        
+    Returns:
+        Gram matrix entry (scalar)
+    """
+    # Initialize buffers with proper shapes
+    S_buf = torch.zeros([longest_diagonal, order], dtype=dX_i.dtype, device=dX_i.device)
+    T_buf = torch.zeros([longest_diagonal, order], dtype=dX_i.dtype, device=dX_i.device)
+
+    # Initialize first elements with 1.0
+    S_buf[:, 0] = 1.0
+    T_buf[:, 0] = 1.0
+
+    for d in range(diagonal_count):
+        rows = dX_i.shape[0]
+        cols = dY_j.shape[0]
+        t_start = (d<cols)*0 + (d>=cols)*(d-cols +1)
+        s_start = (d<cols)*d + (d>=cols)*(cols - 1)
+        dlen = min(rows - t_start, s_start + 1)
+        
+        def next_diagonal_entry(diagonal_index):  
+            # Combine the first two where statements into a single mask
+            is_before_wrap = d < dX_i.shape[0]
+            s_index = diagonal_index - is_before_wrap
+            t_index = diagonal_index + (1 - is_before_wrap)
+            
+            # Avoid branching
+
+
+            # s = ((t_start + diagonal_index == 0).cuda() * ic) + ((t_start + diagonal_index != 0).cuda() * S_buf[s_index])
+            # t = ((s_start - diagonal_index == 0).cuda() * ic) + ((s_start - diagonal_index != 0).cuda() * T_buf[t_index])
+                   # Use vectorized operations instead of control flow
+            s_mask = (t_start + diagonal_index == 0).to(dtype=dX_i.dtype, device=dX_i.device)
+            t_mask = (s_start - diagonal_index == 0).to(dtype=dX_i.dtype, device=dX_i.device)
+            
+            # jax.debug.print("""
+            #     d = {},
+            #     diagonal_index {}:
+            #     s_start = {}
+            #     t_start = {}
+            #     dlen = {}
+            #     is_before_wrap = {}
+            #     s_index = {}
+            #     t_index = {}
+            #     s = {}
+            #     t = {}
+            #     """, d, diagonal_index, s_start, t_start, dlen, is_before_wrap, s_index, t_index, s, t)
+            s = s_mask * ic + (1 - s_mask) * S_buf[s_index]
+            t = t_mask * ic + (1 - t_mask) * T_buf[t_index]
+            map_diagonal_entry(dX_i, dY_j, psi_s, psi_t, exponents, s, t, s_start, t_start, diagonal_index)
+        
+        torch.vmap(next_diagonal_entry, out_dims=None)(indices[:d+1])
+    
+    return S_buf[0] @ v_s
+
+
+        
 
 # @torch.compile(mode="max-autotune-no-cudagraphs",dynamic=True)
 # @torch.compile(dynamic=True)
@@ -557,3 +763,30 @@ def batch_compute_gram_entry(
 
     # return torch.matmul(torch.matmul(v_t, u), v_s).item()
     # return torch.einsum("i,bij,j->", v_t, u, v_s)
+
+
+@torch.compile(mode="max-autotune", fullgraph=True)
+def build_increasing_matrix(n: int, dtype=torch.float64) -> torch.Tensor:
+    """
+    Build an n x n matrix where each value is the maximum of its row and column indices.
+    For example, for n=4:
+    [[0, 0, 0, 0],
+     [0, 1, 1, 1],
+     [0, 1, 2, 2],
+     [0, 1, 2, 3]]
+    
+    Args:
+        n: Size of the matrix
+        dtype: Data type of the matrix
+        
+    Returns:
+        Matrix of shape (n, n) with the specified pattern
+    """
+    # Create row and column indices
+    rows = torch.arange(n, dtype=dtype)[:, None]  # Shape: (n, 1)
+    cols = torch.arange(n, dtype=dtype)[None, :]  # Shape: (1, n)
+    
+    # Take maximum of row and column indices
+    matrix = torch.minimum(rows, cols)
+    
+    return matrix

@@ -3,6 +3,7 @@ import cupy as cp
 from benchmarks.benchmark import Benchmark
 # Import our JAX configuration first
 
+from benchmarks.generators import fractional_brownian_motion
 from benchmarks.kernel_benchmarks import (
     KSigBenchmark,
     KSigCPUBenchmark,
@@ -35,6 +36,7 @@ from mpmath.libmp.libintmath import powers
 
 from benchmarks.configuration import (
     BENCHMARKS_RESULTS_DIR,
+    HURST,
     KSIG_BACKEND,
     KSIG_PDE_BACKEND,
     POLYNOMIAL_ORDER,
@@ -212,112 +214,72 @@ if __name__== '__main__':
     
     setup_torch()
 
-    active_benchmarks : list[Benchmark] = [
-        KSigBenchmark(debug=False),
-        KSigPDEBenchmark(debug=False),
-        SigKernelBenchmark(debug=False),
-        # KSigCPUBenchmark(debug=False)
-        # PowerSigCupyBenchmark(debug=False),
-        PowerSigBenchmark(debug=False),
-        PolySigBenchmark(debug=False),
-    ]
+    benchmark_length = False
+    benchmark_accuracy = False
+    benchmark_rough_accuracy = True
 
-    length = 2
-    while length <= MAX_LENGTH:
-        X, _ = generate_brownian_motion(length,n_paths=NUM_PATHS, dim=2)
-        if X.shape[1] < 4:
-            print(f"X = {X.tolist()}")
-            print(f"dX = {torch_compute_derivative_batch(X.unsqueeze(2))}")
+    if (benchmark_length):
+        active_benchmarks : list[Benchmark] = [
+            KSigBenchmark(debug=False),
+            KSigPDEBenchmark(debug=False),
+            SigKernelBenchmark(debug=False),
+            KSigCPUBenchmark(debug=False),
+            PowerSigCupyBenchmark(debug=False),
+            PowerSigBenchmark(debug=False),
+            PolySigBenchmark(debug=False),
+        ]
 
-        print(f"Time series shape: {X.shape}")
-        for benchmark in active_benchmarks:
-            # We run all the benchmarks in sequence to be fairer on JIT.
-            for run_id in range(X.shape[0]):
-                benchmark.benchmark(X[run_id:run_id+1], run_id)
-        
+        for length in [ 2**i for i in range(1, 14)]:
+            print(f"Benchmarking {NUM_PATHS} signature kernels on length {length}")
+            X, _ = fractional_brownian_motion(length,n_paths=NUM_PATHS, dim=2)
+            
+            print(f"Time series shape: {X.shape}")
+            for benchmark in active_benchmarks:
+                # We run all the benchmarks in sequence to be fairer on JIT.
+                for run_id in range(X.shape[0]):
+                    benchmark.benchmark(X[run_id:run_id+1], run_id)
+            
             # benchmark.cleanup() # close the files.
 
-                # if length <= SIG_KERNEL_MAX_LENGTH:
-                #     try:
-            #         stats = benchmark_sigkernel_on_length(X[run_id:run_id+1])
-            #         stats[RUN_ID] = run_id
-            #         writer_skf.writerow(stats)
-            #         skf.flush()
-            #     except OutOfMemoryError as ex:
-            #         print(f"SigKernel ran out of memory for time series of length {X.shape[1]}: {ex}")
 
-            # if length <= KSIG_MAX_LENGTH:
-            #     try:
-            #         stats = benchmark_ksig_pde_on_length(X[run_id:run_id+1])
-            #         stats[RUN_ID] = run_id
-            #         writer_ksf_pde.writerow(stats)
-            #         ksfpde.flush()
-            #     except OutOfMemoryError as ex:
-            #         print(f"KSigPDE ran out of memory for time series of length {X.shape[1]}: {ex}")
-
-            #     try:
-            #         stats = benchmark_ksig_on_length(X[run_id:run_id+1])
-            #         stats[RUN_ID] = run_id
-            #         writer_ksf.writerow(stats)
-            #         ksfpde.flush()
-            #     except OutOfMemoryError as ex:
-            #         print(f"KSig ran out of memory for time series of length {X.shape[1]}: {ex}")
-
-            # if length <= POLYSIG_MAX_LENGTH:
-            #     try:
-            #         stats = benchmark_polysig_on_length(X[run_id:run_id+1])
-            #         stats[RUN_ID] = run_id
-            #         writer_polysig.writerow(stats)
-            #         polysig.flush()
-            #     except OutOfMemoryError as ex:
-            #         print(f"PolySig ran out of memory for time series of length {X.shape[1]}: {ex}")
-
-            # if length <= POWERSIG_MAX_LENGTH:
-            #     try:
-            #         stats = benchmark_powersig_on_length_jax(X.to('cuda:1')[run_id:run_id+1])
-            #         stats[RUN_ID] = run_id
-            #         writer_psf.writerow(stats)
-            #         psf.flush()
-            #     except OutOfMemoryError as ex:
-            #         print(f"PowerSig ran out of memory for time series of length {X.shape[1]}: {ex}")
-            #     except Exception as ex:
-            #         print(f"PowerSig ran into an error for time series of length {X.shape[1]}: {ex}")
-
-        length<<=1
+    if benchmark_accuracy:
+        active_benchmarks : list[Benchmark] = [
+            KSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
+            KSigPDEBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
+            SigKernelBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
+            KSigCPUBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
+            PowerSigCupyBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
+            PowerSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
+            PolySigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
+        ]
+        
     
-    # sk_filename = os.path.join(BENCHMARKS_RESULTS_DIR, SIGKERNEL_RESULTS)
-    # ps_filename = os.path.join(BENCHMARKS_RESULTS_DIR, POWERSIG_RESULTS)
-    # polysig_filename = os.path.join(BENCHMARKS_RESULTS_DIR, POLYSIG_RESULTS)
-    # ks_filename = os.path.join(BENCHMARKS_RESULTS_DIR, KSIG_RESULTS)
-    # kspde_filename = os.path.join(BENCHMARKS_RESULTS_DIR, KSIG_PDE_RESULTS)
+        for length in [ 2**i for i in range(1, 14)]:
+            print(f"Benchmarking {NUM_PATHS} signature kernels on length {length}")
+            X, _ = fractional_brownian_motion(length,n_paths=NUM_PATHS, dim=2)
+            for benchmark in active_benchmarks:
+                for run_id in range(X.shape[0]):
+                    benchmark.benchmark(X[run_id:run_id+1], run_id, {HURST: .5})
 
-    # sk_file_exists = os.path.isfile(sk_filename)
-    # ps_file_exists = os.path.isfile(ps_filename)
-    # polysig_file_exists = os.path.isfile(polysig_filename)
-    # ks_file_exists = os.path.isfile(ks_filename)
-    # kspde_file_exists = os.path.isfile(kspde_filename)
+    if benchmark_rough_accuracy:
+        active_benchmarks : list[Benchmark] = [
+            KSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
+            KSigPDEBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
+            SigKernelBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
+            KSigCPUBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
+            PowerSigCupyBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
+            PowerSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
+            PolySigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
+        ]
+        
+        for length in [ 2**i for i in range(1, 12)]:
+            for hurst in [ 1/i-.0000000001 for i in range(1, 100)]:
+                print(f"Benchmarking {NUM_PATHS} signature kernels on length {length}")
+                X, _ = fractional_brownian_motion(length,n_paths=NUM_PATHS, dim=2, hurst=hurst)
+                for benchmark in active_benchmarks:
+                    for run_id in range(X.shape[0]):
+                        benchmark.benchmark(X[run_id:run_id+1], run_id, {HURST: hurst})
 
-    # with open(sk_filename, 'a', newline='') as skf, open(ps_filename, 'a', newline='') as psf, open(kspde_filename, 'a', newline='') as ksfpde, open(ks_filename, 'a', newline='') as ksf, open(polysig_filename, 'a', newline='') as polysig:
-    #     writer_skf = csv.DictWriter(skf, fieldnames=CSV_FIELDS)
-    #     writer_psf = csv.DictWriter(psf, fieldnames=CSV_FIELDS)
-    #     writer_ksf_pde = csv.DictWriter(ksfpde, fieldnames=CSV_FIELDS)
-    #     writer_ksf = csv.DictWriter(ksf, fieldnames=CSV_FIELDS)
-    #     writer_polysig = csv.DictWriter(polysig, fieldnames=CSV_FIELDS)
-
-    #     if not sk_file_exists:
-    #         writer_skf.writeheader()
-
-    #     if not ps_file_exists:
-    #         writer_psf.writeheader()
-
-    #     if not kspde_file_exists:
-    #         writer_ksf_pde.writeheader()
-
-    #     if not ks_file_exists:
-    #         writer_ksf.writeheader()
-
-    #     if not polysig_file_exists:
-    #         writer_polysig.writeheader()
 
         
 
