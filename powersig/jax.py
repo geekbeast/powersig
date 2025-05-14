@@ -33,7 +33,7 @@ class PowerSigJax:
         else:
             self.device = device
         # self.exponents = jnp.arange(self.order)
-        self.exponents = build_increasing_matrix(self.order, dtype=jnp.float64, device=self.device)
+        self.exponents = build_increasing_matrix(self.order, dtype=jnp.int8, device=self.device)
     
     @partial(jit, static_argnums=(0,3))
     def compute_signature_kernel(self, X: jnp.ndarray, Y: jnp.ndarray, device=None) -> jnp.ndarray:
@@ -65,6 +65,8 @@ class PowerSigJax:
         psi_s = build_stencil_s(v_s, self.order, dX.dtype, device)
         psi_t = build_stencil_t(v_t, self.order, dY.dtype, device) 
 
+        # psi_s = build_stencil(self.order, dX.dtype, device)
+        # psi_t = psi_s
         indices = jnp.arange(longest_diagonal,device=device)
         return compute_gram_entry(dX, dY, v_s, v_t, psi_s, psi_t, diagonal_count, longest_diagonal, ic, indices, exponents, order=self.order)
 
@@ -88,7 +90,10 @@ class PowerSigJax:
 
         # Create the stencil matrices with Vandermonde scaling
         psi_s = build_stencil_s(v_s, self.order, dX.dtype, device)
-        psi_t = build_stencil_t(v_t, self.order, dY.dtype, device) 
+        psi_t = build_stencil_t(v_t, self.order, dY.dtype, device)
+
+        # psi_s = build_stencil(self.order, dX.dtype, device)
+        # psi_t = psi_s  
 
         indices = jnp.arange(longest_diagonal,device=device)
         diagonal_batch_size = ceil(sqrt(longest_diagonal))
@@ -118,6 +123,9 @@ class PowerSigJax:
         v_s, v_t = compute_vandermonde_vectors(ds, dt, self.order, dtype=jnp.float64,device=X.device)
         psi_s = build_stencil_s(v_s, order=self.order, dtype=jnp.float64, device=X.device)
         psi_t = build_stencil_t(v_t, order=self.order, dtype=jnp.float64, device=X.device)
+
+        # psi_s = build_stencil(self.order, dX.dtype, X.device)
+        # psi_t = psi_s
         ic = jnp.zeros([self.order], dtype=X.dtype, device=X.device).at[0].set(1)
 
         longest_diagonal = min(dX.shape[1], dY.shape[1])
@@ -479,7 +487,7 @@ def map_diagonal_entry(rho,psi_s, psi_t,exponents, s, t):
     return s, t
 
 @jit
-def stable_diagonal_entry(rho,v_s, v_t, stencil, exponents, s_coeff, t_coeff):
+def stable_diagonal_entry(rho: jnp.ndarray,v_s: jnp.ndarray, v_t: jnp.ndarray, stencil: jnp.ndarray, exponents: jnp.ndarray, s_coeff: jnp.ndarray, t_coeff: jnp.ndarray):
     """
     Compute the diagonal entry for a given time series derivative pair. Not as highly parallelizable as the other version, but
     in theory this should be more numerically stable rho > 1 and larger polynomial orders.
@@ -555,7 +563,13 @@ def compute_gram_entry(
         # print(f"dX_i.shape = {dX_i.shape}")
         # print(f"dY_j.shape = {dY_j.shape}")
         rho = jax_compute_dot_prod_batch(jnp.take(dX_i, s_start-indices, axis=0, fill_value=0), jnp.take(dY_j, t_start+indices, axis=0, fill_value=0))
-        
+        # print(f"dX_i.shape = {jnp.take(dX_i, s_start-indices, axis=0, fill_value=0).shape}")
+        # print(f"dY_j.shape = {jnp.take(dY_j, t_start+indices, axis=0, fill_value=0).shape}")
+        # rho = jnp.einsum('ij,ij->i', jnp.take(dX_i, s_start-indices, axis=0, fill_value=0), jnp.take(dY_j, t_start+indices, axis=0, fill_value=0))
+        # jnp.allclose(rho, rho2, atol=1e-10, rtol=1e-10), f"rho = {rho}\nrho2 = {rho2}\n ||rho-rho2|| = {jnp.linalg.norm(rho-rho2)}"
+        # jax.debug.print("||rho-rho2|| = {}", jnp.linalg.norm(rho-rho2))
+
+
         def next_diagonal_entry(diagonal_index, rho, S, T):
             # Combine the first two where statements into a single mask
             s_index = diagonal_index - is_before_wrap
@@ -827,7 +841,7 @@ def chunked_compute_gram_entry(
             
             is_before_wrap = diagonal_index < dX_i.shape[0]
             rho = jax_compute_dot_prod_batch(jnp.take(dX_i, s_start-diagonal_indices, axis=0, fill_value=0), jnp.take(dY_j, t_start+diagonal_indices, axis=0, fill_value=0))
-
+            
             def next_diagonal_entry(index_in_diagonal, rho, S, T):
                 # Combine the first two where statements into a single mask
                 s_index = index_in_diagonal - is_before_wrap

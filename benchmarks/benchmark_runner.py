@@ -97,7 +97,7 @@ if __name__== '__main__':
 
 
     if benchmark_accuracy:
-        for length in [ 2**i for i in range(1, 14)]:
+        for length in [ 2**i for i in range(1, 15)]:
             active_benchmarks : list[Benchmark] = [
                 KSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
                 KSigPDEBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),

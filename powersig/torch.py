@@ -513,7 +513,6 @@ def compute_gram_entry(
     order: int = 32,
 ) -> torch.Tensor:
     # Preprocessing
-    dX_i[:] = dX_i.flip(0)
     longest_diagonal = min(dX_i.shape[0], dY_j.shape[0])
 
     # Initial tile

@@ -300,7 +300,7 @@ def plot_duration(lengths, data):
         powersig_df[LENGTH], 
         powersig_df[DURATION]['mean'],
         yerr=powersig_df[DURATION]['std'],
-        fmt='r-o', label='PowerSig (PyTorch)', capsize=5
+        fmt='r-o', label='PowerSig (JAX)', capsize=5
     )
     
     plt.errorbar(
