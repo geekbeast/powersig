@@ -4,6 +4,8 @@ from aeon.datasets import load_classification
 from typing import Tuple, Optional, Dict
 from powersig.jax import PowerSigJax
 import numpy as np
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score
 
 def load_aeon_dataset(
     dataset_name: str,
@@ -60,7 +62,7 @@ def compute_gram_matrix(X: jnp.ndarray, order: int = 32) -> jnp.ndarray:
         Gram matrix of shape (n_samples, n_samples)
     """
     # Initialize PowerSigJax with specified order
-    powersig = PowerSigJax(order=order)
+ 
     
     # Use PowerSigJax's efficient batch computation
     return powersig.compute_gram_matrix(X, X)
@@ -69,6 +71,7 @@ if __name__ == "__main__":
     # Load DuckDuckGeese dataset
     print("Loading DuckDuckGeese dataset...")
     X_train, y_train, label_map = load_aeon_dataset("DuckDuckGeese", split="train")
+    X_test, y_test, _ = load_aeon_dataset("DuckDuckGeese", split="test")
     
     print(f"Dataset shape: {X_train.shape}")
     print(f"Number of classes: {len(jnp.unique(y_train))}")
@@ -77,11 +80,32 @@ if __name__ == "__main__":
         for idx, label in label_map.items():
             print(f"{idx}: {label}")
     
-    # Compute gram matrix
-    print("\nComputing gram matrix...")
+    # Compute gram matrix for training
+    print("\nComputing train gram matrix...")
+    powersig = PowerSigJax(order=8)
     gram_matrix = compute_gram_matrix(X_train)
+    powersig = PowerSigJax(order=8)
+    test_gram_matrix = powersig.compute_gram_matrix(X_test, X_train)
     
     print(f"Gram matrix shape: {gram_matrix.shape}")
     print(f"Gram matrix min: {jnp.min(gram_matrix)}")
     print(f"Gram matrix max: {jnp.max(gram_matrix)}")
     print(f"Gram matrix mean: {jnp.mean(gram_matrix)}")
+
+
+    # Convert to numpy for sklearn
+    gram_matrix_np = np.array(gram_matrix)
+    test_gram_matrix_np = np.array(test_gram_matrix)
+    y_train_np = np.array(y_train)
+    y_test_np = np.array(y_test)
+
+    # Train SVC with precomputed kernel
+    print("\nTraining SVC with precomputed kernel...")
+    clf = SVC(kernel='precomputed')
+    clf.fit(gram_matrix_np, y_train_np)
+
+    # Predict on test set
+    print("\nPredicting on test set...")
+    y_pred = clf.predict(test_gram_matrix_np)
+    acc = accuracy_score(y_test_np, y_pred)
+    print(f"Test accuracy: {acc:.4f}")
