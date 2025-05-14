@@ -935,7 +935,7 @@ def batch_compute_gram_entry(
     return jnp.einsum('i,bij,j->', v_t, u_buf[:1], v_s) 
 
 @partial(jit, static_argnums=(0,1,2))
-def build_increasing_matrix(n: int, dtype=jnp.float64, device=None) -> jnp.ndarray:
+def build_increasing_matrix(n: int, dtype=jnp.int8, device=None) -> jnp.ndarray:
     """
     Build an n x n matrix where each value is the maximum of its row and column indices.
     For example, for n=4:

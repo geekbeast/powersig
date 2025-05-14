@@ -801,7 +801,7 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         self.v_s, self.v_t = compute_vandermonde_vectors(self.ds, self.dt, self.order, jnp.float64, self.X.device)
         self.psi_s = build_stencil_s(self.v_s, self.order, jnp.float64, self.X.device)
         self.psi_t = build_stencil_t(self.v_t, self.order, jnp.float64, self.X.device)
-        self.exponents = build_increasing_matrix(self.order, jnp.float64, self.X.device)
+        self.exponents = build_increasing_matrix(self.order, jnp.int8, self.X.device)
         # self.powersig_jax = powersig.powersig_jax.PowersigJax(self.order, self.dtype, self.X.device)
         
     def test_signature_kernel_consistency(self):

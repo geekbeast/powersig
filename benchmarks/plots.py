@@ -11,7 +11,8 @@ from benchmarks.configuration import (
     GPU_MEMORY,
     CUPY_MEMORY,
     DURATION,
-    HURST
+    HURST,
+    RUN_ID
 )
 import numpy as np
 import pandas as pd
@@ -166,7 +167,7 @@ def plot_mape(lengths, values):
     
     # Plot lines without error bars
     plt.plot(unique_lengths, ksig_pde_mapes, 'b-o', label='KSig PDE')
-    plt.plot(unique_lengths, powersig_mapes, 'r-o', label='PowerSig (PyTorch)')
+    plt.plot(unique_lengths, powersig_mapes, 'r-o', label='PowerSig (JAX)')
     plt.plot(unique_lengths, powersig_cupy_mapes, 'c-o', label='PowerSig (CuPy)')
     plt.plot(unique_lengths, polysig_mapes, 'g-o', label='PolySig')
     
@@ -186,24 +187,24 @@ def plot_mape(lengths, values):
 def plot_memory_usage(lengths, data):
     plt.figure(figsize=(10, 6))
     
-    # Get full memory usage data and compute statistics by length
-    ksig_df = data[KSIG_RESULTS].groupby(LENGTH).agg({
+    # Get full memory usage data and compute statistics by length, excluding first run
+    ksig_df = data[KSIG_RESULTS][data[KSIG_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
         GPU_MEMORY: ['mean', 'std']
     }).reset_index()
     
-    ksig_pde_df = data[KSIG_PDE_RESULTS].groupby(LENGTH).agg({
+    ksig_pde_df = data[KSIG_PDE_RESULTS][data[KSIG_PDE_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
         GPU_MEMORY: ['mean', 'std']
     }).reset_index()
     
-    powersig_df = data[POWERSIG_RESULTS].groupby(LENGTH).agg({
+    powersig_df = data[POWERSIG_RESULTS][data[POWERSIG_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
         GPU_MEMORY: ['mean', 'std']
     }).reset_index()
     
-    powersig_cupy_df = data[POWERSIG_CUPY_RESULTS].groupby(LENGTH).agg({
+    powersig_cupy_df = data[POWERSIG_CUPY_RESULTS][data[POWERSIG_CUPY_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
         GPU_MEMORY: ['mean', 'std']
     }).reset_index()
     
-    polysig_df = data[POLYSIG_RESULTS].groupby(LENGTH).agg({
+    polysig_df = data[POLYSIG_RESULTS][data[POLYSIG_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
         GPU_MEMORY: ['mean', 'std']
     }).reset_index()
     
@@ -226,7 +227,7 @@ def plot_memory_usage(lengths, data):
         powersig_df[LENGTH], 
         powersig_df[GPU_MEMORY]['mean'],
         yerr=powersig_df[GPU_MEMORY]['std'],
-        fmt='r-o', label='PowerSig (PyTorch)', capsize=5
+        fmt='r-o', label='PowerSig (JAX)', capsize=5
     )
     
     plt.errorbar(
@@ -259,24 +260,24 @@ def plot_memory_usage(lengths, data):
 def plot_duration(lengths, data):
     plt.figure(figsize=(10, 6))
     
-    # Compute statistics by length for each method
-    ksig_df = data[KSIG_RESULTS].groupby(LENGTH).agg({
+    # Compute statistics by length for each method, excluding first run (run_id = 0)
+    ksig_df = data[KSIG_RESULTS][data[KSIG_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
         DURATION: ['mean', 'std']
     }).reset_index()
     
-    ksig_pde_df = data[KSIG_PDE_RESULTS].groupby(LENGTH).agg({
+    ksig_pde_df = data[KSIG_PDE_RESULTS][data[KSIG_PDE_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
         DURATION: ['mean', 'std']
     }).reset_index()
     
-    powersig_df = data[POWERSIG_RESULTS].groupby(LENGTH).agg({
+    powersig_df = data[POWERSIG_RESULTS][data[POWERSIG_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
         DURATION: ['mean', 'std']
     }).reset_index()
     
-    powersig_cupy_df = data[POWERSIG_CUPY_RESULTS].groupby(LENGTH).agg({
+    powersig_cupy_df = data[POWERSIG_CUPY_RESULTS][data[POWERSIG_CUPY_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
         DURATION: ['mean', 'std']
     }).reset_index()
     
-    polysig_df = data[POLYSIG_RESULTS].groupby(LENGTH).agg({
+    polysig_df = data[POLYSIG_RESULTS][data[POLYSIG_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
         DURATION: ['mean', 'std']
     }).reset_index()
     
@@ -333,31 +334,31 @@ def plot_memory_and_duration(lengths, data):
     # Create a figure with two subplots side by side
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
     
-    # Get data and compute statistics for memory plot
-    ksig_df = data[KSIG_RESULTS].groupby(LENGTH).agg({
+    # Get data and compute statistics for memory plot, excluding first run
+    ksig_df = data[KSIG_RESULTS][data[KSIG_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
         GPU_MEMORY: ['mean']
     }).reset_index()
     
-    ksig_pde_df = data[KSIG_PDE_RESULTS].groupby(LENGTH).agg({
+    ksig_pde_df = data[KSIG_PDE_RESULTS][data[KSIG_PDE_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
         GPU_MEMORY: ['mean']
     }).reset_index()
     
-    powersig_df = data[POWERSIG_RESULTS].groupby(LENGTH).agg({
+    powersig_df = data[POWERSIG_RESULTS][data[POWERSIG_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
         GPU_MEMORY: ['mean']
     }).reset_index()
     
-    powersig_cupy_df = data[POWERSIG_CUPY_RESULTS].groupby(LENGTH).agg({
+    powersig_cupy_df = data[POWERSIG_CUPY_RESULTS][data[POWERSIG_CUPY_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
         GPU_MEMORY: ['mean']
     }).reset_index()
     
-    polysig_df = data[POLYSIG_RESULTS].groupby(LENGTH).agg({
+    polysig_df = data[POLYSIG_RESULTS][data[POLYSIG_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
         GPU_MEMORY: ['mean']
     }).reset_index()
     
     # Memory plot
     ax1.plot(ksig_df[LENGTH], ksig_df[GPU_MEMORY]['mean'], 'g-o', label='KSig (CuPy)')
     ax1.plot(ksig_pde_df[LENGTH], ksig_pde_df[GPU_MEMORY]['mean'], 'b-o', label='KSig PDE (CuPy)')
-    ax1.plot(powersig_df[LENGTH], powersig_df[GPU_MEMORY]['mean'], 'r-o', label='PowerSig (PyTorch)')
+    ax1.plot(powersig_df[LENGTH], powersig_df[GPU_MEMORY]['mean'], 'r-o', label='PowerSig (JAX)')
     ax1.plot(powersig_cupy_df[LENGTH], powersig_cupy_df[GPU_MEMORY]['mean'], 'c-o', label='PowerSig (CuPy)')
     ax1.plot(polysig_df[LENGTH], polysig_df[GPU_MEMORY]['mean'], 'm-o', label='PolySig (JAX)')
     
@@ -368,31 +369,31 @@ def plot_memory_and_duration(lengths, data):
     ax1.set_title('Memory Usage')
     ax1.legend()
     
-    # Get data and compute statistics for duration plot
-    ksig_df = data[KSIG_RESULTS].groupby(LENGTH).agg({
+    # Get data and compute statistics for duration plot, excluding first run
+    ksig_df = data[KSIG_RESULTS][data[KSIG_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
         DURATION: ['mean']
     }).reset_index()
     
-    ksig_pde_df = data[KSIG_PDE_RESULTS].groupby(LENGTH).agg({
+    ksig_pde_df = data[KSIG_PDE_RESULTS][data[KSIG_PDE_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
         DURATION: ['mean']
     }).reset_index()
     
-    powersig_df = data[POWERSIG_RESULTS].groupby(LENGTH).agg({
+    powersig_df = data[POWERSIG_RESULTS][data[POWERSIG_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
         DURATION: ['mean']
     }).reset_index()
     
-    powersig_cupy_df = data[POWERSIG_CUPY_RESULTS].groupby(LENGTH).agg({
+    powersig_cupy_df = data[POWERSIG_CUPY_RESULTS][data[POWERSIG_CUPY_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
         DURATION: ['mean']
     }).reset_index()
     
-    polysig_df = data[POLYSIG_RESULTS].groupby(LENGTH).agg({
+    polysig_df = data[POLYSIG_RESULTS][data[POLYSIG_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
         DURATION: ['mean']
     }).reset_index()
     
     # Duration plot
     ax2.plot(ksig_df[LENGTH], ksig_df[DURATION]['mean'], 'g-o', label='KSig')
     ax2.plot(ksig_pde_df[LENGTH], ksig_pde_df[DURATION]['mean'], 'b-o', label='KSig PDE')
-    ax2.plot(powersig_df[LENGTH], powersig_df[DURATION]['mean'], 'r-o', label='PowerSig (PyTorch)')
+    ax2.plot(powersig_df[LENGTH], powersig_df[DURATION]['mean'], 'r-o', label='PowerSig (JAX)')
     ax2.plot(powersig_cupy_df[LENGTH], powersig_cupy_df[DURATION]['mean'], 'c-o', label='PowerSig (CuPy)')
     ax2.plot(polysig_df[LENGTH], polysig_df[DURATION]['mean'], 'm-o', label='PolySig')
     
@@ -452,7 +453,7 @@ def plot_rough_mape_vs_hurst(data):
     plt.figure(figsize=(10, 6))
     
     plt.plot(hurst_values, ksig_pde_mapes, 'b-o', label='KSig PDE')
-    plt.plot(hurst_values, powersig_mapes, 'r-o', label='PowerSig (PyTorch)')
+    plt.plot(hurst_values, powersig_mapes, 'r-o', label='PowerSig (JAX)')
     plt.plot(hurst_values, powersig_cupy_mapes, 'c-o', label='PowerSig (CuPy)')
     plt.plot(hurst_values, polysig_mapes, 'g-o', label='PolySig')
     
@@ -532,8 +533,15 @@ def plot_rough_mape_heatmap(data):
     
     # Find the global min and max for consistent color scaling
     valid_data = [ksig_pde_mape, powersig_mape, powersig_cupy_mape, polysig_mape]
-    vmin = min(np.min(d) for d in valid_data)
-    vmax = max(np.max(d) for d in valid_data)
+    # Filter out zeros and find min/max of non-zero values
+    non_zero_data = [d[d > 0] for d in valid_data]
+    if any(len(d) > 0 for d in non_zero_data):
+        vmin = min(np.min(d) for d in non_zero_data if len(d) > 0)
+        vmax = max(np.max(d) for d in non_zero_data if len(d) > 0)
+    else:
+        # If all values are zero, use small non-zero values for visualization
+        vmin = 1e-10
+        vmax = 1e-5
     
     # Plot heatmaps with log scale
     sns.heatmap(ksig_pde_mape, ax=axes[0,0], xticklabels=lengths, yticklabels=tick_labels,
@@ -547,7 +555,7 @@ def plot_rough_mape_heatmap(data):
     sns.heatmap(powersig_mape, ax=axes[0,1], xticklabels=lengths, yticklabels=tick_labels,
                 cmap='viridis', cbar_kws={'label': 'MAPE'},
                 norm=matplotlib.colors.LogNorm(vmin=vmin, vmax=vmax))
-    axes[0,1].set_title('PowerSig (PyTorch)')
+    axes[0,1].set_title('PowerSig (JAX)')
     axes[0,1].set_xlabel('Length')
     axes[0,1].set_ylabel('Hurst Index')
     axes[0,1].set_yticks(tick_indices)
