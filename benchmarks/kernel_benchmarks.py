@@ -72,12 +72,14 @@ class PowerSigBenchmark(Benchmark):
             name="PowerSigJax",
             debug=debug
         )
-        self.powersig = powersig.jax.PowerSigJax(POLYNOMIAL_ORDER)
+        self.powersig = None
 
     def setup(self) -> None:
         pass
 
     def before_run(self, data: torch.Tensor, stats: dict) -> torch.Tensor:
+        if self.powersig is None:
+            self.powersig = powersig.jax.PowerSigJax(POLYNOMIAL_ORDER)
         stats["order"] = POLYNOMIAL_ORDER
         # Convert torch tensor to numpy array
         X_np = data.cpu().numpy()

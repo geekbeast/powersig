@@ -1,5 +1,6 @@
 import cupy as cp
 
+from benchmarks import generators
 from benchmarks.benchmark import Benchmark
 # Import our JAX configuration first
 
@@ -63,14 +64,15 @@ from tests.utils import setup_torch
 
 def mp_benchmark(type: str, benchmark: Benchmark, data: torch.Tensor, hurst: float):
     print(f"Benchmarking {benchmark.name} on {type} for {data.shape[0]} rounds with length {data.shape[1]} and hurst value {hurst}")
-    for run_id in range(X.shape[0]):
-        benchmark.benchmark(X[run_id:run_id+1], run_id, {HURST: .5})
+    for run_id in range(data.shape[0]):
+        benchmark.benchmark(data[run_id:run_id+1], run_id, {HURST: hurst})
 
 
 if __name__== '__main__':
+    print("========== Starting benchmarks! ==========")
     
     setup_torch()
-
+    generators.set_seed(42)
     benchmark_length = True
     benchmark_accuracy = False
     benchmark_rough_accuracy = False
@@ -82,12 +84,12 @@ if __name__== '__main__':
                 KSigBenchmark(debug=False),
                 KSigPDEBenchmark(debug=False),
                 SigKernelBenchmark(debug=False),
-                KSigCPUBenchmark(debug=False),
                 PowerSigCupyBenchmark(debug=False),
                 PowerSigBenchmark(debug=False),
                 PolySigBenchmark(debug=False),
             ]
             for benchmark in active_benchmarks:
+                print(f"Spawning {benchmark.name} for length {length}")
                 X, _ = fractional_brownian_motion(length,n_paths=NUM_PATHS, dim=2)
                 p = ctx.Process(target=mp_benchmark, args=("length", benchmark, X, .5))
                 p.start()
@@ -100,13 +102,13 @@ if __name__== '__main__':
                 KSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
                 KSigPDEBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
                 SigKernelBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
-                KSigCPUBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
                 PowerSigCupyBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
                 PowerSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
                 PolySigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
             ]
             X, _ = fractional_brownian_motion(length,n_paths=NUM_PATHS, dim=2)
             for benchmark in active_benchmarks:
+                print(f"Spawning {benchmark.name} for length {length}")
                 p = ctx.Process(target=mp_benchmark, args=("accuracy", benchmark, X, .5))
                 p.start()
                 p.join()
@@ -119,14 +121,14 @@ if __name__== '__main__':
                     KSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
                     KSigPDEBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
                     SigKernelBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
-                    KSigCPUBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
                     PowerSigCupyBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
                     PowerSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
                     PolySigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
                 ]
                 X, _ = fractional_brownian_motion(length,n_paths=NUM_PATHS, dim=2, hurst=hurst)
                 for benchmark in active_benchmarks:
-                    p = ctx.Process(target=mp_benchmark_roughness, args=("roughness", hurst, X))
+                    print(f"Spawning {benchmark.name} for length {length} and hurst {hurst}")
+                    p = ctx.Process(target=mp_benchmark, args=("roughness", benchmark, X, hurst))
                     p.start()
                     p.join()
 

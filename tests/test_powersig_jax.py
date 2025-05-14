@@ -782,7 +782,7 @@ class TestSignatureKernelConsistency(unittest.TestCase):
                            [[2.7], [3.0], [4.0]], 
                            [[3.0], [2.4], [3.20]], 
                            [[1.5], [2.0], [2.5]]], dtype=jnp.float64)
-        
+        benchmarks.generators.set_seed(42)
         X,_ = benchmarks.generators.fractional_brownian_motion(64, 5,False,2)
         Y,_ = benchmarks.generators.fractional_brownian_motion(64, 5,False,2)
         self.X = jnp.array(X.numpy(), dtype=jnp.float64)
@@ -829,7 +829,7 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         
         dX = jax_compute_derivative_batch(self.X)   
         dY = jax_compute_derivative_batch(self.Y)
-        
+    
         # Compute gram matrix
         powersig_results = jnp.zeros((self.X.shape[0], self.Y.shape[0]), dtype=jnp.float64)
         ic = jnp.zeros([self.order], dtype=jnp.int32,device = self.X.device).at[0].set(1)

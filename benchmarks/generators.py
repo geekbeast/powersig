@@ -4,6 +4,22 @@ import numpy as np
 from fbm import FBM
 
 
+def set_seed(seed: int):
+    """
+    Set random seed for both NumPy and PyTorch to ensure reproducibility.
+    
+    Args:
+        seed (int): Random seed value
+    """
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
 def generate_brownian_motion(n_steps, n_paths=1, cuda: bool = True, dim: int = 1, T: float = 1.0) -> Tuple[torch.tensor, float]:
     """
     Generate multi-dimensional Brownian motion paths.
@@ -76,6 +92,9 @@ if __name__== '__main__':
     n_steps = 1000
     n_paths = 5
     T = 1.0  # Total time period
+
+    # Set global seed for reproducibility
+    set_seed(42)
 
     # Test standard Brownian motion
     paths, dt = generate_brownian_motion(n_steps, n_paths, T=T)

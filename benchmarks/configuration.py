@@ -6,9 +6,11 @@ import torch
 from sigkernel import sigkernel
 from polysigkernel import SigKernel
 
+from benchmarks.generators import set_seed
+
 _batch, _len_x, _len_y, _dim = 1, 100000, 100, 2
 _fresh = True
-torch.random.manual_seed(1)
+set_seed(42)
 dyadic_order = 0
 
 ksig_static_kernel = ksig.static.kernels.LinearKernel()

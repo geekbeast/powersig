@@ -478,6 +478,22 @@ def plot_rough_mape_heatmap(data):
     lengths = sorted(ksig_df[LENGTH].unique())
     hurst_values = sorted(ksig_df[HURST].unique())
     
+    # Find the minimum number of data points across all implementations
+    min_length = min(
+        len(ksig_df),
+        len(ksig_pde_df),
+        len(powersig_df),
+        len(powersig_cupy_df),
+        len(polysig_df)
+    )
+    
+    # Truncate all dataframes to the minimum length
+    ksig_df = ksig_df.iloc[:min_length]
+    ksig_pde_df = ksig_pde_df.iloc[:min_length]
+    powersig_df = powersig_df.iloc[:min_length]
+    powersig_cupy_df = powersig_cupy_df.iloc[:min_length]
+    polysig_df = polysig_df.iloc[:min_length]
+    
     # Create heatmap data for each implementation
     ksig_pde_mape = np.zeros((len(hurst_values), len(lengths)))
     powersig_mape = np.zeros((len(hurst_values), len(lengths)))
@@ -494,26 +510,16 @@ def plot_rough_mape_heatmap(data):
             powersig_cupy_vals = powersig_cupy_df[(powersig_cupy_df[HURST] == h) & (powersig_cupy_df[LENGTH] == l)][SIGNATURE_KERNEL].values
             polysig_vals = polysig_df[(polysig_df[HURST] == h) & (polysig_df[LENGTH] == l)][SIGNATURE_KERNEL].values
             
-            # Only calculate MAPE if we have data for both implementations
-            if len(ksig_vals) > 0 and len(ksig_pde_vals) > 0:
-                ksig_pde_mape[i, j] = np.mean(np.abs((ksig_pde_vals - ksig_vals) / ksig_vals))
-            else:
-                ksig_pde_mape[i, j] = np.nan
-                
-            if len(ksig_vals) > 0 and len(powersig_vals) > 0:
-                powersig_mape[i, j] = np.mean(np.abs((powersig_vals - ksig_vals) / ksig_vals))
-            else:
-                powersig_mape[i, j] = np.nan
-                
-            if len(ksig_vals) > 0 and len(powersig_cupy_vals) > 0:
-                powersig_cupy_mape[i, j] = np.mean(np.abs((powersig_cupy_vals - ksig_vals) / ksig_vals))
-            else:
-                powersig_cupy_mape[i, j] = np.nan
-                
-            if len(ksig_vals) > 0 and len(polysig_vals) > 0:
-                polysig_mape[i, j] = np.mean(np.abs((polysig_vals - ksig_vals) / ksig_vals))
-            else:
-                polysig_mape[i, j] = np.nan
+            # Calculate MAPE for each implementation
+            if len(ksig_vals) > 0:
+                if len(ksig_pde_vals) > 0:
+                    ksig_pde_mape[i, j] = np.mean(np.abs((ksig_pde_vals - ksig_vals) / ksig_vals))
+                if len(powersig_vals) > 0:
+                    powersig_mape[i, j] = np.mean(np.abs((powersig_vals - ksig_vals) / ksig_vals))
+                if len(powersig_cupy_vals) > 0:
+                    powersig_cupy_mape[i, j] = np.mean(np.abs((powersig_cupy_vals - ksig_vals) / ksig_vals))
+                if len(polysig_vals) > 0:
+                    polysig_mape[i, j] = np.mean(np.abs((polysig_vals - ksig_vals) / ksig_vals))
     
     # Create subplots for each implementation
     fig, axes = plt.subplots(2, 2, figsize=(15, 12))
@@ -525,13 +531,13 @@ def plot_rough_mape_heatmap(data):
     tick_labels = [f'{hurst_values[i]:.2f}' for i in tick_indices]
     
     # Find the global min and max for consistent color scaling
-    valid_data = [d[~np.isnan(d)] for d in [ksig_pde_mape, powersig_mape, powersig_cupy_mape, polysig_mape]]
-    vmin = min(np.min(d) for d in valid_data if len(d) > 0)
-    vmax = max(np.max(d) for d in valid_data if len(d) > 0)
+    valid_data = [ksig_pde_mape, powersig_mape, powersig_cupy_mape, polysig_mape]
+    vmin = min(np.min(d) for d in valid_data)
+    vmax = max(np.max(d) for d in valid_data)
     
     # Plot heatmaps with log scale
     sns.heatmap(ksig_pde_mape, ax=axes[0,0], xticklabels=lengths, yticklabels=tick_labels,
-                cmap='viridis', cbar_kws={'label': 'MAPE'}, mask=np.isnan(ksig_pde_mape),
+                cmap='viridis', cbar_kws={'label': 'MAPE'},
                 norm=matplotlib.colors.LogNorm(vmin=vmin, vmax=vmax))
     axes[0,0].set_title('KSig PDE')
     axes[0,0].set_xlabel('Length')
@@ -539,7 +545,7 @@ def plot_rough_mape_heatmap(data):
     axes[0,0].set_yticks(tick_indices)
     
     sns.heatmap(powersig_mape, ax=axes[0,1], xticklabels=lengths, yticklabels=tick_labels,
-                cmap='viridis', cbar_kws={'label': 'MAPE'}, mask=np.isnan(powersig_mape),
+                cmap='viridis', cbar_kws={'label': 'MAPE'},
                 norm=matplotlib.colors.LogNorm(vmin=vmin, vmax=vmax))
     axes[0,1].set_title('PowerSig (PyTorch)')
     axes[0,1].set_xlabel('Length')
@@ -547,7 +553,7 @@ def plot_rough_mape_heatmap(data):
     axes[0,1].set_yticks(tick_indices)
     
     sns.heatmap(powersig_cupy_mape, ax=axes[1,0], xticklabels=lengths, yticklabels=tick_labels,
-                cmap='viridis', cbar_kws={'label': 'MAPE'}, mask=np.isnan(powersig_cupy_mape),
+                cmap='viridis', cbar_kws={'label': 'MAPE'},
                 norm=matplotlib.colors.LogNorm(vmin=vmin, vmax=vmax))
     axes[1,0].set_title('PowerSig (CuPy)')
     axes[1,0].set_xlabel('Length')
@@ -555,7 +561,7 @@ def plot_rough_mape_heatmap(data):
     axes[1,0].set_yticks(tick_indices)
     
     sns.heatmap(polysig_mape, ax=axes[1,1], xticklabels=lengths, yticklabels=tick_labels,
-                cmap='viridis', cbar_kws={'label': 'MAPE'}, mask=np.isnan(polysig_mape),
+                cmap='viridis', cbar_kws={'label': 'MAPE'},
                 norm=matplotlib.colors.LogNorm(vmin=vmin, vmax=vmax))
     axes[1,1].set_title('PolySig')
     axes[1,1].set_xlabel('Length')
