@@ -88,9 +88,9 @@ if __name__== '__main__':
                 PowerSigBenchmark(debug=False),
                 PolySigBenchmark(debug=False),
             ]
+            X, _ = fractional_brownian_motion(length,n_paths=NUM_PATHS, dim=2)
             for benchmark in active_benchmarks:
                 print(f"Spawning {benchmark.name} for length {length}")
-                X, _ = fractional_brownian_motion(length,n_paths=NUM_PATHS, dim=2)
                 p = ctx.Process(target=mp_benchmark, args=("length", benchmark, X, .5))
                 p.start()
                 p.join()
