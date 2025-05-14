@@ -1,5 +1,6 @@
 import cupy as cp
-
+import os
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 from benchmarks import generators
 from benchmarks.benchmark import Benchmark
 # Import our JAX configuration first
@@ -77,7 +78,7 @@ if __name__== '__main__':
     benchmark_accuracy = False
     benchmark_rough_accuracy = False
     ctx = mp.get_context('spawn')
-
+    os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
     if (benchmark_length):
         for length in [ 2**i for i in range(1, 14)]:
             active_benchmarks : list[Benchmark] = [
