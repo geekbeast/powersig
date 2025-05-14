@@ -562,10 +562,11 @@ def compute_gram_entry(
 
         # print(f"dX_i.shape = {dX_i.shape}")
         # print(f"dY_j.shape = {dY_j.shape}")
-        rho = jax_compute_dot_prod_batch(jnp.take(dX_i, s_start-indices, axis=0, fill_value=0), jnp.take(dY_j, t_start+indices, axis=0, fill_value=0))
+        # rho = jax_compute_dot_prod_batch(jnp.take(dX_i, s_start-indices, axis=0, fill_value=0), jnp.take(dY_j, t_start+indices, axis=0, fill_value=0))
         # print(f"dX_i.shape = {jnp.take(dX_i, s_start-indices, axis=0, fill_value=0).shape}")
         # print(f"dY_j.shape = {jnp.take(dY_j, t_start+indices, axis=0, fill_value=0).shape}")
-        # rho = jnp.einsum('ij,ij->i', jnp.take(dX_i, s_start-indices, axis=0, fill_value=0), jnp.take(dY_j, t_start+indices, axis=0, fill_value=0))
+        rho = jnp.einsum('ij,ij->i', jnp.take(dX_i, s_start-indices, axis=0, fill_value=0), jnp.take(dY_j, t_start+indices, axis=0, fill_value=0),
+                             precision=jax.lax.Precision.HIGHEST)
         # jnp.allclose(rho, rho2, atol=1e-10, rtol=1e-10), f"rho = {rho}\nrho2 = {rho2}\n ||rho-rho2|| = {jnp.linalg.norm(rho-rho2)}"
         # jax.debug.print("||rho-rho2|| = {}", jnp.linalg.norm(rho-rho2))
 
@@ -840,8 +841,9 @@ def chunked_compute_gram_entry(
             s_start = (diagonal_index<cols)*diagonal_index + (diagonal_index>=cols)*(cols - 1)
             
             is_before_wrap = diagonal_index < dX_i.shape[0]
-            rho = jax_compute_dot_prod_batch(jnp.take(dX_i, s_start-diagonal_indices, axis=0, fill_value=0), jnp.take(dY_j, t_start+diagonal_indices, axis=0, fill_value=0))
-            
+            # rho = jax_compute_dot_prod_batch(jnp.take(dX_i, s_start-diagonal_indices, axis=0, fill_value=0), jnp.take(dY_j, t_start+diagonal_indices, axis=0, fill_value=0))
+            rho = jnp.einsum('ij,ij->i', jnp.take(dX_i, s_start-diagonal_indices, axis=0, fill_value=0), jnp.take(dY_j, t_start+diagonal_indices, axis=0, fill_value=0),
+                             precision=jax.lax.Precision.HIGHEST)
             def next_diagonal_entry(index_in_diagonal, rho, S, T):
                 # Combine the first two where statements into a single mask
                 s_index = index_in_diagonal - is_before_wrap

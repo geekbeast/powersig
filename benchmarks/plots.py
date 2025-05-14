@@ -413,8 +413,8 @@ def plot_memory_and_duration(lengths, data):
     plt.close()
 
 def plot_rough_mape_vs_hurst(data):
-    # Choose a fixed length (e.g., 2048)
-    fixed_length = 2048
+    # Choose a fixed length (e.g., 513)
+    fixed_length = 513
     
     # Get data for each implementation
     ksig_df = data[KSIG_RESULTS]
@@ -460,6 +460,8 @@ def plot_rough_mape_vs_hurst(data):
     plt.xlabel('Hurst Index')
     plt.ylabel('MAPE (relative to KSig)')
     plt.title(f'Mean Absolute Percentage Error vs Hurst Index (Length={fixed_length})')
+    plt.xscale('log')
+    plt.yscale('log')
     plt.grid(True, which="both", ls="-", alpha=0.2)
     plt.legend()
     

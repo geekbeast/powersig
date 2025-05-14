@@ -28,7 +28,7 @@ def configure_jax():
     jax.config.update('jax_disable_most_optimizations', False)
     jax.config.update('jax_exec_time_optimization_effort', 1.0)
 
-
+    jax.config.update('jax_default_matmul_precision', 'highest')
     # Enable and configure compilation cache
     jax.config.update('jax_enable_compilation_cache', True)
     jax.config.update('jax_compilation_cache_max_size', 2048 * 1024 * 1024)  # 2GB cache
