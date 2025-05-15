@@ -107,7 +107,7 @@ class Benchmark(ABC):
             prepared_data = self.before_run(data, stats)
             
             # Run the benchmark with memory tracking
-            with track_peak_memory(self.backend, stats):
+            with track_peak_memory(self.backend, stats, data.device):
                 result = self.compute_signature_kernel(prepared_data)
                 stats[SIGNATURE_KERNEL] = result
                 

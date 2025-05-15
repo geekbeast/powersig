@@ -22,11 +22,11 @@ import seaborn as sns
 import matplotlib.colors
 
 def generate_plots():
-    data = load_csvs()
-    results = get_accuracy(data)
-    plot_memory_usage(results['lengths'], data)
-    plot_duration(results['lengths'], data)
-    plot_memory_and_duration(results['lengths'], data)
+    # data = load_csvs()
+    # results = get_accuracy(data)
+    # plot_memory_usage(results['lengths'], data)
+    # plot_duration(results['lengths'], data)
+    # plot_memory_and_duration(results['lengths'], data)
 
     accuracy_data = load_accuracy_csvs()
     accuracy_results = get_accuracy(accuracy_data)

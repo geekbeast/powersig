@@ -21,6 +21,7 @@ import torch.multiprocessing as mp
 # Using maximum speed optimization
 
 import torch.cuda
+import numpy as np
 
 
 from benchmarks.configuration import (
@@ -85,7 +86,7 @@ if __name__== '__main__':
 
     if benchmark_rough_accuracy:  
         for length in [ 2**i for i in range(1, 10)]:
-            for hurst in [ 1/i-.0000000001 for i in range(1, 100)]:
+            for hurst in np.logspace(-2, 0, 100) - 1e-3:
                 active_benchmarks : list[Benchmark] = [
                     KSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
                     KSigPDEBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
@@ -107,7 +108,7 @@ if __name__== '__main__':
                 KSigBenchmark(debug=False),
                 KSigPDEBenchmark(debug=False),
                 SigKernelBenchmark(debug=False),
-                PowerSigCupyBenchmark(debug=False),
+                # PowerSigCupyBenchmark(debug=False),
                 PowerSigBenchmark(debug=False),
                 PolySigBenchmark(debug=False),
             ]
