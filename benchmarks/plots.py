@@ -23,17 +23,18 @@ import matplotlib.colors
 
 def generate_plots():
     data = load_csvs()
-    accuracy_data = load_accuracy_csvs()
-    rough_data = load_rough_csvs()
     results = get_accuracy(data)
+    plot_memory_usage(results['lengths'], data)
+    plot_duration(results['lengths'], data)
+    plot_memory_and_duration(results['lengths'], data)
+
+    accuracy_data = load_accuracy_csvs()
     accuracy_results = get_accuracy(accuracy_data)
     
     # Use accuracy data for MAPE plot
     plot_mape(accuracy_results['lengths'], accuracy_results['mape_data'])
-    plot_memory_usage(results['lengths'], data)
-    plot_duration(results['lengths'], data)
-    plot_memory_and_duration(results['lengths'], data)
     
+    rough_data = load_rough_csvs()
     # Add rough time series plots
     plot_rough_mape_vs_hurst(rough_data)
     plot_rough_mape_heatmap(rough_data)

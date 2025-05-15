@@ -74,10 +74,11 @@ def time_augment(X: jnp.ndarray) -> jnp.ndarray:
     return jnp.concatenate([time_feature, X], axis=-1)
 
 if __name__ == "__main__":
-    # Load DuckDuckGeese dataset
-    print("Loading DuckDuckGeese dataset...")
-    X_train, y_train, label_map, device = load_aeon_dataset("DuckDuckGeese", split="train")
-    X_test, y_test, _ , _ = load_aeon_dataset("DuckDuckGeese", split="test")
+    # Load dataset
+    dataset_name = "EigenWorms"
+    print(f"Loading {dataset_name} dataset...")
+    X_train, y_train, label_map, device = load_aeon_dataset(dataset_name, split="train")
+    X_test, y_test, _ , _ = load_aeon_dataset(dataset_name, split="test")
 
     print(f"X_train.shape: {X_train.shape}")
     print(f"y_train.shape: {y_train.shape}")

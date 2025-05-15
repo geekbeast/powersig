@@ -2,6 +2,7 @@ import sys
 import unittest
 import os
 
+import benchmarks
 import powersig
 
 # Enable testing mode to use non-compiled versions of functions
@@ -9,7 +10,7 @@ os.environ["POWERSIG_TESTING"] = "1"
 
 import torch
 
-from powersig.torch import batch_ADM_for_diagonal, batch_compute_gram_entry_psi, build_increasing_matrix, compute_gram_entry_vmap
+from powersig.torch import batch_ADM_for_diagonal, batch_compute_gram_entry_psi, build_increasing_matrix
 from powersig.torch import batch_compute_boundaries
 from powersig.torch import compute_vandermonde_vectors
 from powersig.torch import build_stencil
@@ -457,19 +458,17 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         dY = torch_compute_derivative_batch(self.Y).clone()
         ds = 1/dX.shape[1]
         dt = 1/dY.shape[1]
-        ds = torch.tensor(ds, dtype=self.dtype, device=self.device)
-        dt = torch.tensor(dt, dtype=self.dtype, device=self.device)
-        v_s, v_t = compute_vandermonde_vectors(ds, dt, self.order)
+        v_s, v_t = compute_vandermonde_vectors(ds, dt, self.order, dX.dtype, dX.device)
         v_s = v_s.clone()
         v_t = v_t.clone()
         psi_s = powersig.torch.build_stencil_s(v_s, self.order, self.device, self.dtype).clone()
         psi_t = powersig.torch.build_stencil_t(v_t, self.order, self.device, self.dtype).clone()
         ic = torch.zeros((self.order,), dtype=self.dtype, device=self.device)
         ic[0] = 1
-        exponents = build_increasing_matrix(self.order, self.dtype).clone()
+        exponents = build_increasing_matrix(self.order, torch.int8, self.device).clone()
         longest_diagonal = min(dX.shape[1], dY.shape[1])
         diagonal_count = dX.shape[1] + dY.shape[1] - 1
-        indices = torch.arange(longest_diagonal)
+        indices = torch.arange(longest_diagonal, dtype=torch.int32, device=self.device)
         
 
         # Compute gram matrix
@@ -478,7 +477,7 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         
         for i in range(dX.shape[0]):
             for j in range(dY.shape[0]):
-                powersig_results[i, j] = compute_gram_entry_vmap(dX[i], dY[j],v_s, v_t, psi_s, psi_t, longest_diagonal,diagonal_count, ic, indices,exponents,order)
+                powersig_results[i, j] = compute_gram_entry(dX[i], dY[j],v_s, v_t, psi_s, psi_t, diagonal_count, 4, longest_diagonal, ic, indices,exponents,order)
                 powersig_cupy_results[i, j] = torch.tensor(batch_compute_gram_entry_cupy(cp.array(dX[i].cpu().numpy()), cp.array(dY[j].cpu().numpy()), order),dtype=torch.float64, device=self.device)
         # # Move results to CPU for comparison
         # if powersig_results.is_cuda:

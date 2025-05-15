@@ -3,7 +3,7 @@ import os
 import random
 import time
 from concurrent.futures.process import ProcessPoolExecutor
-from math import factorial
+from math import ceil, factorial, sqrt
 from typing import Optional, Tuple
 import torch
 import torch._dynamo
@@ -25,15 +25,15 @@ class PowerSigTorch:
         else:
             self.device = device
         # self.exponents = jnp.arange(self.order)
-        self.exponents = build_increasing_matrix(self.order, dtype=jnp.float64)
+        self.exponents = build_increasing_matrix(self.order, dtype=torch.int8, device=self.device)
     
     @torch.compile(mode="max-autotune", fullgraph=True)
     def compute_signature_kernel(self, X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
         """
         Compute the signature kernel between two sets of time series. 
         Args:
-            X: JAX array of shape (length, dim) representing the first set of time series
-            Y: JAX array of shape (length, dim) representing the second set of time series
+            X: torch tensor of shape (length, dim) representing the first set of time series
+            Y: torch tensor of shape (length, dim) representing the second set of time series
             symmetric: If True, computes the kernel matrix for the combined set of X and Y. Default is False.
             
         Returns:
@@ -47,18 +47,33 @@ class PowerSigTorch:
         longest_diagonal = min(dX.shape[0], dY.shape[0])
         indices = torch.arange(longest_diagonal)
         ic = torch.zeros([ self.order], dtype=dX.dtype).at[0].set(1)
+        diagonal_batch_size = ceil(sqrt(longest_diagonal))
         # Generate Vandermonde vectors with high precision
         ds = 1.0 / dX.shape[0]
         dt = 1.0 / dY.shape[0]
-        v_s, v_t = compute_vandermonde_vectors(ds, dt, self.order, dX.dtype)
+        v_s, v_t = compute_vandermonde_vectors(ds, dt, self.order, dX.dtype, dX.device)
 
         # Create the stencil matrices with Vandermonde scaling
         psi_s = build_stencil_s(v_s, self.order, dX.dtype)
-        psi_t = build_stencil_t(v_t, self.order, dY.dtype)
-        
-        
-        return compute_gram_entry(dX, dY, v_s, v_t, psi_s, psi_t, diagonal_count, longest_diagonal, ic, indices, self.exponents, order=self.order)
+        psi_t = build_stencil_t(v_t, self.order, dY.dtype)        
+        exponents = self.exponents.to(dX.device)
+        return compute_gram_entry(dX, dY, v_s, v_t, psi_s, psi_t, diagonal_count, diagonal_batch_size, longest_diagonal, ic, indices, exponents, order=self.order)
+    # @torch.compile(mode="max-autotune", fullgraph=True)
+    # def chunked_compute_signature_kernel(self, X: torch.Tensor, Y: torch.Tensor) -> torch.Tensor:
+    #     """
+    #     Compute the signature kernel between two sets of time series.
+    #     """
+    #     # Generate the stencil and Vandermonde vectors
+    #     ds = torch.tensor([1 / dX_i.shape[0]], dtype=dX_i.dtype, device=dX_i.device)
+    #     dt = torch.tensor([1 / dY_j.shape[0]], dtype=dY_j.dtype, device=dY_j.device)
+    #     torch.compiler.cudagraph_mark_step_begin()
+    #     v_s, v_t = compute_vandermonde_vectors(ds, dt, order)
+    #     psi_s = build_stencil_s(v_s, order, dX_i.device, dX_i.dtype)
+    #     psi_t = build_stencil_t(v_t, order, dY_j.device, dY_j.dtype)
 
+    #     diagonal_count = dX_i.shape[0] + dY_j.shape[0] - 1
+    #     return compute_gram_entry(dX, dY, v_s, v_t, psi_s, psi_t, diagonal_count, longest_diagonal, ic, indices, self.exponents, order=self.order)
+    
     # TODO: Think about jitting this
     def compute_gram_matrix(self, X: torch.Tensor, Y: torch.Tensor, symmetric: bool = False) -> torch.Tensor:
         """
@@ -152,12 +167,11 @@ def batch_ADM_for_diagonal(
     return U
 
 
-# @torch.compile(mode="max-autotune", fullgraph=True)
-@torch.compile()
+@torch.compile(mode="max-autotune", fullgraph=True)
 def compute_vandermonde_vectors(
-    ds: torch.tensor, dt: torch.tensor, n: int
+    ds: float, dt: float, n: int, dtype: torch.dtype, device: torch.device
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    powers = torch.arange(n, device=ds.device, dtype=ds.dtype)
+    powers = torch.arange(n, device=device, dtype=dtype)
     v_s = ds**powers
     v_t = dt**powers
     return v_s, v_t
@@ -389,15 +403,15 @@ def compute_boundary_inplace(psi_s: torch.Tensor, psi_t: torch.Tensor, exponents
         rho: Tensor of shape (batch_size,) containing the rho values
         offset: Offset in the larger buffer
     """
-    R = rho ** exponents
-    U = torch.zeros_like(R)
+    U = rho ** exponents
 
     def toeplitz(index):
+        torch.diagonal(U, offset=index, dim1=1, dim2=2)[:,index:].mul_( (index == 0) * S[index] + (index != 0) * T[index])
+        torch.diagonal(U, offset=index, dim1=1, dim2=2)[:,index:].mul_(S[index])
         U[:,index:] = T[:T.shape[0]-index]
-        U[index+1:] = S[1:S.shape[0]-index]
     
-    U = torch.vmap(toeplitz,out_dims=None)(exponents[-1]) 
-    U.mul_(R)
+    torch.vmap(toeplitz,out_dims=None)(exponents[-1]) 
+    
     # Use direct broadcasting for element-wise multiplication
     # JAX will automatically broadcast psi_s and psi_t [n, n] to match U [batch_size, n, n]
     U_s = U * psi_s # Broadcasting happens automatically
@@ -409,9 +423,42 @@ def compute_boundary_inplace(psi_s: torch.Tensor, psi_t: torch.Tensor, exponents
 
     return S, T
 
+def stable_compute_boundaries(rho:torch.Tensor, psi_s: torch.Tensor, psi_t: torch.Tensor, exponents: torch.Tensor, s: torch.Tensor, t: torch.Tensor):
+    """
+    Compute the boundary tensor power series for a fixed-size chunk.
+    
+    Args:
+        psi_s: Fixed-size chunk from larger preallocated U buffer
+        psi_t: Fixed-size chunk from larger preallocated U buffer
+        S: Tensor of shape (n) containing coefficients for upper diagonals
+        T: Tensor of shape (n) containing coefficients for main and lower diagonals
+        rho: Tensor of shape (batch_size,) containing the rho values
+        offset: Offset in the larger buffer
+    """
+    # U = rho ** exponents
+
+    def outer(i,tv,exprow):
+        def inner(j,sv,exp):
+            r = rho ** (((i <= j) * i ) + ((i>j) * j))
+            return r * ((tv * (j<=i)) + (sv * (j>i) ))
+        return torch.vmap(inner,)(exponents[-1], s, exprow)
+    
+    U = torch.vmap(outer)(exponents[-1], t, exponents) 
+    
+    # Use direct broadcasting for element-wise multiplication
+    # JAX will automatically broadcast psi_s and psi_t [n, n] to match U [batch_size, n, n]
+    U_s = U * psi_s # Broadcasting happens automatically
+    U_t = U * psi_t # Broadcasting happens automatically
+    
+    # Sum all rows of U_s and all columns of U_t within each batch and store directly in S and T
+    S = torch.sum(U_t, axis=0)
+    T = torch.sum(U_s, axis=1)
+
+    return S, T
+
 def map_diagonal_entry(dX_i, dY_j, psi_s, psi_t,exponents, s_coeff, t_coeff, s_start: int, t_start: int, diagonal_index: int):
     # Compute dot products for valid entries
-    rho = torch.dot(dX_i[s_start- diagonal_index,], dY_j[t_start+ diagonal_index,])
+    rho = torch.dot(dX_i[s_start - diagonal_index,], dY_j[t_start+ diagonal_index,])
 
     # Process valid entries with compute_boundary
     s, t = compute_boundary(psi_s, psi_t, exponents, s_coeff, t_coeff, rho)
@@ -507,17 +554,25 @@ def compute_gram_entry_vmap(
 
 # @torch.compile(mode="max-autotune-no-cudagraphs",dynamic=True)
 # @torch.compile(dynamic=True)
+@torch.compile(mode="max-autotune", fullgraph=True,dynamic=True)
 def compute_gram_entry(
     dX_i: torch.Tensor,
     dY_j: torch.Tensor,
+    v_s: torch.Tensor,
+    v_t: torch.Tensor,
+    psi_s: torch.Tensor,
+    psi_t: torch.Tensor,
+    diagonal_count: int,
+    diagonal_batch_size: int,
+    longest_diagonal: int,
+    ic: torch.Tensor,
+    indices: torch.Tensor,
+    exponents: torch.Tensor,
     order: int = 32,
 ) -> torch.Tensor:
-    # Preprocessing
-    longest_diagonal = min(dX_i.shape[0], dY_j.shape[0])
-
     # Initial tile
     S_buf = torch.zeros(
-        [longest_diagonal, order],
+        [longest_diagonal+1, order],
         dtype=dX_i.dtype,
         device=dX_i.device,
     )
@@ -531,127 +586,69 @@ def compute_gram_entry(
     S_buf[:, 0] = 1
     T_buf[:, 0] = 1
 
-    # Generate the stencil and Vandermonde vectors
-    ds = torch.tensor([1 / dX_i.shape[0]], dtype=dX_i.dtype, device=dX_i.device)
-    dt = torch.tensor([1 / dY_j.shape[0]], dtype=dY_j.dtype, device=dY_j.device)
-    torch.compiler.cudagraph_mark_step_begin()
-    v_s, v_t = compute_vandermonde_vectors(ds, dt, order)
-    psi_s = build_stencil_s(v_s, order, dX_i.device, dX_i.dtype)
-    psi_t = build_stencil_t(v_t, order, dY_j.device, dY_j.dtype)
+    cols = dY_j.shape[0]
+    rows = dX_i.shape[0]
 
-    diagonal_count = dX_i.shape[0] + dY_j.shape[0] - 1
-
-
-    for d in range(diagonal_count):
+    for d in range(0,diagonal_count, diagonal_batch_size):
         s_start, t_start, dlen = get_diagonal_range(d, dX_i.shape[0], dY_j.shape[0])
         skip_first = (s_start + 1) >= dX_i.shape[0]
         skip_last = (t_start + dlen) >= dY_j.shape[0]
-        dX_L = dX_i.shape[0] - (s_start + 1)
-    
-        # # print(f"dX_L = {dX_L}")
-        # # print(f"s_start = {s_start}")
-        # rho = cdp(
-        #     dX_i[(dX_L):(dX_L + dlen)],
-        #     dY_j[(t_start):(t_start + dlen)]
-        # )
-        # # # Update boundaries with the computed values
-        # S_result, T_result = compute_boundary(psi_s, psi_t, S_buf[:dlen,:], T_buf[:dlen,:], rho)
+        max_diag = min(diagonal_count, d + diagonal_batch_size)
 
-        # # # print(f"S_result = {S_result}")
-        # # # print(f"T_result = {T_result}")
+        # This length of the longest diagonal length we will get to for this unrolled piece of the loop.        
+        if (d+1) >= longest_diagonal and max_diag <= max(rows,cols):
+            batch_longest_diag = longest_diagonal
+        elif max_diag < longest_diagonal:
+            batch_longest_diag = max_diag
+        else:
+            batch_longest_diag =  longest_diagonal - ((d + 1) - max(rows,cols))
 
-        # if d == diagonal_count - 1:
-        #     # print(f"v_s = {v_s}")
-        #     # print(f"S_buf = {S_buf}")
-        #     # print(f"result = {jnp.matmul(S_result[0], v_s)}")
-        #     return S_result[0] @ v_s
+        diagonal_indices = indices[:batch_longest_diag]
+        
 
-        # if skip_first and skip_last:
-        #     # Shrinking
-        #     S_buf[:dlen-1]=S_result[:-1]
-        #     T_buf[:dlen-1]=T_result[1:]
-        # elif not skip_first and not skip_last:
-        #     # Growing
-        #     S_buf[1:dlen+1]=S_result
-        #     T_buf[:dlen]=T_result
-        # elif skip_first and not skip_last:
-        #     # Staying the same size
-        #     S_buf[:dlen]=S_result
-        #     T_buf[:dlen-1]=T_result[1:]
-        # else:
-        #     # Staying the same size
-        #     S_buf[1:dlen]=S_result[:-1]
-        #     T_buf[:dlen]=T_result
-
+        print(f"d = {d}")
+        print(f"max_diag = {max_diag}")
+        print(f"diagonal_count = {diagonal_count}")
         # Process each chunk of the diagonal    
-        for offset in range(0,dlen,DIAGONAL_CHUNK_SIZE):
-            first_chunk = offset == 0 
-            last_chunk  = offset + DIAGONAL_CHUNK_SIZE >= dlen
-            chunk_size = min(DIAGONAL_CHUNK_SIZE, dlen - offset)
-            rho = torch_compute_dot_prod_batch(
-                dX_i[(dX_L + offset) : (dX_L + offset + chunk_size)],
-                dY_j[(t_start + offset) : (t_start + offset + chunk_size)],
-            )
-
-            S = S_buf[offset:offset + chunk_size, :]
-            T = T_buf[offset:offset + chunk_size, :]
-            S_result, T_result = compute_boundary(
-                psi_s,
-                psi_t,
-                S,
-                T,
-                rho,
-            )
-
-            if d == diagonal_count - 1 and last_chunk: 
-                # print(f"v_s = {v_s}")
-                # print(f"S_result = {S_result}")
-                # print(f"S_buf = {S_buf}")
-                # print(f"result = {jnp.matmul(S_result[0], v_s)}")
-                return S_result[0] @ v_s
+        for diagonal_index in range(d,max_diag):
+            t_start = (diagonal_index<cols)*0 + (diagonal_index>=cols)*(diagonal_index-cols +1)
+            s_start = (diagonal_index<cols)*diagonal_index + (diagonal_index>=cols)*(cols - 1)
+            is_before_wrap = diagonal_index < dX_i.shape[0]
             
-            if skip_first and skip_last:
-                # Shrinking
-                # S starts at 0 and stops at 1 before the last element
-                # T starts at 1 and stops at the last element
-                # All chunks after the first need to be shifted down by 1
-                if first_chunk:
-                    T_buf[offset:offset+chunk_size-1]=T_result[1:]
-                else:
-                    T_buf[offset-1:offset+chunk_size-1]=T_result
+            # rho = jax_compute_dot_prod_batch(jnp.take(dX_i, s_start-diagonal_indices, axis=0, fill_value=0), jnp.take(dY_j, t_start+diagonal_indices, axis=0, fill_value=0))
+            def next_diagonal_entry(index_in_diagonal, dx,dy,S, T):
+                # Combine the first two where statements into a single mask
+                s_index = index_in_diagonal - is_before_wrap
+                t_index = index_in_diagonal + (1 - is_before_wrap)
 
-                if last_chunk:
-                    S_buf[offset:offset+chunk_size-1]=S_result[:-1]
-                else:
-                    S_buf[offset:offset+chunk_size]=S_result
-            elif not skip_first and not skip_last:
-                # Growing
-                # S is shifted by 1 if it's the first chunk, since it will just take
-                # initial bottom boundary for that tile.
-                S_buf[offset+1:offset+chunk_size+1]=S_result
-                # T is just straight assignment
-                T_buf[offset:offset+chunk_size]=T_result
-            elif skip_first and not skip_last:
-                # Staying the same size
-                S_buf[offset:offset+chunk_size]=S_result
-                # This one is simpler since we skip first and just keep writing chunk size for T
-                # while S operation stays the same
-                if first_chunk:
-                    T_buf[offset:offset+chunk_size-1]=T_result[1:]
-                else:
-                    # Since first chunk was shifted by 1, we need to shift T_buf by 1 for future updates
-                    T_buf[offset-1:offset+chunk_size-1]=T_result
-            else:
-                # Staying the same size
-                if first_chunk and not last_chunk:
-                    S_buf[1+offset:offset+chunk_size+1]=S_result
-                elif first_chunk and last_chunk:
-                    # S_result will be chunk_size elements, but we are skipping last, which lines up with offset
-                    S_buf[1+offset:offset+chunk_size]=S_result[:-1]
-                else: # first_chunk is false and last_chunk is false
-                    S_buf[1+offset:offset+chunk_size+1]=S_result[:-1]
-                # T is just straight assignement
-                T_buf[offset:offset+chunk_size]=T_result
+                # Avoid branching
+                # rho = torch.dot(dX_i[s_start-index_in_diagonal], dY_j[t_start+index_in_diagonal, :])
+                s = ((t_start + index_in_diagonal == 0) * ic) + ((t_start + index_in_diagonal != 0) * S)
+                t = ((s_start - index_in_diagonal == 0) * ic) + ((s_start - index_in_diagonal != 0) * T)
+                
+                # Use torch.dot directly instead of creating intermediate arrays
+                # dX_idx = (s_start - index_in_diagonal) * ((s_start - index_in_diagonal) < dX_i.shape[0])
+                # dY_idx = (t_start + index_in_diagonal) * ((t_start + index_in_diagonal) < dY_j.shape[0])
+                rho = torch.dot(dx, dy)
+                
+                return stable_compute_boundaries(rho, psi_s, psi_t, exponents, s, t)
+            
+            S_next, T_next = torch.vmap(next_diagonal_entry, in_dims=(0,0,0,0,0))(
+                diagonal_indices, 
+                dX_i[(s_start - diagonal_indices) * ((s_start - diagonal_indices) < dX_i.shape[0])],
+                dY_j[(t_start + diagonal_indices) * ((t_start + diagonal_indices) < dY_j.shape[0])],
+                S_buf[:diagonal_indices.shape[0]], 
+                T_buf[:batch_longest_diag])
+            
+            print(f"S_next = {S_next}")
+            print(f"T_next = {T_next}")
+            print(f"is_before_wrap = {is_before_wrap}")
+            print(f"diagonal_index = {diagonal_index}")
+            S_buf[is_before_wrap:S_next.shape[0]+is_before_wrap], T_buf[:T_next.shape[0]] = S_next, T_next[(1-is_before_wrap):]
+        
+        print(f"S_buf = {S_buf}")
+        print(f"T_buf = {T_buf}")
+        return S_buf[0] @ v_s
 
 @torch.compile(mode="max-autotune", fullgraph=True,dynamic=True)
 def batch_compute_gram_entry_psi(
@@ -765,7 +762,7 @@ def batch_compute_gram_entry(
 
 
 @torch.compile(mode="max-autotune", fullgraph=True)
-def build_increasing_matrix(n: int, dtype=torch.float64) -> torch.Tensor:
+def build_increasing_matrix(n: int, dtype=torch.int8, device=None) -> torch.Tensor:
     """
     Build an n x n matrix where each value is the maximum of its row and column indices.
     For example, for n=4:
@@ -782,8 +779,8 @@ def build_increasing_matrix(n: int, dtype=torch.float64) -> torch.Tensor:
         Matrix of shape (n, n) with the specified pattern
     """
     # Create row and column indices
-    rows = torch.arange(n, dtype=dtype)[:, None]  # Shape: (n, 1)
-    cols = torch.arange(n, dtype=dtype)[None, :]  # Shape: (1, n)
+    rows = torch.arange(n, dtype=dtype, device=device)[:, None]  # Shape: (n, 1)
+    cols = torch.arange(n, dtype=dtype, device=device)[None, :]  # Shape: (1, n)
     
     # Take maximum of row and column indices
     matrix = torch.minimum(rows, cols)

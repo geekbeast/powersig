@@ -76,6 +76,10 @@ def track_peak_memory(backend: Backend, stats, device=None):
     
     jax_cuda_available = any(device.platform == 'gpu' for device in jax.devices())
 
+    if jax_cuda_available:
+        start_jax_memory = get_jax_memory(device)
+    else:
+        start_jax_memory = 0
     start = time.time()
 
     try:
@@ -105,11 +109,25 @@ def track_peak_memory(backend: Backend, stats, device=None):
         # TODO: This is a hack to get the peak memory usage for PolySig, the problem is we have to reset device memory before each run of the kernel
         # and that means we have to rewarm the compilation cache to be fair.
         if jax_cuda_available and backend == Backend.JAX_CUDA:
-            peak_jax_memory = 0
-            for device in jax.devices():
-                if device.platform == 'gpu':
-                    peak_jax_memory += device.memory_stats()['peak_bytes_in_use'] / (1024 ** 2)  # Convert to MB
+            peak_jax_memory = get_peak_jax_memory(device) - start_jax_memory
+            
+            # Set new peak, we have to subtract the initial memory to get the delta. 
+            # If we didn't set new peak, then we don't know what the delta is, so we may be overcounting (less likely to be an issue with these benchmarks)
             stats[GPU_MEMORY] = peak_jax_memory
             print(f"Peak jax memory usage: {peak_jax_memory:.2f} MB")
 
 
+def get_peak_jax_memory(device = None):
+    peak_jax_memory = 0
+    for device in jax.devices():
+        if device.platform == 'gpu' and (device!=None and device.id == device.id):
+            peak_jax_memory += device.memory_stats()['peak_bytes_in_use'] / (1024 ** 2)  # Convert to MB
+
+    return peak_jax_memory
+
+def get_jax_memory(device = None):
+    jax_memory = 0
+    for device in jax.devices():
+        if device.platform == 'gpu' and (device!=None and device.id == device.id):
+            jax_memory += device.memory_stats()['bytes_in_use'] / (1024 ** 2)  # Convert to MB
+    return jax_memory

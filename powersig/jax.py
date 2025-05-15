@@ -35,6 +35,9 @@ class PowerSigJax:
         # self.exponents = jnp.arange(self.order)
         self.exponents = build_increasing_matrix(self.order, dtype=jnp.int8, device=self.device)
     
+    def __call__(self, X: jnp.ndarray, Y: jnp.ndarray, symmetric: bool = False) -> jnp.ndarray:
+        return self.compute_signature_kernel(X, Y, symmetric)
+    
     @partial(jit, static_argnums=(0,3))
     def compute_signature_kernel(self, X: jnp.ndarray, Y: jnp.ndarray, device=None) -> jnp.ndarray:
         """
@@ -67,7 +70,7 @@ class PowerSigJax:
 
         # psi_s = build_stencil(self.order, dX.dtype, device)
         # psi_t = psi_s
-        indices = jnp.arange(longest_diagonal,device=device)
+        indices = jnp.arange(longest_diagonal,dtype=jnp.int32,device=device)
         return compute_gram_entry(dX, dY, v_s, v_t, psi_s, psi_t, diagonal_count, longest_diagonal, ic, indices, exponents, order=self.order)
 
     @partial(jit, static_argnums=(0,3))
@@ -95,7 +98,7 @@ class PowerSigJax:
         # psi_s = build_stencil(self.order, dX.dtype, device)
         # psi_t = psi_s  
 
-        indices = jnp.arange(longest_diagonal,device=device)
+        indices = jnp.arange(longest_diagonal,dtype=jnp.int32,device=device)
         diagonal_batch_size = ceil(sqrt(longest_diagonal))
         return chunked_compute_gram_entry(dX, dY, v_s, v_t, psi_s, psi_t, diagonal_count, diagonal_batch_size, longest_diagonal, ic, indices, exponents, order=self.order)
 
@@ -130,7 +133,7 @@ class PowerSigJax:
 
         longest_diagonal = min(dX.shape[1], dY.shape[1])
         diagonal_count = dX.shape[1] + dY.shape[1] - 1
-        indices = jnp.arange(longest_diagonal,device=X.device)
+        indices = jnp.arange(longest_diagonal,dtype=jnp.int32,device=X.device)
         diagonal_batch_size = ceil(sqrt(longest_diagonal))
 
         # Ensure exponents are on the same device as input
@@ -842,9 +845,9 @@ def chunked_compute_gram_entry(
             
             is_before_wrap = diagonal_index < dX_i.shape[0]
             # rho = jax_compute_dot_prod_batch(jnp.take(dX_i, s_start-diagonal_indices, axis=0, fill_value=0), jnp.take(dY_j, t_start+diagonal_indices, axis=0, fill_value=0))
-            rho = jnp.einsum('ij,ij->i', jnp.take(dX_i, s_start-diagonal_indices, axis=0, fill_value=0), jnp.take(dY_j, t_start+diagonal_indices, axis=0, fill_value=0),
-                             precision=jax.lax.Precision.HIGHEST)
-            def next_diagonal_entry(index_in_diagonal, rho, S, T):
+            # rho = jnp.einsum('ij,ij->i', jnp.take(dX_i, s_start-diagonal_indices, axis=0, fill_value=0), jnp.take(dY_j, t_start+diagonal_indices, axis=0, fill_value=0),
+            #                  precision=jax.lax.Precision.HIGHEST)
+            def next_diagonal_entry(index_in_diagonal, S, T):
                 # Combine the first two where statements into a single mask
                 s_index = index_in_diagonal - is_before_wrap
                 t_index = index_in_diagonal + (1 - is_before_wrap)
@@ -852,7 +855,9 @@ def chunked_compute_gram_entry(
                 # Avoid branching
                 s = ((t_start + index_in_diagonal == 0) * ic) + ((t_start + index_in_diagonal != 0) * S[s_index])
                 t = ((s_start - index_in_diagonal == 0) * ic) + ((s_start - index_in_diagonal != 0) * T[t_index])
-
+                dX_idx = (s_start - index_in_diagonal) * ((s_start - index_in_diagonal) < dX_i.shape[0])
+                dY_idx = (t_start + index_in_diagonal) * ((t_start + index_in_diagonal) < dY_j.shape[0])
+                rho = jnp.dot(dX_i[dX_idx], dY_j[dY_idx], precision = jax.lax.Precision.HIGHEST)
                 # jax.debug.print("""
                 #     d = {},
                 #     diagonal_index {}:
@@ -870,7 +875,7 @@ def chunked_compute_gram_entry(
             
             # We will use our reduced diagonal indices to compute the next diagonal.
             S_current, T_current = carry
-            S_next, T_next = vmap(next_diagonal_entry,in_axes=(0,0,None,None))(diagonal_indices, rho, S_current, T_current)
+            S_next, T_next = vmap(next_diagonal_entry,in_axes=(0,None,None))(diagonal_indices, S_current, T_current)
         
             S_current = jax.lax.dynamic_update_slice(S_current, S_next, (0, 0))
             T_current = jax.lax.dynamic_update_slice(T_current, T_next, (0, 0))

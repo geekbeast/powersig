@@ -128,16 +128,20 @@ class PowerSigTorchBenchmark(Benchmark):
             name="PowerSigTorch",
             debug=debug
         )
+        self.powersig = None
 
     def setup(self) -> None:
         pass
 
     def before_run(self, data: torch.Tensor, stats: dict) -> jnp.ndarray:
+        if self.powersig is None:
+            self.powersig = powersig.torch.PowerSigTorch(POLYNOMIAL_ORDER)
+        
         stats["order"] = POLYNOMIAL_ORDER
         return data
 
     def compute_signature_kernel(self, data: jnp.ndarray) -> float:
-        return jax_compute_gram_entry(data, data, POLYNOMIAL_ORDER).item()
+        return self.powersig.compute_signature_kernel(data,data).item()
 
 
 class PolySigBenchmark(Benchmark):

@@ -13,6 +13,7 @@ from benchmarks.kernel_benchmarks import (
     PolySigBenchmark,
     PowerSigBenchmark,
     PowerSigCupyBenchmark,
+    PowerSigTorchBenchmark,
     SigKernelBenchmark
 )
 import powersig.jax_config
@@ -89,6 +90,7 @@ if __name__== '__main__':
                 KSigPDEBenchmark(debug=False),
                 SigKernelBenchmark(debug=False),
                 PowerSigCupyBenchmark(debug=False),
+                PowerSigTorchBenchmark(debug=False),
                 PowerSigBenchmark(debug=False),
                 PolySigBenchmark(debug=False),
             ]
