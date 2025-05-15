@@ -66,7 +66,7 @@ if __name__== '__main__':
 
 
     if benchmark_accuracy:
-        for length in [ 2**i for i in range(1, 9)]:
+        for length in [ 2**i for i in range(1, 10)]:
             active_benchmarks : list[Benchmark] = [
                 KSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
                 KSigPDEBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
@@ -84,7 +84,7 @@ if __name__== '__main__':
 
 
     if benchmark_rough_accuracy:  
-        for length in [ 2**i for i in range(1, 9)]:
+        for length in [ 2**i for i in range(1, 10)]:
             for hurst in [ 1/i-.0000000001 for i in range(1, 100)]:
                 active_benchmarks : list[Benchmark] = [
                     KSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
@@ -103,7 +103,7 @@ if __name__== '__main__':
                     p.join()
 
     if (benchmark_length):
-        for length in [ 2**i for i in range(1, 19)]:
+        for length in [ 2**i for i in range(1, 20)]:
             active_benchmarks : list[Benchmark] = [
                 KSigBenchmark(debug=False),
                 KSigPDEBenchmark(debug=False),
