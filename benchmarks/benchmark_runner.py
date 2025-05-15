@@ -83,29 +83,9 @@ if __name__== '__main__':
     
     length_filter = set()
 
-    if (benchmark_length):
-        for length in [ 2**i for i in range(1, 14)]:
-            active_benchmarks : list[Benchmark] = [
-                KSigBenchmark(debug=False),
-                KSigPDEBenchmark(debug=False),
-                SigKernelBenchmark(debug=False),
-                PowerSigCupyBenchmark(debug=False),
-                PowerSigTorchBenchmark(debug=False),
-                PowerSigBenchmark(debug=False),
-                PolySigBenchmark(debug=False),
-            ]
-            X, _ = fractional_brownian_motion(length,n_paths=NUM_PATHS, dim=2)
-            if length in length_filter:
-                continue
-            for benchmark in active_benchmarks:
-                print(f"Spawning {benchmark.name} for length {length}")
-                p = ctx.Process(target=mp_benchmark, args=("length", benchmark, X, .5))
-                p.start()
-                p.join()
-
 
     if benchmark_accuracy:
-        for length in [ 2**i for i in range(1, 15)]:
+        for length in [ 2**i for i in range(1, 17)]:
             active_benchmarks : list[Benchmark] = [
                 KSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
                 KSigPDEBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
@@ -140,7 +120,25 @@ if __name__== '__main__':
                     p.start()
                     p.join()
 
-
+    if (benchmark_length):
+        for length in [ 2**i for i in range(1, 18)]:
+            active_benchmarks : list[Benchmark] = [
+                KSigBenchmark(debug=False),
+                KSigPDEBenchmark(debug=False),
+                SigKernelBenchmark(debug=False),
+                PowerSigCupyBenchmark(debug=False),
+                PowerSigTorchBenchmark(debug=False),
+                PowerSigBenchmark(debug=False),
+                PolySigBenchmark(debug=False),
+            ]
+            X, _ = fractional_brownian_motion(length,n_paths=NUM_PATHS, dim=2)
+            if length in length_filter:
+                continue
+            for benchmark in active_benchmarks:
+                print(f"Spawning {benchmark.name} for length {length}")
+                p = ctx.Process(target=mp_benchmark, args=("length", benchmark, X, .5))
+                p.start()
+                p.join()
         
 
 

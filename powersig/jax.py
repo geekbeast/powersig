@@ -568,11 +568,8 @@ def compute_gram_entry(
         # rho = jax_compute_dot_prod_batch(jnp.take(dX_i, s_start-indices, axis=0, fill_value=0), jnp.take(dY_j, t_start+indices, axis=0, fill_value=0))
         # print(f"dX_i.shape = {jnp.take(dX_i, s_start-indices, axis=0, fill_value=0).shape}")
         # print(f"dY_j.shape = {jnp.take(dY_j, t_start+indices, axis=0, fill_value=0).shape}")
-        rho = jnp.einsum('ij,ij->i', jnp.take(dX_i, s_start-indices, axis=0, fill_value=0), jnp.take(dY_j, t_start+indices, axis=0, fill_value=0),
-                             precision=jax.lax.Precision.HIGHEST)
-        # jnp.allclose(rho, rho2, atol=1e-10, rtol=1e-10), f"rho = {rho}\nrho2 = {rho2}\n ||rho-rho2|| = {jnp.linalg.norm(rho-rho2)}"
-        # jax.debug.print("||rho-rho2|| = {}", jnp.linalg.norm(rho-rho2))
-
+        # rho = jnp.einsum('ij,ij->i', jnp.take(dX_i, s_start-indices, axis=0, fill_value=0), jnp.take(dY_j, t_start+indices, axis=0, fill_value=0),
+        #                      precision=jax.lax.Precision.HIGHEST)
 
         def next_diagonal_entry(diagonal_index, rho, S, T):
             # Combine the first two where statements into a single mask
@@ -582,7 +579,9 @@ def compute_gram_entry(
             # Avoid branching
             s = ((t_start + diagonal_index == 0) * ic) + ((t_start + diagonal_index != 0) * S[s_index])
             t = ((s_start - diagonal_index == 0) * ic) + ((s_start - diagonal_index != 0) * T[t_index])
-
+            dX_idx = (s_start - diagonal_index) * ((s_start - diagonal_index) < dX_i.shape[0])
+            dY_idx = (t_start + diagonal_index) * ((t_start + diagonal_index) < dY_j.shape[0])
+            rho = jnp.dot(dX_i[dX_idx], dY_j[dY_idx], precision = jax.lax.Precision.HIGHEST)
             # jax.debug.print("""
             #     d = {},
             #     diagonal_index {}:
@@ -598,91 +597,13 @@ def compute_gram_entry(
             return map_diagonal_entry(rho, psi_s, psi_t, exponents, s, t)
             # return stable_diagonal_entry(rho, v_s, v_t, psi_s, exponents, s, t)
 
-        # vmap over
-        # print(f"indices = {indices}")
-        # print(f"rho = {jnp.take(dX_i, s_start+indices, axis=0, fill_value=0)}")
-        # print(f"rho.shape = {jnp.take(dX_i, s_start-indices, axis=0, fill_value=0).shape}")
+        
         S_next,T_next = vmap(next_diagonal_entry, in_axes=(0,0,None,None))(indices, rho, S_buf, T_buf)
-        # jax.debug.print("""
-        #         d = {},
-        #         S_next {}:
-        #         T_next = {}
-        #         S.vs = {}
-        #         vt.T = {}
-        #         """, d, S_next, T_next, S_next @ v_s, T_next @ v_t)
-        # jax.debug.print("S_next = {}\nT_next = {}", S_next, T_next)
+        
         return S_next, T_next
-        # rho = jax_compute_dot_prod_batch(
-        #     dX_i[(dX_L):(dX_L + dlen)],
-        #     dY_j[(t_start):(t_start + dlen)]
-        # )
-
-        # # Update boundaries with the computed values
-        # S_result, T_result = compute_boundary(psi_s, psi_t, S_buf[:dlen,:], T_buf[:dlen,:], rho)
-
-        # We have to use d to generate indices need for the diagonal.
-        # We know t_start, s_start, dlen.
-
-        # dx_indices = jnp.flip(jnp.arange(s_start+1), axis=0)
-        # dy_indices = jnp.arange(dlen)
-
-        # dx_indices = jnp.where(dx_indices < dX_L, dx_indices, jnp.zeros_like(dx_indices))
-        # dy_indices = jnp.where(dy_indices < t_start, dy_indices, jnp.zeros_like(dy_indices))
-
-        # dx_chunk = jnp.take(dX_i, dx_indices, axis=0)
-        # dy_chunk = jnp.take(dY_j, dy_indices, axis=0)
-
-        # jax.lax.dynamic_slice(dX_i, (dX_L, 0), (d))
-
-        # # for chunk_index in range(0, d, DIAGONAL_CHUNK_SIZE):
-        # def process_chunk(index, carry):
-        #     chunk_index = index * DIAGONAL_CHUNK_SIZE
-        #     S_buf, T_buf = carry
-        #     valid_size = jnp.minimum(DIAGONAL_CHUNK_SIZE, dlen - chunk_index)
-        #     mask = jnp.arange(DIAGONAL_CHUNK_SIZE) < valid_size
-        #     x_indices = jnp.arange(dX_L+chunk_index, dX_L+chunk_index + DIAGONAL_CHUNK_SIZE)
-        #     y_indices = jnp.arange(t_start+chunk_index, t_start+chunk_index + DIAGONAL_CHUNK_SIZE)
-
-        #     x_indices = jnp.where(mask, x_indices, jnp.zeros_like(x_indices))
-        #     y_indices = jnp.where(mask, y_indices, jnp.zeros_like(y_indices))
-
-        #     dX_chunk = jnp.take(dX_i, x_indices, axis=0)
-        #     dY_chunk = jnp.take(dY_j, y_indices, axis=0)
-
-        #     # # dX_chunk = jax.lax.cond(
-        #     # #         valid_size == DIAGONAL_CHUNK_SIZE,
-        #     #         lambda x: jax.lax.dynamic_slice(x, (dX_L + chunk_index, 0), (valid_size, x.shape[1])),  # True branch: return as is
-        #     #         lambda x: jnp.pad(jax.lax.dynamic_slice(x, (dX_L + chunk_index, 0), (valid_size, x.shape[1])), ((0, DIAGONAL_CHUNK_SIZE - valid_size), (0, 0)), mode='constant'),  # False branch: pad
-        #     #         dX_i
-        #     # )
-
-        #     # dY_chunk = jax.lax.cond(
-        #     #         valid_size == DIAGONAL_CHUNK_SIZE,
-        #     #         lambda x: jax.lax.dynamic_slice(x, (t_start + chunk_index, 0), (DIAGONAL_CHUNK_SIZE, x.shape[1])),  # True branch: return as is
-        #     #         lambda x: jnp.pad(jax.lax.dynamic_slice(x, (t_start + chunk_index, 0), (valid_size, x.shape[1])), ((0, DIAGONAL_CHUNK_SIZE - valid_size), (0, 0)), mode='constant'),  # False branch: pad
-        #     #         dY_j
-        #     # )
-
-        #     S_batch = pad_if_needed(jax.lax.dynamic_slice(S_buf, (t_start, 0), (valid_size, order)), valid_size, valid_size)
-        #     T_batch = pad_if_needed(jax.lax.dynamic_slice(T_buf, (t_start, 0), (valid_size, order)), valid_size, valid_size)
-
-        #     # Compute dot products for valid entries
-        #     rho = jax_compute_dot_prod_batch(dX_chunk * mask, dY_chunk * mask)
-        #     # Process valid entries with compute_boundary
-        #     S_result, T_result = compute_boundary(psi_s, psi_t, S_batch, T_batch, rho)
-        #     S_buf = jax.lax.dynamic_update_slice(S_buf, S_result, (t_start+1, 0))
-        #     T_buf = jax.lax.dynamic_update_slice(T_buf, T_result, (t_start, 0))
-
-        #     return S_buf, T_buf
-
-        # return jax.lax.fori_loop(0, (dlen + DIAGONAL_CHUNK_SIZE - 1) // DIAGONAL_CHUNK_SIZE, process_chunk, (S_buf, T_buf))
-        # if d == diagonal_count - 1:
-        #     return jax.lax.dynamic_index_in_dim(S_buf, t_start+1, axis=0) @ v_s
+     
     S_buf, T_buf = jax.lax.fori_loop(0, diagonal_count, compute_diagonal, (S_buf, T_buf))
-    # print(f"S_buf.shape = {S_buf.shape}")
-    # print(f"T_buf.shape = {T_buf.shape}")
-    # print(f"S_buf = {S_buf}")
-    # print(f"T_buf = {T_buf}")
+    
     return S_buf[0] @ v_s
 
 @jit
@@ -887,73 +808,6 @@ def chunked_compute_gram_entry(
 
 
     return S[0] @ v_s
-
-
-@partial(jit, static_argnums=(3,))
-def batch_compute_gram_entry(
-    dX_i: jnp.ndarray, dY_j: jnp.ndarray, scales: Optional[jnp.ndarray] = None, order: int = 32
-) -> jnp.ndarray:
-    """
-    Compute the gram matrix entry using a batched approach.
-    
-    Args:
-        dX_i: First time series derivatives
-        dY_j: Second time series derivatives
-        scales: Optional scaling factors
-        order: Order of the polynomial approximation
-        
-    Returns:
-        Gram matrix entry (scalar)
-    """
-    # Preprocessing
-    dX_i = jnp.flip(dX_i, axis=0)
-    longest_diagonal = max(dX_i.shape[0], dY_j.shape[0])
-    
-    # Build stencil once
-    stencil = build_stencil(order, dX_i.dtype)
-
-    # Initialize buffers once with proper shapes
-    u_buf = jnp.zeros(
-        [longest_diagonal, stencil.shape[0], stencil.shape[1]], dtype=dX_i.dtype
-    )
-    S_buf = jnp.zeros([longest_diagonal, order], dtype=dX_i.dtype)
-    T_buf = jnp.zeros([longest_diagonal, order], dtype=dX_i.dtype)
-    
-    # Initialize first elements with single operations
-    S_buf = S_buf.at[0, 0].set(1.0)
-    T_buf = T_buf.at[0, 0].set(1.0)
-
-    # Generate Vandermonde vectors with high precision
-    ds = 1.0 / dX_i.shape[0]
-    dt = 1.0 / dY_j.shape[0]
-    v_s, v_t = compute_vandermonde_vectors(ds, dt, order, dX_i.dtype)
-
-    diagonal_count = dX_i.shape[0] + dY_j.shape[0] - 1
-    
-    # Process each diagonal
-    for d in range(diagonal_count):
-        s_start, t_start, dlen = get_diagonal_range(d, dX_i.shape[0], dY_j.shape[0])
-
-        dX_L = dX_i.shape[0] - (s_start + 1)
-        
-        # Compute dot products efficiently
-        rho = jax_compute_dot_prod_batch(
-            dX_i[dX_L : dX_L + dlen].reshape(-1, 1, dX_i.shape[1]),
-            dY_j[t_start : (t_start + dlen)].reshape(-1, 1, dY_j.shape[1]),
-        )
-
-        # Process with ADM diagonal computation
-        u_buf = batch_ADM_for_diagonal(rho, u_buf, S_buf, T_buf, stencil)
-
-        # Compute boundaries with branching optimizations
-        skip_first = (s_start + 1) >= dX_i.shape[0]
-        skip_last = (t_start + dlen) >= dY_j.shape[0]
-        S_buf, T_buf = batch_compute_boundaries(
-            u_buf[:dlen], S_buf, T_buf, v_s, v_t, skip_first=skip_first, skip_last=skip_last
-        )
-
-    # Final result is always in the first element since final diagonal length is always 1
-    return jnp.einsum('i,bij,j->', v_t, u_buf[:1], v_s) 
 
 @partial(jit, static_argnums=(0,1,2))
 def build_increasing_matrix(n: int, dtype=jnp.int8, device=None) -> jnp.ndarray:
