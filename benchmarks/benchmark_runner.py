@@ -56,9 +56,9 @@ if __name__== '__main__':
     
     setup_torch()
     generators.set_seed(42)
-    benchmark_length = True
-    benchmark_accuracy = True
+    benchmark_accuracy = False
     benchmark_rough_accuracy = True
+    benchmark_length = True
     ctx = mp.get_context('spawn')
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
     
@@ -97,10 +97,9 @@ if __name__== '__main__':
                 num_paths = 2 # This will take forever otherwise. (2^13 - 1) * 99 = 810 K signature kernels to evaluate 
                 X, _ = fractional_brownian_motion(length,n_paths=num_paths, dim=2, hurst=hurst)
                 for benchmark in active_benchmarks:
-                    print(f"Spawning {benchmark.name} for length {length} and hurst {hurst}")
-                    p = ctx.Process(target=mp_benchmark, args=("roughness", benchmark, X, hurst))
-                    p.start()
-                    p.join()
+                    # We don't care about the multiprocessing here, we just want to run the benchmark
+                    mp_benchmark("roughness", benchmark, X, hurst)
+        
 
     if (benchmark_length):
         for length in [ 2**i for i in range(1, 20)]:
