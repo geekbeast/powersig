@@ -79,6 +79,9 @@ if __name__== '__main__':
     benchmark_rough_accuracy = False
     ctx = mp.get_context('spawn')
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
+    
+    length_filter = set()
+
     if (benchmark_length):
         for length in [ 2**i for i in range(1, 14)]:
             active_benchmarks : list[Benchmark] = [
@@ -90,6 +93,8 @@ if __name__== '__main__':
                 PolySigBenchmark(debug=False),
             ]
             X, _ = fractional_brownian_motion(length,n_paths=NUM_PATHS, dim=2)
+            if length in length_filter:
+                continue
             for benchmark in active_benchmarks:
                 print(f"Spawning {benchmark.name} for length {length}")
                 p = ctx.Process(target=mp_benchmark, args=("length", benchmark, X, .5))
