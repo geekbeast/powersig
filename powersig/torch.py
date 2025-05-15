@@ -46,7 +46,8 @@ class PowerSigTorch:
         diagonal_count = dX.shape[0] + dY.shape[0] - 1
         longest_diagonal = min(dX.shape[0], dY.shape[0])
         indices = torch.arange(longest_diagonal)
-        ic = torch.zeros([ self.order], dtype=dX.dtype).at[0].set(1)
+        ic = torch.zeros([ self.order], dtype=dX.dtype)
+        ic[0] = 1
         diagonal_batch_size = ceil(sqrt(longest_diagonal))
         # Generate Vandermonde vectors with high precision
         ds = 1.0 / dX.shape[0]
