@@ -343,38 +343,6 @@ def compute_boundary_vmap(psi_s: jnp.ndarray, psi_t: jnp.ndarray, exponents: jnp
     
     U_s, U_t = vmap(process_row, in_axes=(0))(exponents)
     
-
-        
-
-
-    # def process_exponent(exponent):
-    #     r = rho ** exponent
-        
-    #     # Update rows and columns
-        
-    #     U_s = U_s.at[exponent, exponent+1:].set(U_s[exponent, exponent+1:] * r)
-    #     U_t = U_t.at[exponent, exponent+1:].set(U_t[exponent, exponent+1:] * r)
-        
-    #     U_s = U_s.at[exponent:, exponent].set(U_s[exponent:, exponent] * r)
-    #     U_t = U_t.at[exponent:, exponent].set(U_t[exponent:, exponent] * r)
-        
-    #     return U_s, U_t
-
-    # Process all powers for each batch efficiently using JAX functional updates
-    # We'll use a loop over exponents but vectorize the batch operations
-    # for exponent in range(n):
-    #     # print(f"rho_powers.shape = {rho_powers.shape}")
-    #     # print(f"rho_powers[:, exponent].shape = {rho_powers[:, exponent].shape}")
-    #     r = rho ** exponent
-    #     # print(f"U_s[:, exponent:, exponent].shape = {U_s[:, exponent:, exponent].shape}")
-    #     # print(f"U_t[:, exponent:, exponent].shape = {U_t[:, exponent:, exponent].shape}")
-    #     # print(f"U_s[:, exponent, exponent+1:].shape = {U_s[:, exponent, exponent+1:].shape}")
-    #     # print(f"U_t[:, exponent, exponent+1:].shape = {U_t[:, exponent, exponent+1:].shape}")
-    #     U_s = U_s.at[exponent, exponent+1:].set(U_s[exponent, exponent+1:] * r) #* rho_powers[:,exponent:exponent+1])
-    #     U_t = U_t.at[exponent, exponent+1:].set(U_t[ exponent, exponent+1:] * r) #* rho_powers[:,exponent:exponent+1])
-        
-    #     U_s = U_s.at[exponent:, exponent].set(U_s[ exponent:, exponent] * r )#* rho_powers[:,exponent:exponent+1])
-    #     U_t = U_t.at[exponent:, exponent].set(U_t[ exponent:, exponent] * r )#* rho_powers[:,exponent:exponent+1])
     
     # Sum all rows of U_s and all columns of U_t within each batch and store directly in S and T
     S, T = jnp.sum(U_t, axis=0), jnp.sum(U_s, axis=1)
@@ -571,7 +539,7 @@ def compute_gram_entry(
         # rho = jnp.einsum('ij,ij->i', jnp.take(dX_i, s_start-indices, axis=0, fill_value=0), jnp.take(dY_j, t_start+indices, axis=0, fill_value=0),
         #                      precision=jax.lax.Precision.HIGHEST)
 
-        def next_diagonal_entry(diagonal_index, rho, S, T):
+        def next_diagonal_entry(diagonal_index, S, T):
             # Combine the first two where statements into a single mask
             s_index = diagonal_index - is_before_wrap
             t_index = diagonal_index + (1 - is_before_wrap)
@@ -598,7 +566,7 @@ def compute_gram_entry(
             # return stable_diagonal_entry(rho, v_s, v_t, psi_s, exponents, s, t)
 
         
-        S_next,T_next = vmap(next_diagonal_entry, in_axes=(0,0,None,None))(indices, rho, S_buf, T_buf)
+        S_next,T_next = vmap(next_diagonal_entry, in_axes=(0,None,None))(indices, S_buf, T_buf)
         
         return S_next, T_next
      
