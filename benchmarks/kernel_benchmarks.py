@@ -4,7 +4,7 @@ import torch
 import jax.numpy as jnp
 import cupy as cp
 import os
-
+from polysigkernel import SigKernel
 from benchmarks.benchmark import Benchmark
 from benchmarks.util import Backend
 from benchmarks.configuration import (
@@ -21,7 +21,6 @@ from benchmarks.configuration import (
     POLYSIG_RESULTS,
     CSV_FIELDS,
     POLYNOMIAL_ORDER,
-    polysig_sk,
     ksig_kernel,
     ksig_pde_kernel
 )
@@ -64,23 +63,24 @@ class SigKernelBenchmark(Benchmark):
 
 
 class PowerSigBenchmark(Benchmark):
-    def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR):
+    def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR, file: str = POWERSIG_RESULTS, order: int = POLYNOMIAL_ORDER):
         super().__init__(
-            filename=os.path.join(results_dir, POWERSIG_RESULTS),
+            filename=os.path.join(results_dir, file),
             csv_fields=CSV_FIELDS,
             backend=Backend.JAX_CUDA,
             name="PowerSigJax",
             debug=debug
         )
         self.powersig = None
+        self.order = order
 
     def setup(self) -> None:
         pass
 
     def before_run(self, data: torch.Tensor, stats: dict) -> torch.Tensor:
         if self.powersig is None:
-            self.powersig = powersig.jax.PowerSigJax(POLYNOMIAL_ORDER)
-        stats["order"] = POLYNOMIAL_ORDER
+            self.powersig = powersig.jax.PowerSigJax(self.order)
+        stats["order"] = self.order
         # Convert torch tensor to numpy array
         X_np = data.cpu().numpy()
         
@@ -145,7 +145,7 @@ class PowerSigTorchBenchmark(Benchmark):
 
 
 class PolySigBenchmark(Benchmark):
-    def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR):
+    def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR,order = POLYNOMIAL_ORDER):
         super().__init__(
             filename=os.path.join(results_dir, POLYSIG_RESULTS),
             csv_fields=CSV_FIELDS,
@@ -153,16 +153,20 @@ class PolySigBenchmark(Benchmark):
             name="PolySig",
             debug=debug
         )
+        self.order = order
+        self.polysig_sk = None
 
     def setup(self) -> None:
         pass
 
     def before_run(self, data: torch.Tensor, stats: dict) -> jnp.ndarray:
-        stats["order"] = POLYNOMIAL_ORDER
+        if self.polysig_sk is None:
+            self.polysig_sk = SigKernel(order=self.order, static_kernel="linear")
+        stats["order"] = self.order
         return jnp.array(data.cpu().numpy())
 
     def compute_signature_kernel(self, data: jnp.ndarray) -> float:
-        result = polysig_sk.kernel_matrix(data, data)
+        result = self.polysig_sk.kernel_matrix(data, data)
         assert result.dtype == jnp.float64, "Result dtype is not float64"
         if result.shape[0] == 1 and result.shape[1] == 1:
             return float(result[0, 0])

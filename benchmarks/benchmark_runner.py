@@ -39,7 +39,6 @@ from benchmarks.configuration import (
     KSIG_RESULTS,
     KSIG_PDE_RESULTS,
     POLYSIG_RESULTS,
-    polysig_sk,
     CPU_MEMORY, SIG_KERNEL_MAX_LENGTH, dyadic_order, \
     ksig_pde_kernel, ORDER, SIGNATURE_KERNEL, DURATION, CSV_FIELDS, POWERSIG_MAX_LENGTH, KSIG_MAX_LENGTH, MAX_LENGTH, \
     GPU_MEMORY, CUPY_MEMORY, ksig_kernel, NUM_PATHS, RUN_ID)
@@ -92,8 +91,8 @@ if __name__== '__main__':
                     KSigPDEBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
                     SigKernelBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
                     PowerSigCupyBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
-                    PowerSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
-                    PolySigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
+                    PowerSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough",order=16),
+                    PolySigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough",order=16),
                 ]
                 num_paths = 2 # This will take forever otherwise. (2^13 - 1) * 99 = 810 K signature kernels to evaluate 
                 X, _ = fractional_brownian_motion(length,n_paths=num_paths, dim=2, hurst=hurst)
@@ -112,7 +111,7 @@ if __name__== '__main__':
                 PowerSigBenchmark(debug=False),
                 PolySigBenchmark(debug=False),
             ]
-            num_paths = max(1,min(10, 21 - log2(length))) # Longer paths have less variance so we need less samples.
+            num_paths = int(max(1,min(10, 21 - int(log2(length)))))
             X, _ = fractional_brownian_motion(length,n_paths=num_paths, dim=2)
             if length in length_filter:
                 continue

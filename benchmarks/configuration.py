@@ -19,7 +19,7 @@ LEVELS = 21
 # Instantiate the signature kernel, which takes as input the static kernel.
 ksig_pde_kernel = ksig.kernels.SignaturePDEKernel(normalize = False, static_kernel=ksig_static_kernel)
 ksig_kernel = ksig.kernels.SignatureKernel(n_levels = LEVELS, order = 0, normalize = False, static_kernel=ksig_static_kernel)
-polysig_sk = SigKernel(order=POLYNOMIAL_ORDER, static_kernel="linear")
+
 
 RUN_ID = "run_id"
 GPU_MEMORY = "gpu_memory"
