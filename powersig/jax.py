@@ -35,9 +35,15 @@ class PowerSigJax:
         # self.exponents = jnp.arange(self.order)
         self.exponents = build_increasing_matrix(self.order, dtype=jnp.int8, device=self.device)
     
-    def __call__(self, X: jnp.ndarray, Y: Optional[jnp.ndarray] = None, symmetric: bool = False) -> jnp.ndarray:
+    def __call__(self, X, Y = None, symmetric: bool = False) -> jnp.ndarray:
+        if not isinstance(X, jnp.ndarray):
+            X = jnp.array(X)
+        
         if Y is None:
             Y = X
+        elif not isinstance(Y, jnp.ndarray):
+            Y = jnp.array(Y)
+            
         return self.compute_gram_matrix(X, Y, symmetric)
     
     @partial(jit, static_argnums=(0,3))
