@@ -57,8 +57,8 @@ if __name__== '__main__':
     setup_torch()
     generators.set_seed(42)
     benchmark_accuracy = False
-    benchmark_rough_accuracy = True
-    benchmark_length = False
+    benchmark_rough_accuracy = False
+    benchmark_length = True
     ctx = mp.get_context('spawn')
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
     
@@ -103,7 +103,7 @@ if __name__== '__main__':
         
 
     if (benchmark_length):
-        for length in [ 2**i for i in range(1, 20)]:
+        for length in [ 2**i for i in range(20, 21)]:
             active_benchmarks : list[Benchmark] = [
                 KSigBenchmark(debug=False),
                 KSigPDEBenchmark(debug=False),
@@ -112,7 +112,7 @@ if __name__== '__main__':
                 PowerSigBenchmark(debug=False),
                 PolySigBenchmark(debug=False),
             ]
-            num_paths = int(max(1,min(10, 21 - int(log2(length)))))
+            num_paths = int(max(2,min(10, 21 - int(log2(length)))))
             X, _ = fractional_brownian_motion(length,n_paths=num_paths, dim=2)
             if length in length_filter:
                 continue

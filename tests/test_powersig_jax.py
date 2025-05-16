@@ -8,11 +8,10 @@ import cupy as cp
 
 import benchmarks
 import benchmarks.generators
-from powersig.jax import DIAGONAL_CHUNK_SIZE, batch_ADM_for_diagonal, build_increasing_matrix, build_stencil_s, build_stencil_t, chunked_compute_gram_entry, compute_boundary, compute_gram_entry
+from powersig.jax import DIAGONAL_CHUNK_SIZE, batch_ADM_for_diagonal, build_increasing_matrix, build_stencil_s, build_stencil_t, chunked_compute_gram_entry, compute_boundary, compute_gram_entry, estimate_required_order
 from powersig.jax import batch_compute_boundaries
 from powersig.jax import compute_vandermonde_vectors
 from powersig.jax import build_stencil, PowerSigJax
-from powersig.jax import batch_compute_gram_entry
 from powersig.util.grid import get_diagonal_range
 import ksig
 import ksig.static.kernels
@@ -803,6 +802,11 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         self.psi_t = build_stencil_t(self.v_t, self.order, jnp.float64, self.X.device)
         self.exponents = build_increasing_matrix(self.order, jnp.int8, self.X.device)
         # self.powersig_jax = powersig.powersig_jax.PowersigJax(self.order, self.dtype, self.X.device)
+    
+    def test_estimate_required_order(self):
+        """Test that the estimate_required_order function returns the correct order"""
+        order, rho,ss, st = estimate_required_order(self.X/32, self.Y/32, max_order=128)
+        print(f"order: {order}, rho: {rho}, ss: {ss}, st: {st}")
         
     def test_signature_kernel_consistency(self):
         """Test that different signature kernel implementations give consistent results"""
