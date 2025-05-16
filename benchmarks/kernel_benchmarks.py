@@ -4,6 +4,7 @@ import torch
 import jax.numpy as jnp
 import cupy as cp
 import os
+import ksig
 from polysigkernel import SigKernel
 from benchmarks.benchmark import Benchmark
 from benchmarks.util import Backend
@@ -11,6 +12,8 @@ from benchmarks.configuration import (
     BENCHMARKS_RESULTS_DIR,
     KSIG_CPU_RESULTS,
     KSIG_PDE_CPU_RESULTS,
+    LEVELS,
+    ORDER,
     POWERSIG_CUPY_RESULTS,
     POWERSIG_TORCH_RESULTS,
     SIGKERNEL_BACKEND,
@@ -37,7 +40,7 @@ import sigkernel
 
 
 class SigKernelBenchmark(Benchmark):
-    def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR):
+    def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR, device_index: int = -1):
         super().__init__(
             filename=os.path.join(results_dir, SIGKERNEL_RESULTS),
             csv_fields=CSV_FIELDS,
@@ -48,11 +51,20 @@ class SigKernelBenchmark(Benchmark):
         self.static_kernel = sigkernel.LinearKernel()
         self.dyadic_order = configuration.dyadic_order
         self.signature_kernel = sigkernel.SigKernel(self.static_kernel, self.dyadic_order)
+        self.device_index = device_index
+        self.device = None
 
     def setup(self) -> None:
         pass
 
     def before_run(self, data: torch.Tensor, stats: dict) -> torch.Tensor:
+        if self.device is None:
+            if torch.cuda.is_available():
+                device_idx = self.device_index if self.device_index != -1 else torch.cuda.device_count() - 1
+                self.device = torch.device(f'cuda:{device_idx}')
+            else:
+                self.device = torch.device('cpu')
+
         return data
 
     def compute_signature_kernel(self, data: torch.Tensor) -> float:
@@ -63,7 +75,7 @@ class SigKernelBenchmark(Benchmark):
 
 
 class PowerSigBenchmark(Benchmark):
-    def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR, file: str = POWERSIG_RESULTS, order: int = POLYNOMIAL_ORDER):
+    def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR, file: str = POWERSIG_RESULTS, order: int = POLYNOMIAL_ORDER, device_index: int = -1):
         super().__init__(
             filename=os.path.join(results_dir, file),
             csv_fields=CSV_FIELDS,
@@ -73,6 +85,8 @@ class PowerSigBenchmark(Benchmark):
         )
         self.powersig = None
         self.order = order
+        self.device_index = device_index
+        self.device = None
 
     def setup(self) -> None:
         pass
@@ -80,12 +94,17 @@ class PowerSigBenchmark(Benchmark):
     def before_run(self, data: torch.Tensor, stats: dict) -> torch.Tensor:
         if self.powersig is None:
             self.powersig = powersig.jax.PowerSigJax(self.order)
+        
+        if self.device is None:
+            devices = jax.devices("cuda")
+            self.device = devices[self.device_index if self.device_index != -1 else jax.device_count() - 1]
+
         stats["order"] = self.order
         # Convert torch tensor to numpy array
         X_np = data.cpu().numpy()
         
         # Convert numpy array to JAX array
-        return jnp.array(X_np, device=jax.devices("cuda")[jax.device_count() - 1])
+        return jnp.array(X_np, device=self.device)
         
 
     def compute_signature_kernel(self, data) -> float:
@@ -120,7 +139,7 @@ class PowerSigCupyBenchmark(Benchmark):
         
 
 class PowerSigTorchBenchmark(Benchmark):
-    def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR):
+    def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR, device_index: int = -1):
         super().__init__(
             filename=os.path.join(results_dir, POWERSIG_TORCH_RESULTS),
             csv_fields=CSV_FIELDS,
@@ -129,6 +148,8 @@ class PowerSigTorchBenchmark(Benchmark):
             debug=debug
         )
         self.powersig = None
+        self.device_index = device_index
+        self.device = None
 
     def setup(self) -> None:
         pass
@@ -137,6 +158,11 @@ class PowerSigTorchBenchmark(Benchmark):
         if self.powersig is None:
             self.powersig = powersig.torch.PowerSigTorch(POLYNOMIAL_ORDER)
         
+        if self.device is None:
+            assert torch.cuda.is_available(), "CUDA is not available"
+            device_idx = self.device_index if self.device_index != -1 else torch.cuda.device_count() - 1
+            self.device = torch.device(f'cuda:{device_idx}')
+
         stats["order"] = POLYNOMIAL_ORDER
         return data
 
@@ -145,7 +171,7 @@ class PowerSigTorchBenchmark(Benchmark):
 
 
 class PolySigBenchmark(Benchmark):
-    def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR,order = POLYNOMIAL_ORDER):
+    def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR, order = POLYNOMIAL_ORDER, device_index: int = -1):
         super().__init__(
             filename=os.path.join(results_dir, POLYSIG_RESULTS),
             csv_fields=CSV_FIELDS,
@@ -155,6 +181,8 @@ class PolySigBenchmark(Benchmark):
         )
         self.order = order
         self.polysig_sk = None
+        self.device_index = device_index
+        self.device = None
 
     def setup(self) -> None:
         pass
@@ -162,8 +190,13 @@ class PolySigBenchmark(Benchmark):
     def before_run(self, data: torch.Tensor, stats: dict) -> jnp.ndarray:
         if self.polysig_sk is None:
             self.polysig_sk = SigKernel(order=self.order, static_kernel="linear")
+        if self.device is None:
+            devices = jax.devices("cuda")
+            self.device = devices[self.device_index if self.device_index != -1 else jax.device_count() - 1]
+
         stats["order"] = self.order
-        return jnp.array(data.cpu().numpy())
+
+        return jnp.array(data.cpu().numpy(), device=self.device)
 
     def compute_signature_kernel(self, data: jnp.ndarray) -> float:
         result = self.polysig_sk.kernel_matrix(data, data)
@@ -173,9 +206,9 @@ class PolySigBenchmark(Benchmark):
         else:
             raise ValueError("Result is not a scalar")
 
-
+ksig_static_kernel = ksig.static.kernels.LinearKernel()
 class KSigBenchmark(Benchmark):
-    def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR):
+    def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR, levels = LEVELS):
         super().__init__(
             filename=os.path.join(results_dir, KSIG_RESULTS),
             csv_fields=CSV_FIELDS,
@@ -183,14 +216,20 @@ class KSigBenchmark(Benchmark):
             name="KSig",
             debug=debug
         )
+        self.levels = levels
+        self.ksig_kernel = None
 
     def setup(self) -> None:
         pass
 
     def before_run(self, data: torch.Tensor, stats: dict) -> torch.Tensor:
+        stats[ORDER] = self.levels
         return data
 
     def compute_signature_kernel(self, data: torch.Tensor) -> float:
+        if self.ksig_kernel == None:
+            ksig.kernels.SignatureKernel(n_levels = self.levels, order = 0, normalize = False, static_kernel=ksig_static_kernel)
+
         result = ksig_kernel(data, data)
         if result.shape[0] == 1 and result.shape[1] == 1:
             return result.item()

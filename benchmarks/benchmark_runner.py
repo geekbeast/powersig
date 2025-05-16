@@ -58,7 +58,7 @@ if __name__== '__main__':
     generators.set_seed(42)
     benchmark_accuracy = False
     benchmark_rough_accuracy = True
-    benchmark_length = True
+    benchmark_length = False
     ctx = mp.get_context('spawn')
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
     
@@ -84,18 +84,19 @@ if __name__== '__main__':
 
 
     if benchmark_rough_accuracy:  
-        for length in [ 2**i for i in range(1, 10)]:
-            for hurst in np.logspace(-2, 0, 100) - 1e-3:
+        for length in range(50,100,10):
+            for hurst in np.logspace(-2, 0, 100) - 5e-3:
                 active_benchmarks : list[Benchmark] = [
                     KSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
                     KSigPDEBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
                     SigKernelBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
                     PowerSigCupyBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
-                    PowerSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough",order=16),
-                    PolySigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough",order=16),
+                    PowerSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough",order=8),
+                    PolySigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough",order=8),
                 ]
                 num_paths = 2 # This will take forever otherwise. (2^13 - 1) * 99 = 810 K signature kernels to evaluate 
-                X, _ = fractional_brownian_motion(length,n_paths=num_paths, dim=2, hurst=hurst)
+                X, _ = fractional_brownian_motion(50,n_paths=num_paths, dim=2, hurst=hurst)
+                print(f"variation norm: {np.linalg.norm(X[0,1:,:].cpu().numpy()-X[0,:-1,:].cpu().numpy(),ord = 1)}")      
                 for benchmark in active_benchmarks:
                     # We don't care about the multiprocessing here, we just want to run the benchmark
                     mp_benchmark("roughness", benchmark, X, hurst)

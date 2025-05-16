@@ -15,7 +15,7 @@ dyadic_order = 0
 
 ksig_static_kernel = ksig.static.kernels.LinearKernel()
 POLYNOMIAL_ORDER = 8
-LEVELS = 21
+LEVELS = 180
 # Instantiate the signature kernel, which takes as input the static kernel.
 ksig_pde_kernel = ksig.kernels.SignaturePDEKernel(normalize = False, static_kernel=ksig_static_kernel)
 ksig_kernel = ksig.kernels.SignatureKernel(n_levels = LEVELS, order = 0, normalize = False, static_kernel=ksig_static_kernel)
