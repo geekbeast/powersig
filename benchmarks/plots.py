@@ -1,15 +1,12 @@
 from benchmarks.configuration import (
     BENCHMARKS_RESULTS_DIR, 
     POWERSIG_RESULTS,
-    POWERSIG_CUPY_RESULTS,
     SIGKERNEL_RESULTS,
     KSIG_RESULTS,
     KSIG_PDE_RESULTS,
-    POLYSIG_RESULTS,
     SIGNATURE_KERNEL,
     LENGTH,
     GPU_MEMORY,
-    CUPY_MEMORY,
     DURATION,
     HURST,
     RUN_ID
@@ -45,11 +42,10 @@ def compute_mape(predictions, actuals):
 def load_csvs():
     benchmark_files = [
         POWERSIG_RESULTS,
-        POWERSIG_CUPY_RESULTS,
         SIGKERNEL_RESULTS,
         KSIG_RESULTS,
         KSIG_PDE_RESULTS,
-        POLYSIG_RESULTS
+        # POLYSIG_RESULTS  # Removed PolySig
     ]
     data = {}
     for file in benchmark_files:
@@ -60,11 +56,9 @@ def load_csvs():
 def load_accuracy_csvs():
     benchmark_files = [
         POWERSIG_RESULTS,
-        POWERSIG_CUPY_RESULTS,
         SIGKERNEL_RESULTS,
         KSIG_RESULTS,
         KSIG_PDE_RESULTS,
-        POLYSIG_RESULTS
     ]
     data = {}
     for file in benchmark_files:
@@ -75,11 +69,9 @@ def load_accuracy_csvs():
 def load_rough_csvs():
     benchmark_files = [
         POWERSIG_RESULTS,
-        POWERSIG_CUPY_RESULTS,
         SIGKERNEL_RESULTS,
         KSIG_RESULTS,
         KSIG_PDE_RESULTS,
-        POLYSIG_RESULTS
     ]
     data = {}
     for file in benchmark_files:
@@ -92,15 +84,11 @@ def get_accuracy(data):
     ksig_df = data[KSIG_RESULTS]
     ksig_pde_df = data[KSIG_PDE_RESULTS]
     powersig_df = data[POWERSIG_RESULTS]
-    powersig_cupy_df = data[POWERSIG_CUPY_RESULTS]
     sigkernel_df = data[SIGKERNEL_RESULTS]
-    polysig_df = data[POLYSIG_RESULTS]
     
     # Find common lengths where we have all data for MAPE calculation
     count = min(len(ksig_df), len(ksig_pde_df))
     count = min(count, len(powersig_df))
-    count = min(count, len(powersig_cupy_df))
-    count = min(count, len(polysig_df))
     # count = min(count, len(sigkernel_df))
     
     # Only truncate the values used for MAPE comparison
@@ -110,8 +98,6 @@ def get_accuracy(data):
             'ksig': ksig_df[SIGNATURE_KERNEL].to_numpy()[:count],
             'ksig_pde': ksig_pde_df[SIGNATURE_KERNEL].to_numpy()[:count],
             'powersig': powersig_df[SIGNATURE_KERNEL].to_numpy()[:count],
-            'powersig_cupy': powersig_cupy_df[SIGNATURE_KERNEL].to_numpy()[:count],
-            'polysig': polysig_df[SIGNATURE_KERNEL].to_numpy()[:count],
             'sigkernel': sigkernel_df[SIGNATURE_KERNEL].to_numpy()[:count]
         }
     }
@@ -123,8 +109,7 @@ def plot_mape(lengths, values):
     
     ksig_pde_mapes = []
     powersig_mapes = []
-    powersig_cupy_mapes = []
-    polysig_mapes = []
+    # polysig_mapes = []  # Removed PolySig
     
     # Calculate MAPE for each length
     for length in unique_lengths:
@@ -134,27 +119,20 @@ def plot_mape(lengths, values):
         ksig_vals = values['ksig'][length_mask]
         ksig_pde_vals = values['ksig_pde'][length_mask]
         powersig_vals = values['powersig'][length_mask]
-        powersig_cupy_vals = values['powersig_cupy'][length_mask]
-        polysig_vals = values['polysig'][length_mask]
+        # polysig_vals = values['polysig'][length_mask]  # Removed PolySig
         
         # Calculate individual MAPEs for this length
         ksig_pde_length_mapes = np.abs((ksig_pde_vals - ksig_vals) / ksig_vals)
         powersig_length_mapes = np.abs((powersig_vals - ksig_vals) / ksig_vals)
-        powersig_cupy_length_mapes = np.abs((powersig_cupy_vals - ksig_vals) / ksig_vals)
-        polysig_length_mapes = np.abs((polysig_vals - ksig_vals) / ksig_vals)
         
         # Store mean of MAPEs for this length
         ksig_pde_mapes.append(np.mean(ksig_pde_length_mapes))
         powersig_mapes.append(np.mean(powersig_length_mapes))
-        powersig_cupy_mapes.append(np.mean(powersig_cupy_length_mapes))
-        polysig_mapes.append(np.mean(polysig_length_mapes))
     
     # Print overall MAPE
-    print(f"Overall MAPE relative to ksig (H=0.5):")
+    print(f"Overall MAPE relative to ksig:")
     print(f"KSig PDE: {np.mean(ksig_pde_mapes):.2%}")
     print(f"PowerSig: {np.mean(powersig_mapes):.2%}")
-    print(f"PowerSigCuPy: {np.mean(powersig_cupy_mapes):.2%}")
-    print(f"PolySig: {np.mean(polysig_mapes):.2%}")
     
     # Create the plot
     plt.figure(figsize=(10, 6))
@@ -163,21 +141,19 @@ def plot_mape(lengths, values):
     unique_lengths = np.array(unique_lengths)
     ksig_pde_mapes = np.array(ksig_pde_mapes)
     powersig_mapes = np.array(powersig_mapes)
-    powersig_cupy_mapes = np.array(powersig_cupy_mapes)
-    polysig_mapes = np.array(polysig_mapes)
+    # polysig_mapes = np.array(polysig_mapes)  # Removed PolySig
     
     # Plot lines without error bars
     plt.plot(unique_lengths, ksig_pde_mapes, 'b-o', label='KSig PDE')
-    plt.plot(unique_lengths, powersig_mapes, 'r-o', label='PowerSig (JAX)')
-    plt.plot(unique_lengths, powersig_cupy_mapes, 'c-o', label='PowerSig (CuPy)')
-    plt.plot(unique_lengths, polysig_mapes, 'g-o', label='PolySig')
+    plt.plot(unique_lengths, powersig_mapes, 'r-o', label='PowerSig')
+    # plt.plot(unique_lengths, polysig_mapes, 'g-o', label='PolySig')  # Removed PolySig
     
     plt.xscale('log', base=2)
     plt.yscale('log')
     
-    plt.xlabel('Length of Time Series')
+    plt.xlabel('Time Series Length')
     plt.ylabel('MAPE (relative to KSig)')
-    plt.title('Mean Absolute Percentage Error (H=0.5)')
+    plt.title('Mean Absolute Percentage Error')
     plt.grid(True, which="both", ls="-", alpha=0.2)
     plt.legend()
     
@@ -201,13 +177,6 @@ def plot_memory_usage(lengths, data):
         GPU_MEMORY: ['mean', 'std']
     }).reset_index()
     
-    # powersig_cupy_df = data[POWERSIG_CUPY_RESULTS][data[POWERSIG_CUPY_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
-    #     GPU_MEMORY: ['mean', 'std']
-    # }).reset_index()
-    
-    polysig_df = data[POLYSIG_RESULTS][data[POLYSIG_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
-        GPU_MEMORY: ['mean', 'std']
-    }).reset_index()
     
     # Plot means with error bars
     plt.errorbar(
@@ -228,27 +197,14 @@ def plot_memory_usage(lengths, data):
         powersig_df[LENGTH], 
         powersig_df[GPU_MEMORY]['mean'],
         yerr=powersig_df[GPU_MEMORY]['std'],
-        fmt='r-o', label='PowerSig (JAX)', capsize=5
+        fmt='r-o', label='PowerSig', capsize=5
     )
-    
-    # plt.errorbar(
-    #     powersig_cupy_df[LENGTH], 
-    #     powersig_cupy_df[GPU_MEMORY]['mean'],
-    #     yerr=powersig_cupy_df[GPU_MEMORY]['std'],
-    #     fmt='c-o', label='PowerSig (CuPy)', capsize=5
-    # )
-    
-    plt.errorbar(
-        polysig_df[LENGTH], 
-        polysig_df[GPU_MEMORY]['mean'],
-        yerr=polysig_df[GPU_MEMORY]['std'],
-        fmt='m-o', label='PolySig (JAX)', capsize=5
-    )
+
     
     plt.xscale('log', base=2)
     # plt.yscale('log')  # Removed logarithmic y-axis
     
-    plt.xlabel('Length of Time Series')
+    plt.xlabel('Time Series Length')
     plt.ylabel('Memory Usage (MB)')
     plt.title('Memory Usage vs Time Series Length')
     plt.grid(True, which="both", ls="-", alpha=0.2)
@@ -274,13 +230,9 @@ def plot_duration(lengths, data):
         DURATION: ['mean', 'std']
     }).reset_index()
     
-    # powersig_cupy_df = data[POWERSIG_CUPY_RESULTS][data[POWERSIG_CUPY_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
+    # polysig_df = data[POLYSIG_RESULTS][data[POLYSIG_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({  # Removed PolySig
     #     DURATION: ['mean', 'std']
     # }).reset_index()
-    
-    polysig_df = data[POLYSIG_RESULTS][data[POLYSIG_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
-        DURATION: ['mean', 'std']
-    }).reset_index()
     
     # Plot means with error bars
     plt.errorbar(
@@ -301,27 +253,20 @@ def plot_duration(lengths, data):
         powersig_df[LENGTH], 
         powersig_df[DURATION]['mean'],
         yerr=powersig_df[DURATION]['std'],
-        fmt='r-o', label='PowerSig (JAX)', capsize=5
+        fmt='r-o', label='PowerSig', capsize=5
     )
     
-    # plt.errorbar(
-    #     powersig_cupy_df[LENGTH], 
-    #     powersig_cupy_df[DURATION]['mean'],
-    #     yerr=powersig_cupy_df[DURATION]['std'],
-    #     fmt='c-o', label='PowerSig (CuPy)', capsize=5
+    # plt.errorbar(  # Removed PolySig
+    #     polysig_df[LENGTH], 
+    #     polysig_df[DURATION]['mean'],
+    #     yerr=polysig_df[DURATION]['std'],
+    #     fmt='m-o', label='PolySig', capsize=5
     # )
-    
-    plt.errorbar(
-        polysig_df[LENGTH], 
-        polysig_df[DURATION]['mean'],
-        yerr=polysig_df[DURATION]['std'],
-        fmt='m-o', label='PolySig', capsize=5
-    )
     
     plt.xscale('log', base=2)
     # plt.yscale('log')  # Removed logarithmic y-axis
     
-    plt.xlabel('Length of Time Series')
+    plt.xlabel('Time Series Length')
     plt.ylabel('Duration (seconds)')
     plt.title('Computation Time vs Time Series Length')
     plt.grid(True, which="both", ls="-", alpha=0.2)
@@ -348,24 +293,14 @@ def plot_memory_and_duration(lengths, data):
         GPU_MEMORY: ['mean']
     }).reset_index()
     
-    powersig_cupy_df = data[POWERSIG_CUPY_RESULTS][data[POWERSIG_CUPY_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
-        GPU_MEMORY: ['mean']
-    }).reset_index()
-    
-    polysig_df = data[POLYSIG_RESULTS][data[POLYSIG_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
-        GPU_MEMORY: ['mean']
-    }).reset_index()
-    
     # Memory plot
-    ax1.plot(ksig_df[LENGTH], ksig_df[GPU_MEMORY]['mean'], 'g-o', label='KSig (CuPy)')
-    ax1.plot(ksig_pde_df[LENGTH], ksig_pde_df[GPU_MEMORY]['mean'], 'b-o', label='KSig PDE (CuPy)')
-    ax1.plot(powersig_df[LENGTH], powersig_df[GPU_MEMORY]['mean'], 'r-o', label='PowerSig (JAX)')
-    ax1.plot(powersig_cupy_df[LENGTH], powersig_cupy_df[GPU_MEMORY]['mean'], 'c-o', label='PowerSig (CuPy)')
-    ax1.plot(polysig_df[LENGTH], polysig_df[GPU_MEMORY]['mean'], 'm-o', label='PolySig (JAX)')
+    ax1.plot(ksig_df[LENGTH], ksig_df[GPU_MEMORY]['mean'], 'g-o', label='KSig')
+    ax1.plot(ksig_pde_df[LENGTH], ksig_pde_df[GPU_MEMORY]['mean'], 'b-o', label='KSig PDE')
+    ax1.plot(powersig_df[LENGTH], powersig_df[GPU_MEMORY]['mean'], 'r-o', label='PowerSig')
     
     ax1.set_xscale('log', base=2)
-    ax1.set_yscale('log')
-    ax1.set_xlabel('Length of Time Series')
+    # Removed log scale for y-axis
+    ax1.set_xlabel('Time Series Length')
     ax1.set_ylabel('Memory Usage (MB)')
     ax1.set_title('Memory Usage')
     ax1.legend()
@@ -383,24 +318,14 @@ def plot_memory_and_duration(lengths, data):
         DURATION: ['mean']
     }).reset_index()
     
-    powersig_cupy_df = data[POWERSIG_CUPY_RESULTS][data[POWERSIG_CUPY_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
-        DURATION: ['mean']
-    }).reset_index()
-    
-    polysig_df = data[POLYSIG_RESULTS][data[POLYSIG_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
-        DURATION: ['mean']
-    }).reset_index()
-    
     # Duration plot
     ax2.plot(ksig_df[LENGTH], ksig_df[DURATION]['mean'], 'g-o', label='KSig')
     ax2.plot(ksig_pde_df[LENGTH], ksig_pde_df[DURATION]['mean'], 'b-o', label='KSig PDE')
-    ax2.plot(powersig_df[LENGTH], powersig_df[DURATION]['mean'], 'r-o', label='PowerSig (JAX)')
-    ax2.plot(powersig_cupy_df[LENGTH], powersig_cupy_df[DURATION]['mean'], 'c-o', label='PowerSig (CuPy)')
-    ax2.plot(polysig_df[LENGTH], polysig_df[DURATION]['mean'], 'm-o', label='PolySig')
+    ax2.plot(powersig_df[LENGTH], powersig_df[DURATION]['mean'], 'r-o', label='PowerSig')
     
     ax2.set_xscale('log', base=2)
     ax2.set_yscale('log')
-    ax2.set_xlabel('Sequence Length')
+    ax2.set_xlabel('Time Series Length')
     ax2.set_ylabel('Duration (seconds)')
     ax2.set_title('Runtime')
     ax2.legend()
@@ -421,42 +346,36 @@ def plot_rough_mape_vs_hurst(data):
     ksig_df = data[KSIG_RESULTS]
     ksig_pde_df = data[KSIG_PDE_RESULTS]
     powersig_df = data[POWERSIG_RESULTS]
-    powersig_cupy_df = data[POWERSIG_CUPY_RESULTS]
-    polysig_df = data[POLYSIG_RESULTS]
+    # polysig_df = data[POLYSIG_RESULTS]  # Removed PolySig
     
     # Filter for fixed length
     ksig_df = ksig_df[ksig_df[LENGTH] == fixed_length]
     ksig_pde_df = ksig_pde_df[ksig_pde_df[LENGTH] == fixed_length]
     powersig_df = powersig_df[powersig_df[LENGTH] == fixed_length]
-    powersig_cupy_df = powersig_cupy_df[powersig_cupy_df[LENGTH] == fixed_length]
-    polysig_df = polysig_df[polysig_df[LENGTH] == fixed_length]
+    # polysig_df = polysig_df[polysig_df[LENGTH] == fixed_length]  # Removed PolySig
     
     # Calculate MAPE for each Hurst index
     hurst_values = sorted(ksig_df[HURST].unique())
     ksig_pde_mapes = []
     powersig_mapes = []
-    powersig_cupy_mapes = []
-    polysig_mapes = []
+    # polysig_mapes = []  # Removed PolySig
     
     for h in hurst_values:
         ksig_vals = ksig_df[ksig_df[HURST] == h][SIGNATURE_KERNEL].values
         ksig_pde_vals = ksig_pde_df[ksig_pde_df[HURST] == h][SIGNATURE_KERNEL].values
         powersig_vals = powersig_df[powersig_df[HURST] == h][SIGNATURE_KERNEL].values
-        powersig_cupy_vals = powersig_cupy_df[powersig_cupy_df[HURST] == h][SIGNATURE_KERNEL].values
-        polysig_vals = polysig_df[polysig_df[HURST] == h][SIGNATURE_KERNEL].values
+        # polysig_vals = polysig_df[polysig_df[HURST] == h][SIGNATURE_KERNEL].values  # Removed PolySig
         
         ksig_pde_mapes.append(np.mean(np.abs((ksig_pde_vals - ksig_vals) / ksig_vals)))
         powersig_mapes.append(np.mean(np.abs((powersig_vals - ksig_vals) / ksig_vals)))
-        powersig_cupy_mapes.append(np.mean(np.abs((powersig_cupy_vals - ksig_vals) / ksig_vals)))
-        polysig_mapes.append(np.mean(np.abs((polysig_vals - ksig_vals) / ksig_vals)))
+        # polysig_mapes.append(np.mean(np.abs((polysig_vals - ksig_vals) / ksig_vals)))  # Removed PolySig
     
     # Create the plot
     plt.figure(figsize=(10, 6))
     
     plt.plot(hurst_values, ksig_pde_mapes, 'b-o', label='KSig PDE')
-    plt.plot(hurst_values, powersig_mapes, 'r-o', label='PowerSig (JAX)')
-    plt.plot(hurst_values, powersig_cupy_mapes, 'c-o', label='PowerSig (CuPy)')
-    plt.plot(hurst_values, polysig_mapes, 'g-o', label='PolySig')
+    plt.plot(hurst_values, powersig_mapes, 'r-o', label='PowerSig')
+    # plt.plot(hurst_values, polysig_mapes, 'g-o', label='PolySig')  # Removed PolySig
     
     plt.xlabel('Hurst Index')
     plt.ylabel('MAPE (relative to KSig)')
@@ -475,8 +394,7 @@ def plot_rough_mape_heatmap(data):
     ksig_df = data[KSIG_RESULTS]
     ksig_pde_df = data[KSIG_PDE_RESULTS]
     powersig_df = data[POWERSIG_RESULTS]
-    powersig_cupy_df = data[POWERSIG_CUPY_RESULTS]
-    polysig_df = data[POLYSIG_RESULTS]
+    # polysig_df = data[POLYSIG_RESULTS]  # Removed PolySig
     
     # Get unique lengths and Hurst indices
     lengths = sorted(ksig_df[LENGTH].unique())
@@ -487,22 +405,19 @@ def plot_rough_mape_heatmap(data):
         len(ksig_df),
         len(ksig_pde_df),
         len(powersig_df),
-        len(powersig_cupy_df),
-        len(polysig_df)
+        # len(polysig_df)  # Removed PolySig
     )
     
     # Truncate all dataframes to the minimum length
     ksig_df = ksig_df.iloc[:min_length]
     ksig_pde_df = ksig_pde_df.iloc[:min_length]
     powersig_df = powersig_df.iloc[:min_length]
-    powersig_cupy_df = powersig_cupy_df.iloc[:min_length]
-    polysig_df = polysig_df.iloc[:min_length]
+    # polysig_df = polysig_df.iloc[:min_length]  # Removed PolySig
     
     # Create heatmap data for each implementation
     ksig_pde_mape = np.zeros((len(hurst_values), len(lengths)))
     powersig_mape = np.zeros((len(hurst_values), len(lengths)))
-    powersig_cupy_mape = np.zeros((len(hurst_values), len(lengths)))
-    polysig_mape = np.zeros((len(hurst_values), len(lengths)))
+    # polysig_mape = np.zeros((len(hurst_values), len(lengths)))  # Removed PolySig
     
     # Calculate MAPE for each combination
     for i, h in enumerate(hurst_values):
@@ -511,8 +426,7 @@ def plot_rough_mape_heatmap(data):
             ksig_vals = ksig_df[(ksig_df[HURST] == h) & (ksig_df[LENGTH] == l)][SIGNATURE_KERNEL].values
             ksig_pde_vals = ksig_pde_df[(ksig_pde_df[HURST] == h) & (ksig_pde_df[LENGTH] == l)][SIGNATURE_KERNEL].values
             powersig_vals = powersig_df[(powersig_df[HURST] == h) & (powersig_df[LENGTH] == l)][SIGNATURE_KERNEL].values
-            powersig_cupy_vals = powersig_cupy_df[(powersig_cupy_df[HURST] == h) & (powersig_cupy_df[LENGTH] == l)][SIGNATURE_KERNEL].values
-            polysig_vals = polysig_df[(polysig_df[HURST] == h) & (polysig_df[LENGTH] == l)][SIGNATURE_KERNEL].values
+            # polysig_vals = polysig_df[(polysig_df[HURST] == h) & (polysig_df[LENGTH] == l)][SIGNATURE_KERNEL].values  # Removed PolySig
             
             # Calculate MAPE for each implementation
             if len(ksig_vals) > 0:
@@ -520,13 +434,11 @@ def plot_rough_mape_heatmap(data):
                     ksig_pde_mape[i, j] = np.mean(np.abs((ksig_pde_vals - ksig_vals) / ksig_vals))
                 if len(powersig_vals) > 0:
                     powersig_mape[i, j] = np.mean(np.abs((powersig_vals - ksig_vals) / ksig_vals))
-                if len(powersig_cupy_vals) > 0:
-                    powersig_cupy_mape[i, j] = np.mean(np.abs((powersig_cupy_vals - ksig_vals) / ksig_vals))
-                if len(polysig_vals) > 0:
-                    polysig_mape[i, j] = np.mean(np.abs((polysig_vals - ksig_vals) / ksig_vals))
+                # if len(polysig_vals) > 0:  # Removed PolySig
+                #     polysig_mape[i, j] = np.mean(np.abs((polysig_vals - ksig_vals) / ksig_vals))
     
     # Create subplots for each implementation
-    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6))  # Changed to 1x2 grid
     fig.suptitle('MAPE Heatmaps for Different Implementations', fontsize=16)
     
     # Select a subset of Hurst values for ticks
@@ -535,7 +447,7 @@ def plot_rough_mape_heatmap(data):
     tick_labels = [f'{hurst_values[i]:.2f}' for i in tick_indices]
     
     # Find the global min and max for consistent color scaling
-    valid_data = [ksig_pde_mape, powersig_mape, powersig_cupy_mape, polysig_mape]
+    valid_data = [ksig_pde_mape, powersig_mape]  # Removed PolySig
     # Filter out zeros and find min/max of non-zero values
     non_zero_data = [d[d > 0] for d in valid_data]
     if any(len(d) > 0 for d in non_zero_data):
@@ -547,37 +459,21 @@ def plot_rough_mape_heatmap(data):
         vmax = 1e-5
     
     # Plot heatmaps with log scale
-    sns.heatmap(ksig_pde_mape, ax=axes[0,0], xticklabels=lengths, yticklabels=tick_labels,
+    sns.heatmap(ksig_pde_mape, ax=axes[0], xticklabels=lengths, yticklabels=tick_labels,
                 cmap='viridis', cbar_kws={'label': 'MAPE'},
                 norm=matplotlib.colors.LogNorm(vmin=vmin, vmax=vmax))
-    axes[0,0].set_title('KSig PDE')
-    axes[0,0].set_xlabel('Length')
-    axes[0,0].set_ylabel('Hurst Index')
-    axes[0,0].set_yticks(tick_indices)
+    axes[0].set_title('KSig PDE')
+    axes[0].set_xlabel('Length')
+    axes[0].set_ylabel('Hurst Index')
+    axes[0].set_yticks(tick_indices)
     
-    sns.heatmap(powersig_mape, ax=axes[0,1], xticklabels=lengths, yticklabels=tick_labels,
+    sns.heatmap(powersig_mape, ax=axes[1], xticklabels=lengths, yticklabels=tick_labels,
                 cmap='viridis', cbar_kws={'label': 'MAPE'},
                 norm=matplotlib.colors.LogNorm(vmin=vmin, vmax=vmax))
-    axes[0,1].set_title('PowerSig (JAX)')
-    axes[0,1].set_xlabel('Length')
-    axes[0,1].set_ylabel('Hurst Index')
-    axes[0,1].set_yticks(tick_indices)
-    
-    sns.heatmap(powersig_cupy_mape, ax=axes[1,0], xticklabels=lengths, yticklabels=tick_labels,
-                cmap='viridis', cbar_kws={'label': 'MAPE'},
-                norm=matplotlib.colors.LogNorm(vmin=vmin, vmax=vmax))
-    axes[1,0].set_title('PowerSig (CuPy)')
-    axes[1,0].set_xlabel('Length')
-    axes[1,0].set_ylabel('Hurst Index')
-    axes[1,0].set_yticks(tick_indices)
-    
-    sns.heatmap(polysig_mape, ax=axes[1,1], xticklabels=lengths, yticklabels=tick_labels,
-                cmap='viridis', cbar_kws={'label': 'MAPE'},
-                norm=matplotlib.colors.LogNorm(vmin=vmin, vmax=vmax))
-    axes[1,1].set_title('PolySig')
-    axes[1,1].set_xlabel('Length')
-    axes[1,1].set_ylabel('Hurst Index')
-    axes[1,1].set_yticks(tick_indices)
+    axes[1].set_title('PowerSig')
+    axes[1].set_xlabel('Length')
+    axes[1].set_ylabel('Hurst Index')
+    axes[1].set_yticks(tick_indices)
     
     plt.tight_layout()
     plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'rough_mape_heatmaps.png'))
