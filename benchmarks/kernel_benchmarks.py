@@ -24,7 +24,6 @@ from benchmarks.configuration import (
     POLYSIG_RESULTS,
     CSV_FIELDS,
     POLYNOMIAL_ORDER,
-    ksig_kernel,
     ksig_pde_kernel
 )
 import configuration

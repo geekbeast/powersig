@@ -19,11 +19,11 @@ import seaborn as sns
 import matplotlib.colors
 
 def generate_plots():
-    data = load_csvs()
-    results = get_accuracy(data)
-    plot_memory_usage(results['lengths'], data)
-    plot_duration(results['lengths'], data)
-    plot_memory_and_duration(results['lengths'], data)
+    # data = load_csvs()
+    # results = get_accuracy(data)
+    # plot_memory_usage(results['lengths'], data)
+    # plot_duration(results['lengths'], data)
+    # plot_memory_and_duration(results['lengths'], data)
 
     accuracy_data = load_accuracy_csvs()
     accuracy_results = get_accuracy(accuracy_data)
@@ -34,7 +34,10 @@ def generate_plots():
     rough_data = load_rough_csvs()
     # Add rough time series plots
     plot_rough_mape_vs_hurst(rough_data)
-    plot_rough_mape_heatmap(rough_data)
+    # plot_rough_mape_heatmap(rough_data)
+    
+    # Create side-by-side plots
+    plot_rough_and_accuracy_side_by_side(rough_data, accuracy_results)
 
 def compute_mape(predictions, actuals):
     return np.mean(np.abs((predictions - actuals) / actuals))
@@ -76,6 +79,7 @@ def load_rough_csvs():
     data = {}
     for file in benchmark_files:
         data[file] = pd.read_csv(os.path.join(BENCHMARKS_RESULTS_DIR, 'rough', file))
+        print(data[file])
         
     return data
 
@@ -300,6 +304,7 @@ def plot_memory_and_duration(lengths, data):
     
     ax1.set_xscale('log', base=2)
     # Removed log scale for y-axis
+    #ax1.set_yscale('log')
     ax1.set_xlabel('Time Series Length')
     ax1.set_ylabel('Memory Usage (MB)')
     ax1.set_title('Memory Usage')
@@ -340,7 +345,7 @@ def plot_memory_and_duration(lengths, data):
 
 def plot_rough_mape_vs_hurst(data):
     # Choose a fixed length (e.g., 513)
-    fixed_length = 513
+    fixed_length = 51
     
     # Get data for each implementation
     ksig_df = data[KSIG_RESULTS]
@@ -359,7 +364,7 @@ def plot_rough_mape_vs_hurst(data):
     ksig_pde_mapes = []
     powersig_mapes = []
     # polysig_mapes = []  # Removed PolySig
-    
+
     for h in hurst_values:
         ksig_vals = ksig_df[ksig_df[HURST] == h][SIGNATURE_KERNEL].values
         ksig_pde_vals = ksig_pde_df[ksig_pde_df[HURST] == h][SIGNATURE_KERNEL].values
@@ -379,7 +384,7 @@ def plot_rough_mape_vs_hurst(data):
     
     plt.xlabel('Hurst Index')
     plt.ylabel('MAPE (relative to KSig)')
-    plt.title(f'Mean Absolute Percentage Error vs Hurst Index (Length={fixed_length})')
+    plt.title(f'Mean Absolute Percentage Error vs Hurst Index')
     plt.xscale('log')
     plt.yscale('log')
     plt.grid(True, which="both", ls="-", alpha=0.2)
@@ -478,6 +483,83 @@ def plot_rough_mape_heatmap(data):
     plt.tight_layout()
     plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'rough_mape_heatmaps.png'))
     plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'rough_mape_heatmaps.svg'))
+    plt.close()
+
+def plot_rough_and_accuracy_side_by_side(rough_data, accuracy_results):
+    # Create a figure with two subplots side by side
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    
+    # Plot 1: Accuracy MAPE
+    truncated_lengths = accuracy_results['lengths'][:len(accuracy_results['mape_data']['ksig'])]
+    unique_lengths = np.unique(truncated_lengths)
+    
+    ksig_pde_mapes = []
+    powersig_mapes = []
+    
+    # Calculate MAPE for each length
+    for length in unique_lengths:
+        length_mask = truncated_lengths == length
+        
+        # Get all values for this length
+        ksig_vals = accuracy_results['mape_data']['ksig'][length_mask]
+        ksig_pde_vals = accuracy_results['mape_data']['ksig_pde'][length_mask]
+        powersig_vals = accuracy_results['mape_data']['powersig'][length_mask]
+        
+        # Calculate individual MAPEs for this length
+        ksig_pde_length_mapes = np.abs((ksig_pde_vals - ksig_vals) / ksig_vals)
+        powersig_length_mapes = np.abs((powersig_vals - ksig_vals) / ksig_vals)
+        
+        # Store mean of MAPEs for this length
+        ksig_pde_mapes.append(np.mean(ksig_pde_length_mapes))
+        powersig_mapes.append(np.mean(powersig_length_mapes))
+    
+    ax1.plot(unique_lengths, ksig_pde_mapes, 'b-o', label='KSig PDE')
+    ax1.plot(unique_lengths, powersig_mapes, 'r-o', label='PowerSig')
+    ax1.set_xscale('log', base=2)
+    ax1.set_yscale('log')
+    ax1.set_xlabel('Time Series Length')
+    ax1.set_ylabel('MAPE (relative to KSig)')
+    ax1.set_title('MAPE vs Time Series Length')
+    ax1.grid(True, which="both", ls="-", alpha=0.2)
+    ax1.legend()
+    
+    # Plot 2: Rough Hurst MAPE
+    fixed_length = 51
+    ksig_df = rough_data[KSIG_RESULTS]
+    ksig_pde_df = rough_data[KSIG_PDE_RESULTS]
+    powersig_df = rough_data[POWERSIG_RESULTS]
+    
+    # Filter for fixed length and Hurst < 0.4
+    ksig_df = ksig_df[(ksig_df[LENGTH] == fixed_length) & (ksig_df[HURST] < 0.4)]
+    ksig_pde_df = ksig_pde_df[(ksig_pde_df[LENGTH] == fixed_length) & (ksig_pde_df[HURST] < 0.4)]
+    powersig_df = powersig_df[(powersig_df[LENGTH] == fixed_length) & (powersig_df[HURST] < 0.4)]
+    
+    # Calculate MAPE for each Hurst index
+    hurst_values = sorted(ksig_df[HURST].unique())
+    ksig_pde_mapes = []
+    powersig_mapes = []
+
+    for h in hurst_values:
+        ksig_vals = ksig_df[ksig_df[HURST] == h][SIGNATURE_KERNEL].values
+        ksig_pde_vals = ksig_pde_df[ksig_pde_df[HURST] == h][SIGNATURE_KERNEL].values
+        powersig_vals = powersig_df[powersig_df[HURST] == h][SIGNATURE_KERNEL].values
+        
+        ksig_pde_mapes.append(np.mean(np.abs((ksig_pde_vals - ksig_vals) / ksig_vals)))
+        powersig_mapes.append(np.mean(np.abs((powersig_vals - ksig_vals) / ksig_vals)))
+    
+    ax2.plot(hurst_values, ksig_pde_mapes, 'b-o', label='KSig PDE')
+    ax2.plot(hurst_values, powersig_mapes, 'r-o', label='PowerSig')
+    ax2.set_xlabel('Hurst Index')
+    ax2.set_ylabel('MAPE (relative to KSig)')
+    ax2.set_title('MAPE vs Hurst Index')
+    ax2.set_xscale('log')
+    ax2.set_yscale('log')
+    ax2.grid(True, which="both", ls="-", alpha=0.2)
+    ax2.legend()
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'rough_and_accuracy_mape_comparison.png'))
+    plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'rough_and_accuracy_mape_comparison.svg'))
     plt.close()
 
 if __name__ == "__main__": 

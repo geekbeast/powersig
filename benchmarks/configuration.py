@@ -13,12 +13,13 @@ _fresh = True
 set_seed(42)
 dyadic_order = 0
 
-ksig_static_kernel = ksig.static.kernels.LinearKernel()
+
 POLYNOMIAL_ORDER = 8
 LEVELS = 180
 # Instantiate the signature kernel, which takes as input the static kernel.
+ksig_static_kernel = ksig.static.kernels.LinearKernel()
 ksig_pde_kernel = ksig.kernels.SignaturePDEKernel(normalize = False, static_kernel=ksig_static_kernel)
-ksig_kernel = ksig.kernels.SignatureKernel(n_levels = LEVELS, order = 0, normalize = False, static_kernel=ksig_static_kernel)
+
 
 
 RUN_ID = "run_id"
