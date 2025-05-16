@@ -4,3 +4,4 @@ git+https://github.com/geekbeast/KSig.git
 git+https://github.com/FrancescoPiatti/polysigkernel.git
 fbm
 seaborn
+datasests
