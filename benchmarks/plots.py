@@ -22,11 +22,11 @@ import seaborn as sns
 import matplotlib.colors
 
 def generate_plots():
-    # data = load_csvs()
-    # results = get_accuracy(data)
-    # plot_memory_usage(results['lengths'], data)
-    # plot_duration(results['lengths'], data)
-    # plot_memory_and_duration(results['lengths'], data)
+    data = load_csvs()
+    results = get_accuracy(data)
+    plot_memory_usage(results['lengths'], data)
+    plot_duration(results['lengths'], data)
+    plot_memory_and_duration(results['lengths'], data)
 
     accuracy_data = load_accuracy_csvs()
     accuracy_results = get_accuracy(accuracy_data)
@@ -201,9 +201,9 @@ def plot_memory_usage(lengths, data):
         GPU_MEMORY: ['mean', 'std']
     }).reset_index()
     
-    powersig_cupy_df = data[POWERSIG_CUPY_RESULTS][data[POWERSIG_CUPY_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
-        GPU_MEMORY: ['mean', 'std']
-    }).reset_index()
+    # powersig_cupy_df = data[POWERSIG_CUPY_RESULTS][data[POWERSIG_CUPY_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
+    #     GPU_MEMORY: ['mean', 'std']
+    # }).reset_index()
     
     polysig_df = data[POLYSIG_RESULTS][data[POLYSIG_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
         GPU_MEMORY: ['mean', 'std']
@@ -231,12 +231,12 @@ def plot_memory_usage(lengths, data):
         fmt='r-o', label='PowerSig (JAX)', capsize=5
     )
     
-    plt.errorbar(
-        powersig_cupy_df[LENGTH], 
-        powersig_cupy_df[GPU_MEMORY]['mean'],
-        yerr=powersig_cupy_df[GPU_MEMORY]['std'],
-        fmt='c-o', label='PowerSig (CuPy)', capsize=5
-    )
+    # plt.errorbar(
+    #     powersig_cupy_df[LENGTH], 
+    #     powersig_cupy_df[GPU_MEMORY]['mean'],
+    #     yerr=powersig_cupy_df[GPU_MEMORY]['std'],
+    #     fmt='c-o', label='PowerSig (CuPy)', capsize=5
+    # )
     
     plt.errorbar(
         polysig_df[LENGTH], 
@@ -246,7 +246,7 @@ def plot_memory_usage(lengths, data):
     )
     
     plt.xscale('log', base=2)
-    plt.yscale('log')
+    # plt.yscale('log')  # Removed logarithmic y-axis
     
     plt.xlabel('Length of Time Series')
     plt.ylabel('Memory Usage (MB)')
@@ -274,9 +274,9 @@ def plot_duration(lengths, data):
         DURATION: ['mean', 'std']
     }).reset_index()
     
-    powersig_cupy_df = data[POWERSIG_CUPY_RESULTS][data[POWERSIG_CUPY_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
-        DURATION: ['mean', 'std']
-    }).reset_index()
+    # powersig_cupy_df = data[POWERSIG_CUPY_RESULTS][data[POWERSIG_CUPY_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
+    #     DURATION: ['mean', 'std']
+    # }).reset_index()
     
     polysig_df = data[POLYSIG_RESULTS][data[POLYSIG_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
         DURATION: ['mean', 'std']
@@ -304,12 +304,12 @@ def plot_duration(lengths, data):
         fmt='r-o', label='PowerSig (JAX)', capsize=5
     )
     
-    plt.errorbar(
-        powersig_cupy_df[LENGTH], 
-        powersig_cupy_df[DURATION]['mean'],
-        yerr=powersig_cupy_df[DURATION]['std'],
-        fmt='c-o', label='PowerSig (CuPy)', capsize=5
-    )
+    # plt.errorbar(
+    #     powersig_cupy_df[LENGTH], 
+    #     powersig_cupy_df[DURATION]['mean'],
+    #     yerr=powersig_cupy_df[DURATION]['std'],
+    #     fmt='c-o', label='PowerSig (CuPy)', capsize=5
+    # )
     
     plt.errorbar(
         polysig_df[LENGTH], 
@@ -319,7 +319,7 @@ def plot_duration(lengths, data):
     )
     
     plt.xscale('log', base=2)
-    plt.yscale('log')
+    # plt.yscale('log')  # Removed logarithmic y-axis
     
     plt.xlabel('Length of Time Series')
     plt.ylabel('Duration (seconds)')
