@@ -810,3 +810,46 @@ def build_increasing_matrix(n: int, dtype=jnp.int8, device=None) -> jnp.ndarray:
     matrix = jnp.minimum(rows, cols)
     
     return matrix
+
+def estimate_required_order(X: jnp.ndarray, Y: jnp.ndarray, eps=1e-8,max_order=64) -> Tuple[int, float, float, float]:
+    """
+    Estimate the required polynomialorder for the PowerSig signature kernel.
+    """
+    dX = jax_compute_derivative_batch(X)
+    dY = jax_compute_derivative_batch(Y)
+    def compute_sample_dx(dX_i):
+        def compute_sample_dy(dY_j):
+            def compute_rho_dx(dx):
+                return jnp.max( (dx * dY_j).sum(axis=1))
+            return jnp.max(vmap(compute_rho_dx, in_axes=(0))(dX_i))
+        return jnp.max(vmap(compute_sample_dy, in_axes=(0))(dY))
+    max_rho = jnp.max(vmap(compute_sample_dx, in_axes=(0))(dX))
+    print(f"max_rho = {max_rho}")
+    ds = 1.0 / dX.shape[0]
+    dt = 1.0 / dY.shape[0]
+    v_s, v_t = compute_vandermonde_vectors(ds, dt, max_order, dX.dtype, dX.device)
+    # print(f"v_s = {v_s}")
+    # print(f"v_t = {v_t}")
+    # Create the stencil matrices with Vandermonde scaling
+    psi_s = build_stencil_s(v_s, max_order, dX.dtype, dX.device)
+    psi_t = build_stencil_t(v_t, max_order, dY.dtype, dX.device) 
+    exponents = build_increasing_matrix(max_order, jnp.int8, dX.device)
+    rho_powers = max_rho ** exponents
+    U_s = psi_s * rho_powers
+    U_t = psi_t * rho_powers
+    
+    min_s_error = jnp.inf
+    min_t_error = jnp.inf
+    for i in range(max_order - 1):
+        U_s = U_s.at[:i,:i].set(0)
+        U_t = U_t.at[:i,:i].set(0)
+        # print(f"U_s = {U_s}")
+        # print(f"U_t = {U_t}")
+        s,t = jnp.sum(U_t), jnp.sum(U_t)
+        
+        if s < eps and t < eps:
+            print(f"s = {s}, t = {t}")
+            return i,max_rho,s,t
+        min_s_error = s
+        min_t_error = t
+    return max_order,max_rho,min_s_error,min_t_error
