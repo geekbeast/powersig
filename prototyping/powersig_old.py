@@ -1,16 +1,12 @@
-import math
-import os
-import random
 import time
 from concurrent.futures.process import ProcessPoolExecutor
-from math import factorial
 from typing import Optional
 
 import torch
 
 from power_series import MatrixPowerSeries, build_G1_s, build_G2_t, build_integration_gather_matrix_s, \
     build_integration_gather_matrix_t, TileSolutionPowerSeries
-from powersig.util.series import torch_compute_derivative_batch, torch_compute_dot_prod
+from powersig.torch.series import torch_compute_derivative_batch, torch_compute_dot_prod
 
 
 class VsParameters:

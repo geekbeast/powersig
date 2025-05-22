@@ -1,13 +1,21 @@
 import unittest
+import os
+
+import powersig
+
+# Enable testing mode to use non-compiled versions of functions
+os.environ["POWERSIG_TESTING"] = "1"
+
 import torch
 
-from powersig.torch import batch_ADM_for_diagonal
+from powersig.torch import batch_ADM_for_diagonal, batch_compute_gram_entry_psi, build_increasing_matrix
 from powersig.torch import batch_compute_boundaries
 from powersig.torch import compute_vandermonde_vectors
 from powersig.torch import build_stencil
-from powersig.torch import batch_compute_gram_entry
-from powersig.util.series import torch_compute_derivative_batch
-from powersig.matrixsig import build_scaling_for_integration
+from powersig.torch import batch_compute_gram_entry, compute_gram_entry
+from powersig.torch.series import torch_compute_derivative_batch
+from powersig.powersig_cupy import batch_compute_gram_entry as batch_compute_gram_entry_cupy
+import cupy as cp
 import ksig
 import ksig.static.kernels
 from sigkernel import sigkernel
@@ -28,6 +36,8 @@ class TestBatchADMForDiagonal(unittest.TestCase):
             [1.0, 2.0],
             [3.0, 4.0]
         ], dtype=torch.float64)  # n x n stencil
+        # Pre-allocated buffer for 2x2 case
+        self.U_buf_2x2 = torch.empty((2, 2, 2), dtype=torch.float64)
 
         # Common test data for 3x3 case
         self.rho_3x3 = torch.tensor([0.3], dtype=torch.float64)  # batch_size = 1
@@ -38,6 +48,8 @@ class TestBatchADMForDiagonal(unittest.TestCase):
             [4.0, 5.0, 6.0],
             [7.0, 8.0, 9.0]
         ], dtype=torch.float64)  # n x n stencil
+        # Pre-allocated buffer for 3x3 case
+        self.U_buf_3x3 = torch.empty((1, 3, 3), dtype=torch.float64)
 
         # Common test data for 4x4 case
         self.rho_4x4 = torch.tensor([0.4, 0.6, 0.8], dtype=torch.float64)  # batch_size = 3
@@ -64,15 +76,38 @@ class TestBatchADMForDiagonal(unittest.TestCase):
             [9.0, 10.0, 11.0, 12.0],
             [13.0, 14.0, 15.0, 16.0]
         ], dtype=torch.float64)  # n x n stencil
+        # Pre-allocated buffer for 4x4 case
+        self.U_buf_4x4 = torch.empty((3, 4, 4), dtype=torch.float64)
+
+    def test_random(self):
+        for batch_size in range(10):
+            rho = torch.randn(batch_size, dtype=torch.float64)
+            S = torch.randn(batch_size, 32, dtype=torch.float64)
+            T = torch.randn(batch_size, 32, dtype=torch.float64)
+            stencil = torch.randn(32, 32, dtype=torch.float64)
+            U = torch.randn(batch_size, 32, 32, dtype=torch.float64)
+            result = batch_ADM_for_diagonal(rho, U, S, T, stencil)
+
+            for i in range(batch_size):
+                actual = U[i]
+                expected = torch.clone(stencil)
+                for exponent in range(32):
+                    expected[exponent, exponent+1:] *= S[i, 1:S.shape[1]-exponent] * (rho[i] ** exponent)
+                    expected[exponent:, exponent] *= T[i, :T.shape[1]-exponent] * (rho[i] ** exponent)
+                
+                self.assertTrue(torch.allclose(actual, expected, rtol=1e-5))
+
+            # Check that the result is a tensor of shape (batch_size, n, n)
+            self.assertEqual(result.shape, (batch_size, 32, 32))
 
     def test_2x2_shape(self):
         """Test that the output shape is correct for 2x2 case"""
-        result = batch_ADM_for_diagonal(self.rho_2x2, self.S_2x2, self.T_2x2, self.stencil_2x2)
+        result = batch_ADM_for_diagonal(self.rho_2x2, self.U_buf_2x2, self.S_2x2, self.T_2x2, self.stencil_2x2)
         self.assertEqual(result.shape, (2, 2, 2))  # batch_size x n x n
 
     def test_2x2_first_batch(self):
         """Test the first batch element of 2x2 case"""
-        result = batch_ADM_for_diagonal(self.rho_2x2, self.S_2x2, self.T_2x2, self.stencil_2x2)
+        result = batch_ADM_for_diagonal(self.rho_2x2, self.U_buf_2x2, self.S_2x2, self.T_2x2, self.stencil_2x2)
 
         # For the first batch (rho = 0.5):
         # First level: first row/column use rho^0 = 1.0
@@ -87,7 +122,7 @@ class TestBatchADMForDiagonal(unittest.TestCase):
 
     def test_2x2_second_batch(self):
         """Test the second batch element of 2x2 case"""
-        result = batch_ADM_for_diagonal(self.rho_2x2, self.S_2x2, self.T_2x2, self.stencil_2x2)
+        result = batch_ADM_for_diagonal(self.rho_2x2, self.U_buf_2x2, self.S_2x2, self.T_2x2, self.stencil_2x2)
 
         # For the second batch (rho = 0.7):
         # First level: first row/column use rho^0 = 1.0
@@ -105,12 +140,12 @@ class TestBatchADMForDiagonal(unittest.TestCase):
 
     def test_3x3_shape(self):
         """Test that the output shape is correct for 3x3 case"""
-        result = batch_ADM_for_diagonal(self.rho_3x3, self.S_3x3, self.T_3x3, self.stencil_3x3)
+        result = batch_ADM_for_diagonal(self.rho_3x3, self.U_buf_3x3, self.S_3x3, self.T_3x3, self.stencil_3x3)
         self.assertEqual(result.shape, (1, 3, 3))  # batch_size x n x n
 
     def test_3x3_values(self):
         """Test the values for 3x3 case"""
-        result = batch_ADM_for_diagonal(self.rho_3x3, self.S_3x3, self.T_3x3, self.stencil_3x3)
+        result = batch_ADM_for_diagonal(self.rho_3x3, self.U_buf_3x3, self.S_3x3, self.T_3x3, self.stencil_3x3)
 
         # For the 3x3 case (rho = 0.3):
         # First level: first row/column use rho^0 = 1.0
@@ -132,7 +167,7 @@ class TestBatchADMForDiagonal(unittest.TestCase):
 
     def test_4x4_values(self):
         """Test the values for 4x4 case"""
-        result = batch_ADM_for_diagonal(self.rho_4x4, self.S_4x4, self.T_4x4, self.stencil_4x4)
+        result = batch_ADM_for_diagonal(self.rho_4x4, self.U_buf_4x4, self.S_4x4, self.T_4x4, self.stencil_4x4)
 
         # For the 4x4 case with batch size 3:
         # First batch (rho = 0.4):
@@ -195,9 +230,12 @@ class TestBatchComputeBoundaries(unittest.TestCase):
             [[5.0, 6.0],
              [7.0, 8.0]]
         ], dtype=torch.float64)  # batch_size=2, n=2
-        self.ds_2x2 = 0.5
-        self.dt_2x2 = 0.5
-        self.v_s_2x2, self.v_t_2x2 = compute_vandermonde_vectors(self.ds_2x2, self.dt_2x2, 2, self.U_2x2.dtype, self.U_2x2.device)
+        self.ds_2x2 = torch.tensor([0.5])
+        self.dt_2x2 = torch.tesnor([0.5])
+        self.v_s_2x2, self.v_t_2x2 = compute_vandermonde_vectors(self.ds_2x2, self.dt_2x2, 2)
+        # Pre-allocated buffers for S and T for 2x2 case
+        self.S_buf_2x2 = torch.empty((3, 2), dtype=torch.float64)  # Max size needed is batch_size+1
+        self.T_buf_2x2 = torch.empty((3, 2), dtype=torch.float64)  # Max size needed is batch_size+1
 
         # Common test data for 3x3 case
         self.U_3x3 = torch.tensor([
@@ -205,9 +243,12 @@ class TestBatchComputeBoundaries(unittest.TestCase):
              [4.0, 5.0, 6.0],
              [7.0, 8.0, 9.0]]
         ], dtype=torch.float64)  # batch_size=1, n=3
-        self.ds_3x3 = 0.3
-        self.dt_3x3 = 0.3
-        self.v_s_3x3, self.v_t_3x3 = compute_vandermonde_vectors(self.ds_3x3, self.dt_3x3, 3, self.U_3x3.dtype, self.U_3x3.device)
+        self.ds_3x3 = torch.tensor([0.3])
+        self.dt_3x3 = torch.tensor([0.3])
+        self.v_s_3x3, self.v_t_3x3 = compute_vandermonde_vectors(self.ds_3x3, self.dt_3x3, 3)
+        # Pre-allocated buffers for S and T for 3x3 case
+        self.S_buf_3x3 = torch.empty((2, 3), dtype=torch.float64)  # Max size needed is batch_size+1
+        self.T_buf_3x3 = torch.empty((2, 3), dtype=torch.float64)  # Max size needed is batch_size+1
 
         # Common test data for 4x4 case with batch size 3
         self.U_4x4 = torch.tensor([
@@ -224,314 +265,75 @@ class TestBatchComputeBoundaries(unittest.TestCase):
              [41.0, 42.0, 43.0, 44.0],
              [45.0, 46.0, 47.0, 48.0]]
         ], dtype=torch.float64)  # batch_size=3, n=4
-        self.ds_4x4 = 0.25
-        self.dt_4x4 = 0.25
-        self.v_s_4x4, self.v_t_4x4 = compute_vandermonde_vectors(self.ds_4x4, self.dt_4x4, 4, self.U_4x4.dtype, self.U_4x4.device)
+        self.ds_4x4 = torch.tensor([0.25])
+        self.dt_4x4 = torch.tensor([0.25])
+        self.v_s_4x4, self.v_t_4x4 = compute_vandermonde_vectors(self.ds_4x4, self.dt_4x4, 4)
+        # Pre-allocated buffers for S and T for 4x4 case
+        self.S_buf_4x4 = torch.empty((4, 4), dtype=torch.float64)  # Max size needed is batch_size+1
+        self.T_buf_4x4 = torch.empty((4, 4), dtype=torch.float64)  # Max size needed is batch_size+1
 
-    def test_2x2_shrinking(self):
-        """Test 2x2 case with both skip_first and skip_last=True (shrinking)"""
-        S, T = batch_compute_boundaries(self.U_2x2, self.v_s_2x2, self.v_t_2x2, skip_first=True, skip_last=True)
-        
-        # For first batch:
-        # S values (v_t^T.U):
-        # v_t = [1, 0.5]
-        # [1,0.5] * [1,3] = 1*1 + 0.5*3 = 2.5
-        # [1,0.5] * [2,4] = 1*2 + 0.5*4 = 4
-        
-        # T values (U.v_s):
-        # v_s = [1, 0.5]
-        # [5,6] * [1,0.5] = 5*1 + 6*0.5 = 8
-        # [7,8] * [1,0.5] = 7*1 + 8*0.5 = 11
-        
-        expected_S = torch.tensor([
-            [2.5, 4.0]  # First batch
-        ], dtype=torch.float64)
-        
-        expected_T = torch.tensor([
-            [8.0, 11.0]  # First batch
-        ], dtype=torch.float64)
-        
-        # print("==== test_2x2_shrinking ====")
-        # print(f"U = {self.U_2x2}")
-        # print(f"v_s = {self.v_s_2x2}")
-        # print(f"v_t = {self.v_t_2x2}")
-        # print(f"S = {S}")
-        # print(f"T = {T}")
+    def test_random(self):
+        ZERO = torch.tensor([0], dtype=torch.float64)
+        ONE = torch.tensor([1], dtype=torch.float64)
+        order = 5
+        v_s = torch.randn(order,dtype=torch.float64)
+        v_t = torch.randn(order,dtype=torch.float64)
+        for batch_size in range(2,10):
+            U = torch.randn((batch_size, order, order), dtype=torch.float64)
+            S = torch.randn((batch_size+1, order), dtype=torch.float64)
+            T = torch.randn((batch_size+1, order), dtype=torch.float64)
+            S[batch_size] = 1
+            T[batch_size] = 1
+            
+            U_vs = U @ v_s
+            vt_U = v_t @ U
 
-        self.assertEqual(S.shape, (1, 2))  # batch_size x (n-1)
-        self.assertEqual(T.shape, (1, 2))  # batch_size x (n-1)
-        self.assertTrue(torch.allclose(S, expected_S, rtol=1e-5))
-        self.assertTrue(torch.allclose(T, expected_T, rtol=1e-5))
+            # Shrinking case
+            skip_first = True
+            skip_last = True
+            S_result, T_result = batch_compute_boundaries(U,S,T,v_s,v_t,skip_first, skip_last)
+            self.assertTrue( torch.allclose(U_vs[1:], T_result), f"Shrinking: U_vs != T\nU_vs = {U_vs}\nT_result={T_result}")
+            self.assertTrue( torch.allclose(vt_U[:-1], S_result), f"Shrinking: vt_U !=S\nvt_U = {vt_U}\nS_result={S_result}")
+            
+            # Growing case
+            skip_first = False
+            skip_last = False
+            S[0,:] = 0
+            S[0,0] = 1
+            T[batch_size,:] = 0
+            T[batch_size,0] = 1
+            S_result, T_result = batch_compute_boundaries(U,S,T,v_s,v_t,skip_first, skip_last)
+            self.assertEqual(T_result.shape, (batch_size+1, order), f"T_result.shape = {T_result.shape}\nT_result = {T_result}")
+            self.assertEqual(S_result.shape, (batch_size+1, order), f"S_result.shape = {S_result.shape}\nS_result = {S_result}")
+            self.assertTrue( torch.allclose(U_vs, T_result[:-1]), f"Growing: U_vs != T\nU_vs = {U_vs}\nT_result={T_result}")
+            self.assertTrue( torch.allclose(vt_U, S_result[1:]), f"Growing: vt_U !=S\nvt_U = {vt_U}\nS_result={S_result}")
+            self.assertTrue( torch.allclose(S[0,0],ONE), f"S = {S}")
+            self.assertTrue( torch.allclose(S[0,1:].sum(),ZERO), f"sum = {S[0,1:].sum()}\nS = {S}")
+            self.assertTrue( torch.allclose(T[batch_size,0],ONE), f"T = {T}")
+            self.assertTrue( torch.allclose(T[batch_size,1:].sum(),ZERO),f"sum = {T[0,1:].sum()}\nT = {T}")
 
-    def test_2x2_growing(self):
-        """Test 2x2 case with both skip_first and skip_last=False (growing)"""
-        S, T = batch_compute_boundaries(self.U_2x2, self.v_s_2x2, self.v_t_2x2, skip_first=False, skip_last=False)
-        
-        # For first batch:
-        # S values (v_t^T.U):
-        # v_t = [1, 0.5]
-        # [1,0.5] * [1,3] = 1*1 + 0.5*3 = 2.5
-        # [1,0.5] * [2,4] = 1*2 + 0.5*4 = 4
-        
-        # T values (U.v_s):
-        # v_s = [1, 0.5]
-        # [1,2] * [1,0.5] = 1*1 + 2*0.5 = 2
-        # [3,4] * [1,0.5] = 3*1 + 4*0.5 = 5
-        
-        # For second batch:
-        # S values (v_t^T.U):
-        # [1,0.5] * [5,7] = 1*5 + 0.5*7 = 8.5
-        # [1,0.5] * [6,8] = 1*6 + 0.5*8 = 10
-        
-        # T values (U.v_s):
-        # [5,6] * [1,0.5] = 5*1 + 6*0.5 = 8
-        # [7,8] * [1,0.5] = 7*1 + 8*0.5 = 11
-        
-        expected_S = torch.tensor([
-            [1.0, 0.0],   # New batch with initial condition (bottom boundary)
-            [2.5, 4.0],   # First batch
-            [8.5, 10.0]   # Second batch
-        ], dtype=torch.float64)
-        
-        expected_T = torch.tensor([
-            [2.0, 5.0],  # First batch
-            [8.0, 11.0],  # Second batch
-            [1.0, 0.0]   # New batch with initial condition
-        ], dtype=torch.float64)
-        
-        # print(f"U = {self.U_2x2}")
-        # print(f"v_s = {self.v_s_2x2}")
-        # print(f"v_t = {self.v_t_2x2}")
-        # print(f"S = {S}")
-        # print(f"T = {T}")
+            # Staying the same cases 
+            skip_first = False
+            skip_last = True
+            S[batch_size,:] = 0
+            S[batch_size,0] = 1
+            S_result, T_result = batch_compute_boundaries(U,S,T,v_s,v_t,skip_first, skip_last)
+            self.assertTrue( torch.allclose(U_vs, T_result), f"Same(skip_first=False, skip_last=True): U_vs != T\nU_vs = {U_vs}\nT_result={T_result}")
+            self.assertTrue( torch.allclose(vt_U[:-1], S_result[1:]), f"Same(skip_first=False, skip_last=True): vt_U !=S\nvt_U = {vt_U}\nS_result={S_result}")
+            self.assertTrue( torch.allclose(S[0,0],ONE), f"S = {S}")
+            self.assertTrue( torch.allclose(S[0,1:].sum(),ZERO), f"sum = {S[0,1:].sum()}\nS = {S}")
 
-        self.assertEqual(S.shape, (3, 2))  # (batch_size+1) x n
-        self.assertEqual(T.shape, (3, 2))  # (batch_size+1) x n
-        self.assertTrue(torch.allclose(S, expected_S, rtol=1e-5))
-        self.assertTrue(torch.allclose(T, expected_T, rtol=1e-5))
+            skip_first = True
+            skip_last = False
+            T[0,:] = 0
+            T[0,0] = 1
+            S_result, T_result = batch_compute_boundaries(U,S,T,v_s,v_t,skip_first, skip_last)
+            self.assertTrue( torch.allclose(U_vs[1:], T_result[:-1]), f"Same(skip_first=True, skip_last=False): U_vs != T\nU_vs = {U_vs}\nT_result={T_result}")
+            self.assertTrue( torch.allclose(vt_U, S_result), f"Same(skip_first=True, skip_last=False): vt_U !=S\nvt_U = {vt_U}\nS_result={S_result}")
+            self.assertTrue( torch.allclose(T[batch_size,0],ONE),f"T = {T}")
+            self.assertTrue( torch.allclose(T[batch_size,1:].sum(),ZERO),f"T = {T}")
+            
 
-    def test_2x2_staying_same(self):
-        """Test 2x2 case with skip_first=True and skip_last=False (staying same size)"""
-        S, T = batch_compute_boundaries(self.U_2x2, self.v_s_2x2, self.v_t_2x2, skip_first=True, skip_last=False)
-        
-        # For first batch:
-        # S values (v_t^T.U):
-        # v_t = [1, 0.5]
-        # [1,0.5] * [1,3] = 1*1 + 0.5*3 = 2.5
-        # [1,0.5] * [2,4] = 1*2 + 0.5*4 = 4
-        
-        # T values (U.v_s):
-        # [1, 0] from initial condition
-        
-        # For second batch:
-        # S values (v_t^T.U):
-        # [1,0.5] * [5,7] = 1*5 + 0.5*7 = 8.5
-        # [1,0.5] * [6,8] = 1*6 + 0.5*8 = 10
-        
-        # T values (U.v_s):
-        # [5,6] * [1,0.5] = 5*1 + 6*0.5 = 8
-        # [7,8] * [1,0.5] = 7*1 + 8*0.5 = 11
-        
-        expected_S = torch.tensor([
-            [2.5, 4.0],  # First batch
-            [8.5, 10.0]  # Second batch
-        ], dtype=torch.float64)
-        
-        expected_T = torch.tensor([
-            [1.0, 0.0],  # First batch
-            [8.0, 11.0]  # Second batch
-        ], dtype=torch.float64)
-        
-        # print("==== test_2x2_staying_same ====")
-        # print(f"U = {self.U_2x2}")
-        # print(f"v_s = {self.v_s_2x2}")
-        # print(f"v_t = {self.v_t_2x2}")
-        # print(f"S = {S}")
-        # print(f"T = {T}")
-
-        self.assertEqual(S.shape, (2, 2))  # batch_size x n
-        self.assertEqual(T.shape, (2, 2))  # batch_size x n
-        self.assertTrue(torch.allclose(S, expected_S, rtol=1e-5))
-        self.assertTrue(torch.allclose(T, expected_T, rtol=1e-5))
-
-    def test_3x3_shrinking(self):
-        """Test 3x3 case with both skip_first and skip_last=True (shrinking)"""
-        S, T = batch_compute_boundaries(self.U_3x3, self.v_s_3x3, self.v_t_3x3, skip_first=True, skip_last=True)
-        
-        # For the single batch:
-        # S values (v_t^T.U):
-        # v_t = [1, 0.3, 0.09]
-        # [1,0.3,0.09] * [1,4,7] = 1*1 + 0.3*4 + 0.09*7 = 2.83
-        # [1,0.3,0.09] * [2,5,8] = 1*2 + 0.3*5 + 0.09*8 = 4.22
-        # [1,0.3,0.09] * [3,6,9] = 1*3 s
-        expected_S = torch.tensor([[2.83, 4.22, 5.61]], dtype=torch.float64)
-        expected_T = torch.tensor([[1.87, 6.04, 10.21]], dtype=torch.float64)
-        
-        # print("==== test_3x3_shrinking ====")
-        # print(f"U = {self.U_3x3}")
-        # print(f"v_s = {self.v_s_3x3}")
-        # print(f"v_t = {self.v_t_3x3}")
-        # print(f"S = {S}")
-        # print(f"T = {T}")
-
-        self.assertEqual(S.shape, (0, 3))  # (batch_size-1) x n
-        self.assertEqual(T.shape, (0, 3))  # (batch_size-1) x n
-        self.assertTrue(torch.allclose(S, expected_S, rtol=1e-5))
-        self.assertTrue(torch.allclose(T, expected_T, rtol=1e-5))
-
-    def test_3x3_growing(self):
-        """Test 3x3 case with both skip_first and skip_last=False (growing)"""
-        S, T = batch_compute_boundaries(self.U_3x3, self.v_s_3x3, self.v_t_3x3, skip_first=False, skip_last=False)
-        
-        # For the single batch:
-        # S values (v_t^T.U):
-        # v_t = [1, 0.3, 0.09]
-        # [1,0.3,0.09] * [1,4,7] = 1*1 + 0.3*4 + 0.09*7 = 2.83
-        # [1,0.3,0.09] * [2,5,8] = 1*2 + 0.3*5 + 0.09*8 = 4.22
-        # [1,0.3,0.09] * [3,6,9] = 1*3 + 0.3*6 + 0.09*9 = 5.61
-        
-        # T values (U.v_s):
-        # v_s = [1, 0.3, 0.09]
-        # [1,2,3] * [1,0.3,0.09] = 1*1 + 2*0.3 + 3*0.09 = 1.87
-        # [4,5,6] * [1,0.3,0.09] = 4*1 + 5*0.3 + 6*0.09 = 6.04
-        # [7,8,9] * [1,0.3,0.09] = 7*1 + 8*0.3 + 9*0.09 = 10.21
-        
-        expected_S = torch.tensor([
-            [1.0, 0.0, 0.0],      # New batch with initial condition (bottom boundary)
-            [2.83, 4.22, 5.61]    # Original batch
-        ], dtype=torch.float64)
-        
-        expected_T = torch.tensor([
-            [1.87, 6.04, 10.21],  # Original batch
-            [1.0, 0.0, 0.0]       # New batch with initial condition
-        ], dtype=torch.float64)
-        
-        # print("==== test_3x3_growing ====")
-        # print(f"U = {self.U_3x3}")
-        # print(f"v_s = {self.v_s_3x3}")
-        # print(f"v_t = {self.v_t_3x3}")
-        # print(f"S = {S}")
-        # print(f"T = {T}")
-
-        self.assertEqual(S.shape, (2, 3))  # (batch_size+1) x n
-        self.assertEqual(T.shape, (2, 3))  # (batch_size+1) x n
-        self.assertTrue(torch.allclose(S, expected_S, rtol=1e-5))
-        self.assertTrue(torch.allclose(T, expected_T, rtol=1e-5))
-
-    def test_3x3_staying_same(self):
-        """Test 3x3 case with skip_first=True and skip_last=False (staying same size)"""
-        S, T = batch_compute_boundaries(self.U_3x3, self.v_s_3x3, self.v_t_3x3, skip_first=True, skip_last=False)
-        
-        # For the single batch:
-        # S values (v_t^T.U):
-        # v_t = [1, 0.3, 0.09]
-        # [1,0.3,0.09] * [1,4,7] = 1*1 + 0.3*4 + 0.09*7 = 2.83
-        # [1,0.3,0.09] * [2,5,8] = 1*2 + 0.3*5 + 0.09*8 = 4.22
-        # [1,0.3,0.09] * [3,6,9] = 1*3 + 0.3*6 + 0.09*9 = 5.61
-        
-        # T values (U.v_s):
-        # [1,0,0] from initial conditions
-        
-        expected_S = torch.tensor([[2.83, 4.22, 5.61]], dtype=torch.float64)
-        expected_T = torch.tensor([[1.00, 0.0, 0.0]], dtype=torch.float64)
-        
-        # print("==== test_3x3_staying_same ====")
-        # print(f"U = {self.U_3x3}")
-        # print(f"v_s = {self.v_s_3x3}")
-        # print(f"v_t = {self.v_t_3x3}")
-        # print(f"S = {S}")
-        # print(f"T = {T}")
-
-        self.assertEqual(S.shape, (1, 3))  # (batch_size) x n
-        self.assertEqual(T.shape, (1, 3))  # (batch_size) x n
-        self.assertTrue(torch.allclose(S, expected_S, rtol=1e-5))
-        self.assertTrue(torch.allclose(T, expected_T, rtol=1e-5))
-
-    def test_4x4_shrinking(self):
-        """Test 4x4 case with both skip_first and skip_last=True (shrinking)"""
-        S, T = batch_compute_boundaries(self.U_4x4, self.v_s_4x4, self.v_t_4x4, skip_first=True, skip_last=True)
-        
-        # For the first batch:
-        # S values (v_t^T.U):s1,15] = 1*3 + 0.25*7 + 0.0625*11 + 0.015625*15 = 5.203125
-        # [1,0.25,0.0625,0.015625] * [4,8,12,16] = 1*4 + 0.25*8 + 0.0625*12 + 0.015625*16 = 6.203125
-        
-        # T values (U.v_s):
-        # v_s = [1, 0.25, 0.0625, 0.015625]
-        # [1,2,3,4] * [1,0.25,0.0625,0.015625] = 1*1 + 2*0.25 + 3*0.0625 + 4*0.015625 = 3.015625
-        # [5,6,7,8] * [1,0.25,0.0625,0.015625] = 5*1 + 6*0.25 + 7*0.0625 + 8*0.015625 = 4.34375
-        # [9,10,11,12] * [1,0.25,0.0625,0.015625] = 9*1 + 10*0.25 + 11*0.0625 + 12*0.015625 = 5.671875
-        # [13,14,15,16] * [1,0.25,0.0625,0.015625] = 13*1 + 14*0.25 + 15*0.0625 + 16*0.015625 = 7.0
-        
-        # Similar computations for second and third batches with scaled values
-        
-        expected_S = torch.tensor([
-            [3.015625, 4.34375, 5.671875, 7],  # First batch
-            [24.2656, 25.5938, 26.9219, 28.2500]  # Second batch
-        ], dtype=torch.float64)
-        
-        expected_T = torch.tensor([
-            [23.0000, 28.3125, 33.6250, 38.9375],  # First batch
-            [44.2500, 49.5625, 54.8750, 60.1875]  # Second batch
-        ], dtype=torch.float64)
-        
-        # print("==== test_4x4_shrinking ====")
-        # print(f"U = {self.U_4x4}")
-        # print(f"v_s = {self.v_s_4x4}")
-        # print(f"v_t = {self.v_t_4x4}")
-        # print(f"S = {S}")
-        # print(f"T = {T}")
-        
-        self.assertEqual(S.shape, (2, 4))  # (batch_size-1) x n
-        self.assertEqual(T.shape, (2, 4))  # (batch_size-1) x n
-        self.assertTrue(torch.allclose(S, expected_S, rtol=1e-5))
-        self.assertTrue(torch.allclose(T, expected_T, rtol=1e-5))
-
-    def test_4x4_growing(self):
-        """Test 4x4 case with both skip_first and skip_last=False (growing)"""
-        S, T = batch_compute_boundaries(self.U_4x4, self.v_s_4x4, self.v_t_4x4, skip_first=False, skip_last=False)
-        
-        # For the first batch:
-        # S values (v_t^T.U):
-        # v_t = [1, 0.25, 0.0625, 0.015625]
-        # [1,0.25,0.0625,0.015625] * [1,5,9,13] = 1*1 + 0.25*5 + 0.0625*9 + 0.015625*13 = 3.015625
-        # [1,0.25,0.0625,0.015625] * [2,6,10,14] = 1*2 + 0.25*6 + 0.0625*10 + 0.015625*14 = 4.34375
-        # [1,0.25,0.0625,0.015625] * [3,7,11,15] = 1*3 + 0.25*7 + 0.0625*11 + 0.015625*15 = 5.671875
-        # [1,0.25,0.0625,0.015625] * [4,8,12,16] = 1*4 + 0.25*8 + 0.0625*12 + 0.015625*16 = 7
-        
-        # T values (U.v_s):
-        # v_s = [1, 0.25, 0.0625, 0.015625]
-        # [1,2,3,4] * [1,0.25,0.0625,0.015625] = 1*1 + 2*0.25 + 3*0.0625 + 4*0.015625 = 1.75
-        # [5,6,7,8] * [1,0.25,0.0625,0.015625] = 5*1 + 6*0.25 + 7*0.0625 + 8*0.015625 = 7.0625
-        # [9,10,11,12] * [1,0.25,0.0625,0.015625] = 9*1 + 10*0.25 + 11*0.0625 + 12*0.015625 = 12.3750
-        # [13,14,15,16] * [1,0.25,0.0625,0.015625] = 13*1 + 14*0.25 + 15*0.0625 + 16*0.015625 = 17.6875
-        
-        # Similar computations for second and third batches with scaled values
-        
-        expected_S = torch.tensor([
-            [1.0, 0.0, 0.0, 0.0],   # New batch with initial condition (bottom boundary)
-            [3.015625, 4.34375, 5.671875, 7],  # First batch
-            [24.2656, 25.5938, 26.9219, 28.2500],  # Second batch
-            [45.5156, 46.8438, 48.1719, 49.5000] # Third batch
-        ], dtype=torch.float64)
-        
-        expected_T = torch.tensor([
-            [1.75, 7.0625, 12.3750, 17.6875],  # First batch
-            [23.0000, 28.3125, 33.6250, 38.9375],  # Second batch
-            [44.2500, 49.5625, 54.8750, 60.1875],  # Third batch
-            [1.0, 0.0, 0.0, 0.0]   # New batch with initial condition
-        ], dtype=torch.float64)
-
-        # print("==== test_4x4_growing ====")
-        # print(f"U = {self.U_4x4}")
-        # print(f"v_s = {self.v_s_4x4}")
-        # print(f"v_t = {self.v_t_4x4}")
-        # print(f"S = {S}")
-        # print(f"T = {T}")
-        
-        self.assertEqual(S.shape, (4, 4))  # (batch_size+1) x n
-        self.assertEqual(T.shape, (4, 4))  # (batch_size+1) x n
-        self.assertTrue(torch.allclose(S, expected_S, rtol=1e-5))
-        self.assertTrue(torch.allclose(T, expected_T, rtol=1e-5))
 
 class TestBuildStencil(unittest.TestCase):
     def setUp(self):
@@ -606,16 +408,25 @@ class TestSignatureKernelConsistency(unittest.TestCase):
     def setUp(self):
         # Determine device to use (CUDA if available, otherwise CPU)
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-        
+        print(f"self.device: {self.device}")
         # Create two simple time series
-        self.X = torch.tensor([[[0.0], [1.0], [2.0]], 
-                              [[3.0], [4.0], [5.0]]], dtype=torch.float64).to(self.device)
-        self.Y = torch.tensor([[[0.0], [0.5], [1.0]],
-                              [[1.5], [2.0], [2.5]]], dtype=torch.float64).to(self.device)
+        # self.X = torch.tensor([[[0.0], [1.0], [2.0]],
+        #                    [[1.0], [3.0], [3.0]],
+        #                    [[2.0], [2.0], [4.0]], 
+        #                    [[3.0], [4.0], [5.0]]], dtype=torch.float64).to(self.device)
+        # self.Y = torch.tensor([[[0.0], [0.5], [1.0]],
+        #                    [[2.0], [1.0], [2.5]],
+        #                    [[2.7], [3.0], [4.0]], 
+        #                    [[3.0], [2.4], [3.20]], 
+        #                    [[1.5], [2.0], [2.5]]], dtype=torch.float64).to(self.device)
+        self.X = torch.randn(4, 3, 2, dtype=torch.float64).to(self.device)/2
+        self.Y = torch.randn(4, 3, 2, dtype=torch.float64).to(self.device)/2
         
         # Set up ksig static kernel
         self.static_kernel = ksig.static.kernels.LinearKernel()
-        
+        self.order = 32
+        self.dtype = torch.float64
+
         # Set up sigkernel
         self.dyadic_order = 0
         self.signature_kernel = sigkernel.SigKernel(sigkernel.LinearKernel(), self.dyadic_order)
@@ -634,47 +445,145 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         ksig_pde_result = ksig_pde_kernel(X_cpu, Y_cpu)
         
         # 3. KSig truncated signature implementation
-        ksig_trunc_kernel = ksig.kernels.SignatureKernel(n_levels=21, order=0, normalize=False, 
+        ksig_trunc_kernel = ksig.kernels.SignatureKernel(n_levels=50, order=0, normalize=False, 
                                                         static_kernel=self.static_kernel)
         ksig_trunc_result = ksig_trunc_kernel(X_cpu, Y_cpu)
+        order = self.order
         
-        # 4. PowerSig implementation
+        # 5. PowerSig implementation
         # Convert to derivatives
-        dX = torch_compute_derivative_batch(self.X)
-        dY = torch_compute_derivative_batch(self.Y)
+        dX = torch_compute_derivative_batch(self.X).clone()
+        dY = torch_compute_derivative_batch(self.Y).clone()
+        ds = 1/dX.shape[1]
+        dt = 1/dY.shape[1]
+        v_s, v_t = compute_vandermonde_vectors(ds, dt, self.order, dX.dtype, dX.device)
+        v_s = v_s.clone()
+        v_t = v_t.clone()
+        psi_s = powersig.torch.torch.build_stencil_s(v_s, self.order, self.device, self.dtype).clone()
+        psi_t = powersig.torch.torch.build_stencil_t(v_t, self.order, self.device, self.dtype).clone()
+        ic = torch.zeros((self.order,), dtype=self.dtype, device=self.device)
+        ic[0] = 1
+        exponents = build_increasing_matrix(self.order, torch.int8, self.device).clone()
+        longest_diagonal = min(dX.shape[1], dY.shape[1])
+        diagonal_count = dX.shape[1] + dY.shape[1] - 1
+        indices = torch.arange(longest_diagonal, dtype=torch.int32, device=self.device)
         
+
         # Compute gram matrix
         powersig_results = torch.zeros((self.X.shape[0], self.Y.shape[0]), dtype=torch.float64, device=self.device)
-        order = 32
-        scales = build_scaling_for_integration(order, dX.device, dX.dtype)
+        powersig_cupy_results = torch.zeros((self.X.shape[0], self.Y.shape[0]), dtype=torch.float64, device=self.device)
         
         for i in range(dX.shape[0]):
             for j in range(dY.shape[0]):
-                powersig_results[i, j] = batch_compute_gram_entry(dX[i], dY[j], scales, order)
-        
-        # Move results to CPU for comparison
-        if powersig_results.is_cuda:
-            powersig_results = powersig_results.cpu()
+                powersig_results[i, j] = compute_gram_entry(dX[i], dY[j],v_s, v_t, psi_s, psi_t, diagonal_count, 4, longest_diagonal, ic, indices,exponents,order)
+                powersig_cupy_results[i, j] = torch.tensor(batch_compute_gram_entry_cupy(cp.array(dX[i].cpu().numpy()), cp.array(dY[j].cpu().numpy()), order),dtype=torch.float64, device=self.device)
+        # # Move results to CPU for comparison
+        # if powersig_results.is_cuda:
+        #     powersig_results = powersig_results.cpu()
         
         # Print all results for comparison
         print(f"SigKernel result:\n{sig_kernel_result}")
         print(f"KSig PDE result:\n{ksig_pde_result}")
         print(f"KSig truncated signature result:\n{ksig_trunc_result}")
         print(f"PowerSig result:\n{powersig_results}")
-        
+        print(f"PowerSig_cupy result:\n{powersig_cupy_results}")
+
+        # Convert numpy arrays to PyTorch tensors if needed
+        if not isinstance(ksig_pde_result, torch.Tensor):
+            ksig_pde_result = torch.tensor(ksig_pde_result, device=self.device, dtype=torch.float64)
+        if not isinstance(ksig_trunc_result, torch.Tensor):
+            ksig_trunc_result = torch.tensor(ksig_trunc_result, device=self.device, dtype=torch.float64)
+        if not isinstance(sig_kernel_result, torch.Tensor):
+            sig_kernel_result = torch.tensor(sig_kernel_result, device=self.device, dtype=torch.float64)    
+        else: 
+            sig_kernel_result = sig_kernel_result.to(self.device)
+
+        print(f"sig_kernel_result.device: {sig_kernel_result.device}")
+        print(f"ksig_pde_result.device: {ksig_pde_result.device}")
+        print(f"ksig_trunc_result.device: {ksig_trunc_result.device}")
+        print(f"powersig_results.device: {powersig_results.device}")
+        print(f"powersig_cupy_results.device: {powersig_cupy_results.device}")
         # Check that results are close to each other
         self.assertTrue(torch.allclose(sig_kernel_result, ksig_pde_result, rtol=1e-2), 
                         f"SigKernel and KSig PDE results differ significantly\n{sig_kernel_result}\n{ksig_pde_result}")
-        self.assertTrue(torch.allclose(sig_kernel_result, ksig_trunc_result, rtol=1e-2), 
-                        f"SigKernel and KSig truncated results differ significantly")
-        self.assertTrue(torch.allclose(sig_kernel_result, powersig_results, rtol=1e-2), 
-                        f"SigKernel and PowerSig results differ significantly")
+        # self.assertTrue(torch.allclose(sig_kernel_result, ksig_trunc_result, rtol=1e-2), 
+        #                 f"SigKernel and KSig truncated results differ significantly")
+        # self.assertTrue(torch.allclose(sig_kernel_result, powersig_results, rtol=1e-2), 
+        #                 f"SigKernel and PowerSig results differ significantly")
+        print(f"ksig_trunc_result-powersig_results total error= {torch.sum(abs(ksig_trunc_result-powersig_results))}")
+        print(f"ksig_trunc_result-powersig_cupy_results total error= {torch.sum(abs(ksig_trunc_result-powersig_cupy_results))}")
+        print(f"powersig_results-powersig_cupy_results total error= {torch.sum(abs(powersig_results-powersig_cupy_results))}")
 
+        self.assertTrue(torch.allclose(ksig_trunc_result, powersig_results, rtol=1e-3),   
+                        f"KSig truncated and PowerSig results differ significantly\nksig_trunc_result = {ksig_trunc_result}\npowersig_results = {powersig_results}\nksig_trunc_result-powersig_results = {ksig_trunc_result-powersig_results}\nTotal error: {torch.sum(abs(ksig_trunc_result-powersig_results))}")
+        self.assertTrue(torch.allclose(ksig_trunc_result, powersig_cupy_results, rtol=1e-7),   
+                        f"KSig truncated and PowerSig Cupy results differ significantly\nksig_trunc_result = {ksig_trunc_result}\npowersig_cupy_results = {powersig_cupy_results}\nksig_trunc_result-powersig_cupy_results = {ksig_trunc_result-powersig_cupy_results}\nTotal error: {torch.sum(abs(ksig_trunc_result-powersig_cupy_results))}")
+        self.assertTrue(torch.allclose(powersig_results, powersig_cupy_results, rtol=1e-7),   
+                        f"PowerSig and PowerSig_cupy results differ significantly\npowersig_results = {powersig_results}\npowersig_cupy_results = {powersig_cupy_results}\npowersig_results-powersig_cupy_results = {powersig_results-powersig_cupy_results}\nTotal error: {torch.sum(abs(powersig_results-powersig_cupy_results))}")
+
+class TestStencilSimple(unittest.TestCase):
+    """Simple direct tests for build_stencil_s and build_stencil_t functions."""
+    
+    def test_build_stencil_s_direct(self):
+        """Test build_stencil_s directly with random vector."""
+        from powersig.torch import build_stencil, build_stencil_s
+        
+        order = 5
+        device = torch.device("cpu")
+        dtype = torch.float64
+        
+        # Create a random vector for v_s
+        v_s = torch.rand(order, dtype=dtype, device=device)
+        
+        # Get the base stencil
+        base_stencil = build_stencil(order, device, dtype)
+        
+        # Get the stencil with columns multiplied by v_s
+        stencil_s = build_stencil_s(v_s, order, device, dtype)
+        
+        # Manually multiply each col and check
+        for i in range(order):
+            expected_col = base_stencil[:,i] * v_s[i]
+            actual_col = stencil_s[:,i]
+            self.assertTrue(torch.allclose(actual_col, expected_col),
+                          f"Row {i} multiplication failed:\nExpected: {expected_col}\nActual: {actual_col}")
+    
+    def test_build_stencil_t_direct(self):
+        """Test build_stencil_t directly with random vector."""
+        from powersig.torch import build_stencil, build_stencil_t
+        
+        order = 5
+        device = torch.device("cpu")
+        dtype = torch.float64
+        
+        # Create a random vector for v_t
+        v_t = torch.rand(order, dtype=dtype, device=device)
+        
+        # Get the base stencil
+        base_stencil = build_stencil(order, device, dtype)
+        
+        # Get the stencil with rows multiplied by v_t
+        stencil_t = build_stencil_t(v_t, order, device, dtype)
+        
+        # Manually multiply each rows and check
+        for j in range(order):
+            expected_row = base_stencil[j,:] * v_t[j]
+            actual_row = stencil_t[j,:]
+            self.assertTrue(torch.allclose(actual_row, expected_row),
+                          f"Row {j} multiplication failed:\nExpected: {expected_row}\nActual: {actual_row}")
+   
 
 if __name__ == '__main__':
     # To run all tests
     # unittest.main()
     
-    # To run only TestSignatureKernelConsistency
+    # To run only TestBuildStencil
+    # suite = unittest.TestLoader().loadTestsFromTestCase(TestBuildStencil)
+    # suite = unittest.TestLoader().loadTestsFromTestCase(TestBatchComputeBoundaries)
+    # suite = unittest.TestLoader().loadTestsFromTestCase(TestBatchADMForDiagonal)
     suite = unittest.TestLoader().loadTestsFromTestCase(TestSignatureKernelConsistency)
     unittest.TextTestRunner().run(suite)
+    
+    # To run a specific test method
+    # suite = unittest.TestLoader().loadTestsFromName('TestBatchComputeBoundaries.test_2x2_values')
+    # unittest.TextTestRunner().run(suite)

@@ -3,20 +3,15 @@ import os
 import ksig.static.kernels
 
 import ksig
-import random
 import time
 import unittest
 from contextlib import contextmanager
 from math import factorial
-from multiprocessing import set_start_method
 from random import randint
 
-import numpy
 import numpy as np
 import psutil
 import torch
-from numba.cpython.setobj import set_len
-from sigkernel import sigkernel
 
 from benchmarks.util import generate_brownian_motion
 from powersig.matrixsig import MatrixSig, build_tile_power_series_stencil, build_scaling_for_integration, \
@@ -25,7 +20,7 @@ from powersig.matrixsig import MatrixSig, build_tile_power_series_stencil, build
 from powersig.power_series import SimplePowerSeries, MatrixPowerSeries, build_A1, build_A2, \
     build_integration_gather_matrix_s, build_integration_gather_matrix_t
 from powersig.simpesig import SimpleSig
-from powersig.util.series import torch_compute_derivative_batch
+from powersig.torch.series import torch_compute_derivative_batch
 from tests.configuration import TestRun, signature_kernel
 from tests.utils import setup_torch
 

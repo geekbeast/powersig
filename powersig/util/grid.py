@@ -1,6 +1,5 @@
 from typing import Tuple
 
-
 def get_diagonal_range(d: int, rows: int, cols: int) -> Tuple[int, int, int]:
     # d, s_start, t_start are 0 based indexes while rows/cols are shapes.
 

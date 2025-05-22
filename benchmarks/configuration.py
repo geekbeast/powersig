@@ -3,24 +3,24 @@ import pickle
 
 import ksig
 import torch
-from sigkernel import sigkernel
+
+from benchmarks.generators import set_seed
 
 _batch, _len_x, _len_y, _dim = 1, 100000, 100, 2
 _fresh = True
-torch.random.manual_seed(1)
-static_kernel = sigkernel.LinearKernel()
+set_seed(42)
 dyadic_order = 0
-signature_kernel = sigkernel.SigKernel(static_kernel, dyadic_order)
 
-ksig_static_kernel = ksig.static.kernels.LinearKernel()
 
+POLYNOMIAL_ORDER = 8
+LEVELS = 21
 # Instantiate the signature kernel, which takes as input the static kernel.
+ksig_static_kernel = ksig.static.kernels.LinearKernel()
 ksig_pde_kernel = ksig.kernels.SignaturePDEKernel(normalize = False, static_kernel=ksig_static_kernel)
-ksig_kernel = ksig.kernels.SignatureKernel(n_levels = 21, order = 0, normalize = False, static_kernel=ksig_static_kernel)
 
 
 RUN_ID = "run_id"
-PYTORCH_MEMORY = "pytorch_memory"
+GPU_MEMORY = "gpu_memory"
 CUPY_MEMORY = "cupy_memory"
 CPU_MEMORY = "cpu_memory"
 SIGNATURE_KERNEL = "signature_kernel"
@@ -28,30 +28,31 @@ DURATION = "duration"
 LENGTH = "length"
 ORDER = "order"
 DYADIC_ORDER = "dyadic_order"
-CSV_FIELDS = [LENGTH, RUN_ID, DURATION, PYTORCH_MEMORY, CUPY_MEMORY, CPU_MEMORY, ORDER, DYADIC_ORDER, SIGNATURE_KERNEL ]
+HURST = "hurst" 
+CSV_FIELDS = [LENGTH, RUN_ID, DURATION, GPU_MEMORY, CUPY_MEMORY, CPU_MEMORY, ORDER, DYADIC_ORDER, HURST, SIGNATURE_KERNEL]
 
-MAX_LENGTH = 1<<20
-POWERSIG_MAX_LENGTH = 1<<16
-SIG_KERNEL_MAX_LENGTH = 1022
-KSIG_MAX_LENGTH = 1<<15
-
-POWERSIG_MAX_LENGTH = 1000000
-KSIG_PDE_MAX_LENGTH = 50000
-ORDER = 8
+POWERSIG_BACKEND = "PowerSig"
+KSIG_BACKEND = "KSigSignatureKernel"
+KSIG_PDE_BACKEND = "KSigPDESignatureKernel"
+SIGKERNEL_BACKEND = "SigKernel"
 
 NUM_PATHS = 11
 
 # Directory paths
-BENCHMARKS_RESULTS_DIR = "results"
+BENCHMARKS_RESULTS_DIR = "benchmarks/results"
 
 # File extensions
 CSV_EXTENSION = ".csv"
 
 # Benchmark result files
 POWERSIG_RESULTS = "powersig_results.csv"
+POWERSIG_TORCH_RESULTS = "powersig_torch_results.csv"
+POWERSIG_CUPY_RESULTS = "powersig_cupy_results.csv"
 SIGKERNEL_RESULTS = "sigkernel_results.csv"
 KSIG_RESULTS = "ksig_results.csv"
+KSIG_CPU_RESULTS = "ksig_cpu_results.csv"
 KSIG_PDE_RESULTS = "ksig_pde_results.csv"
+KSIG_PDE_CPU_RESULTS = "ksig_pde_cpu_results.csv"
 
 def get_benchmark_config(fresh=_fresh):
     if os.path.exists("tests.run"):

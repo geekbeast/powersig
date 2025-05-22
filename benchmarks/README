@@ -1,0 +1,20 @@
+# PowerSig Benchmarks
+
+This directory contains benchmarks for comparing PowerSig with other signature kernel libraries.
+
+## Quick Start
+
+To run the benchmarks, follow these steps:
+
+1. Install the benchmark requirements:
+   ```
+   pip install -r requirements-dev.txt
+   ```
+
+2. Run from the project root.
+   ```
+   PYTHONPATH=. python benchmarks/benchmark_runner.py
+   ```
+
+Benchmarks currently require a CUDA enabled device. 
+

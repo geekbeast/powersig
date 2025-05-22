@@ -1,18 +1,14 @@
-import string
 import time
 from concurrent.futures import ProcessPoolExecutor
-from typing import Optional, Tuple
+from typing import Optional
 
 import math
 import torch
-from math import isclose
-
-from torch.onnx.symbolic_opset9 import unsqueeze
 
 from powersig.power_series import build_integration_gather_matrix_t, build_integration_gather_matrix_s, \
     MatrixPowerSeries, build_A1, build_A2, build_integration_limit_matrix_s, build_integration_limit_matrix_t
 from powersig.util.grid import get_diagonal_range
-from powersig.util.series import torch_compute_dot_prod, torch_compute_derivative_batch, double_length, \
+from powersig.torch.series import torch_compute_dot_prod, torch_compute_derivative_batch, double_length, \
     torch_compute_dot_prod_batch
 
 

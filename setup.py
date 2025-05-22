@@ -19,7 +19,7 @@ setup(
     keywords='machine-learning signature sequence time-series pinn deep learning',
     url='https://github.com/geekbeast/powersig',
     packages=find_packages(),
-    install_requires=['torch>=2.5.0', 'numpy>=1.26.4', 'scikit-learn>=1.3.2', 'datasets', 'transformers', 'matplotlib', 'tokenizers', 'tqdm==4.67.1'],
+    install_requires=['torch>=2.5.0', 'numpy>=1.26.4', 'scikit-learn>=1.3.2', 'tqdm==4.67.1'],
     python_requires='>=3.12',
     classifiers=[
         'Audience :: Developers',

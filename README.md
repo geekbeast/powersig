@@ -1,23 +1,16 @@
-# PowerSig
+# Power-series based computation of Signature Kernels
 Using power series to compute signatures.
 
-## Algorithms
+## Installation 
+```bash
+pip install git+https://github.com/geekbeast/powersig.git
+```
 
-This library implements three different power series approaches to computing the signature kernel
-with varying levels of stability and performance. All of implemented the approaches in this library 
-are currently based upon ADM. The first two schemes below work by repeatedly solving for the explicit 
-truncated power series representation of 
+Requires Python 3.12+ 
 
-### Truncated coefficients
-This is the most accurate, but slowest scheme. It uses a coefficient vector and two exponent vectors
-to maintain an arbitrarily precise power series representation of the 
+Requires PyTorch 2.5+, JAX 0.6.0+, or cupy 13.4.1+ depending on which implementation you prefer. 
 
-### Self-truncating Coefficient Matrices
-This approach is similar to the truncated coefficients scheme, where the linear integral operator
-will automatically discard coefficients that grow two large.
+## Getting Started
+```python
 
-### Fixed Point ADM Power Series
-Unlike the other approaches which build up the solution by repeatedly solving the boundary conditions
-for each tile. This approach is direct power series computation of the signature scheme based on an
-analytic solution of the Goursat PDE.
-
+```

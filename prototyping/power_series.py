@@ -1,11 +1,11 @@
 import math
 from collections import defaultdict
-from typing import Self, Tuple
+from typing import Self
 
 import torch
 from torch import Tensor
 
-from powersig.util.series import resize
+from powersig.torch.series import resize
 
 
 class TileSolutionPowerSeries:
