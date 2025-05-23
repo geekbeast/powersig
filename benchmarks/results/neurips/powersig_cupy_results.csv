@@ -1,0 +1,1 @@
+length,run_id,duration,gpu_memory,cupy_memory,cpu_memory,order,dyadic_order,hurst,signature_kernel

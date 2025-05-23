@@ -1,0 +1,6 @@
+matplotlib
+git+https://github.com/crispitagorico/sigkernel.git
+git+https://github.com/geekbeast/KSig.git
+fbm
+seaborn
+datasests

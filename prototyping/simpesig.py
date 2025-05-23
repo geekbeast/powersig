@@ -4,7 +4,7 @@ from typing import Optional
 import torch
 
 from powersig.power_series import SimplePowerSeries
-from powersig.util.series import torch_compute_derivative_batch
+from powersig.torch.series import torch_compute_derivative_batch
 
 
 class FrontierParameters:
