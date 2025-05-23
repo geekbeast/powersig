@@ -25,11 +25,12 @@ from benchmarks.configuration import (
     ksig_pde_kernel
 )
 import configuration
-from powersig import powersig_cupy
 import powersig
 from powersig.cupy_backend.cupy_series import cupy_compute_derivative_batch
 
 import sigkernel
+
+from powersig.jax.algorithm import PowerSigJax
 
 
 
@@ -88,7 +89,7 @@ class PowerSigBenchmark(Benchmark):
 
     def before_run(self, data: torch.Tensor, stats: dict) -> torch.Tensor:
         if self.powersig is None:
-            self.powersig = powersig.jax.PowerSigJax(self.order)
+            self.powersig = PowerSigJax(self.order)
         
         if self.device is None:
             devices = jax.devices("cuda")
@@ -187,14 +188,15 @@ class KSigBenchmark(Benchmark):
 
     def compute_signature_kernel(self, data: torch.Tensor) -> float:
         if self.ksig_kernel == None:
-            ksig.kernels.SignatureKernel(n_levels = self.levels, order = 0, normalize = False, static_kernel=ksig_static_kernel)
+            self.ksig_kernel = ksig.kernels.SignatureKernel(n_levels = self.levels, order = 0, normalize = False, static_kernel=ksig_static_kernel)
 
-        result = ksig_kernel(data, data)
+        result = self.ksig_kernel(data, data)
         if result.shape[0] == 1 and result.shape[1] == 1:
             return result.item()
         else:
             raise ValueError("Result is not a scalar")
 
+# KSigCPU is not support at the moment.
 class KSigCPUBenchmark(Benchmark):
     def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR):
         super().__init__(

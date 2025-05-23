@@ -25,4 +25,4 @@ Tuple[torch.tensor, float]:
     dt = t / n_steps
 
     return torch.tensor(
-        powersig.util.fbm_utils.fractional_brownian_motion(n_steps, n_paths, dim=dim, hurst=hurst, t=t)).to(device), dt
+        powersig.util.fbm_utils.fractional_brownian_motion(n_steps, n_paths, dim=dim, hurst=hurst, t=t)[0]).to(device), dt
