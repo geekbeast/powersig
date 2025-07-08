@@ -1,4 +1,3 @@
-import cupy as cp
 import numpy as np
 
 from fbm import FBM
@@ -7,7 +6,7 @@ from fbm import FBM
 from typing import Tuple
 
 
-def fractional_brownian_motion(n_steps, n_paths=1, cuda: bool = True, dim: int = 1, hurst: float = 0.5, t: float = 1.0) -> Tuple[np.ndarray | cp.ndarray, float]:
+def fractional_brownian_motion(n_steps, n_paths=1, cuda: bool = True, dim: int = 1, hurst: float = 0.5, t: float = 1.0) -> Tuple[np.ndarray, float]:
 
     """
     Generate multi-dimensional fractional Brownian motion paths using the fbm package.
@@ -29,7 +28,7 @@ def fractional_brownian_motion(n_steps, n_paths=1, cuda: bool = True, dim: int =
 
     # Initialize output tensor
     if cuda:
-        fbm_paths = cp.zeros((n_paths, n_steps + 1, dim), dtype=np.float64)
+        fbm_paths = cupy.zeros((n_paths, n_steps + 1, dim), dtype=np.float64)
     else:
         fbm_paths = np.zeros((n_paths, n_steps + 1, dim), dtype=np.float64)
 
@@ -42,7 +41,7 @@ def fractional_brownian_motion(n_steps, n_paths=1, cuda: bool = True, dim: int =
             path = f.fbm()
             # Convert to appropriate array type and store
             if cuda:
-                path = cp.array(path)
+                path = cupy.array(path)
             fbm_paths[i, :, d] = path
 
     return fbm_paths, dt
