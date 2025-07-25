@@ -29,12 +29,12 @@ class PowerSigJax:
     
     def __call__(self, X, Y = None, symmetric: bool = False) -> jnp.ndarray:
         if not isinstance(X, jnp.ndarray):
-            X = jnp.array(X)
+            X = jnp.array(X, device=self.device)
         
         if Y is None:
             Y = X
         elif not isinstance(Y, jnp.ndarray):
-            Y = jnp.array(Y)
+            Y = jnp.array(Y, device=self.device)
             
         return self.compute_gram_matrix(X, Y, symmetric)
     
