@@ -70,13 +70,20 @@ def main():
     test_data = test_df.iloc[:, 1:].values.astype(np.float64).T    # (n_meters, n_test_timestamps)
     print(f"Number of meters: {train_data.shape[0]}, Train timestamps: {train_data.shape[1]}, Test timestamps: {test_data.shape[1]}")
     
-    # Use only 256 timestamps for both training and testing
-    train_len = min(256, train_data.shape[1])
-    test_len = min(256, test_data.shape[1])
+    # Use 16000 timestamps for both training and testing
+    train_len = min(16000, train_data.shape[1])
+    test_len = min(16000, test_data.shape[1])
     X_train = train_data[:, :train_len]
     X_test = test_data[:, :test_len]
     
     print(f"Using {train_len} timestamps for training and {test_len} timestamps for testing")
+    print(f"Note: This represents {train_len/4/24:.1f} days of data (at 15-minute intervals)")
+    
+    # Memory usage estimate for gram matrices
+    estimated_memory_mb = (train_len * train_len * 8) / (1024 * 1024)  # float64 = 8 bytes
+    print(f"Estimated gram matrix memory usage: {estimated_memory_mb:.1f} MB")
+    if estimated_memory_mb > 1000:
+        print("Warning: Large gram matrix may require significant memory!")
     
     # Normalize the data
     X_train_max = np.max(X_train)
@@ -113,8 +120,9 @@ def main():
     print(f"Target shape - y_train: {y_train.shape}, y_test: {y_test.shape}")
     print(f"Target variable range: [{np.min(y_train):.2f}, {np.max(y_train):.2f}]")
     
-    # Initialize PowerSigJax
-    powersig = PowerSigJax(order=8)
+    # Initialize PowerSigJax with appropriate order for larger dataset
+    # Lower order for computational efficiency with large datasets
+    powersig = PowerSigJax(order=6)
     
     # Compute gram matrices
     print("Computing training gram matrix...")
@@ -211,7 +219,7 @@ def main():
     print(f"\n=== Model Summary ===")
     print(f"Number of dual coefficients: {len(final_krr.dual_coef_)}")
     print(f"Alpha used: {best_alpha}")
-    print(f"Polynomial order: 8")
+    print(f"Polynomial order: 6")
     print(f"Total computation time: {train_time + test_time:.2f} seconds")
     
     print(f"\n✓ Electricity analysis completed successfully!")

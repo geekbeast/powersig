@@ -28,6 +28,7 @@ def fractional_brownian_motion(n_steps, n_paths=1, cuda: bool = True, dim: int =
 
     # Initialize output tensor
     if cuda:
+        import cupy
         fbm_paths = cupy.zeros((n_paths, n_steps + 1, dim), dtype=np.float64)
     else:
         fbm_paths = np.zeros((n_paths, n_steps + 1, dim), dtype=np.float64)

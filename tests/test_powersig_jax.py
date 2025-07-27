@@ -8,16 +8,17 @@ import cupy as cp
 
 import benchmarks
 import benchmarks.generators
+from powersig.jax import static_kernels
+from powersig.jax.algorithm import batch_ADM_for_diagonal
 import powersig.torch.utils
-from powersig.jax import DIAGONAL_CHUNK_SIZE, batch_ADM_for_diagonal, build_increasing_matrix, build_stencil_s, build_stencil_t, chunked_compute_gram_entry, compute_boundary, compute_gram_entry, estimate_required_order
-from powersig.jax import batch_compute_boundaries
-from powersig.jax import compute_vandermonde_vectors
-from powersig.jax import build_stencil, PowerSigJax
+from powersig.jax.algorithm import build_increasing_matrix, build_stencil_s, build_stencil_t, chunked_compute_gram_entry, compute_boundary, compute_gram_entry, estimate_required_order
+from powersig.jax.algorithm import batch_compute_boundaries
+from powersig.jax.algorithm import compute_vandermonde_vectors
+from powersig.jax.algorithm import build_stencil, PowerSigJax
 from powersig.util.grid import get_diagonal_range
 import ksig
 import ksig.static.kernels
 from sigkernel import sigkernel
-import powersig.powersig_cupy
 from powersig.jax.jax_series import jax_compute_derivative_batch
 
 class TestBatchADMForDiagonal(unittest.TestCase):
@@ -841,13 +842,13 @@ class TestSignatureKernelConsistency(unittest.TestCase):
         longest_diagonal = min(dX.shape[1], dY.shape[1])
         diagonal_count = dX.shape[1] + dY.shape[1] - 1
         indices = jnp.arange(longest_diagonal,device=dX.device)
-        self.powersig_jax = PowerSigJax(self.order, self.X.device)
+        self.powersig_jax = PowerSigJax(self.order, static_kernels.linear_kernel, self.X.device)
         batch_size = ceil(sqrt(longest_diagonal))
         # Using a loop since we don't have a batched version yet
         for i in range(dX.shape[0]):
             for j in range(dY.shape[0]):
                 powersig_results = powersig_results.at[i, j].set(
-                     chunked_compute_gram_entry(dX[i], dY[j], self.v_s, self.v_t, self.psi_s, self.psi_t, diagonal_count, batch_size, longest_diagonal, ic, indices, self.exponents, self.order).item()
+                     chunked_compute_gram_entry(dX[i], dY[j], self.v_s, self.v_t, self.psi_s, self.psi_t, diagonal_count, batch_size, longest_diagonal, ic, indices, self.exponents, kernel=static_kernels.linear_kernel,order=self.order).item()
                     #  compute_gram_entry(dX[i], dY[j], self.v_s, self.v_t, self.psi_s, self.psi_t, diagonal_count, longest_diagonal, ic, indices, self.exponents, self.order).item()
                 )
 

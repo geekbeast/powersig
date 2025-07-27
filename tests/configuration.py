@@ -5,7 +5,7 @@ import torch
 from jinja2.compiler import generate
 from sigkernel import sigkernel
 
-from benchmarks.util import generate_brownian_motion
+from benchmarks.generators import generate_brownian_motion
 
 _batch, _len_x, _len_y, _dim = 1, 10, 10, 2
 _fresh = True

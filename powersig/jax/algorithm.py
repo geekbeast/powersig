@@ -2,6 +2,7 @@ from math import ceil, sqrt
 from typing import Optional, Tuple
 
 # Import and use JAX configuration before any JAX imports
+from powersig.jax import static_kernels
 from powersig.jax.jax_config import configure_jax
 configure_jax()
 import jax
@@ -15,7 +16,7 @@ from powersig.jax.jax_series import jax_compute_derivative, jax_compute_derivati
 
 
 class PowerSigJax:
-    def __init__(self, order: int = 32, device: Optional[jax.Device] = None):
+    def __init__(self, order: int = 32, static_kernel = static_kernels.linear_kernel, device: Optional[jax.Device] = None):
         # Select device - prefer CUDA if available, otherwise use CPU
         self.order = order
         if device is None:
@@ -26,6 +27,7 @@ class PowerSigJax:
             self.device = device
         # self.exponents = jnp.arange(self.order)
         self.exponents = build_increasing_matrix(self.order, dtype=jnp.int8, device=self.device)
+        self.static_kernel = static_kernel
     
     def __call__(self, X, Y = None, symmetric: bool = False) -> jnp.ndarray:
         if not isinstance(X, jnp.ndarray):
@@ -71,7 +73,7 @@ class PowerSigJax:
         # psi_s = build_stencil(self.order, dX.dtype, device)
         # psi_t = psi_s
         indices = jnp.arange(longest_diagonal,dtype=jnp.int32,device=device)
-        return compute_gram_entry(dX, dY, v_s, v_t, psi_s, psi_t, diagonal_count, longest_diagonal, ic, indices, exponents, order=self.order)
+        return compute_gram_entry(dX, dY, v_s, v_t, psi_s, psi_t, diagonal_count, longest_diagonal, ic, indices, exponents, kernel=self.static_kernel, order=self.order)
 
     @partial(jit, static_argnums=(0,3))
     def compute_signature_kernel_chunked(self, X: jnp.ndarray, Y: jnp.ndarray, device=None) -> jnp.ndarray:
@@ -100,7 +102,7 @@ class PowerSigJax:
 
         indices = jnp.arange(longest_diagonal,dtype=jnp.int32,device=device)
         diagonal_batch_size = ceil(sqrt(longest_diagonal))
-        return chunked_compute_gram_entry(dX, dY, v_s, v_t, psi_s, psi_t, diagonal_count, diagonal_batch_size, longest_diagonal, ic, indices, exponents, order=self.order)
+        return chunked_compute_gram_entry(dX, dY, v_s, v_t, psi_s, psi_t, diagonal_count, diagonal_batch_size, longest_diagonal, ic, indices, exponents, kernel=self.static_kernel, order=self.order)
 
     # TODO: Think about jitting this
     def compute_gram_matrix(self, X: jnp.ndarray, Y: jnp.ndarray, symmetric: bool = False) -> jnp.ndarray:
@@ -146,9 +148,9 @@ class PowerSigJax:
         for i in range(X.shape[0]):
             for j in range(Y.shape[0]):
                 if longest_diagonal <= JIT_BOUNDARY_THRESHOLD:
-                    gram_matrix = gram_matrix.at[i,j].set(compute_gram_entry(dX[i], dY[j], v_s, v_t, psi_s, psi_t, diagonal_count,longest_diagonal, ic, indices, exponents, order=self.order, device=X.device))
+                    gram_matrix = gram_matrix.at[i,j].set(compute_gram_entry(dX[i], dY[j], v_s, v_t, psi_s, psi_t, diagonal_count,longest_diagonal, ic, indices, exponents, kernel=self.static_kernel, order=self.order, device=X.device))
                 else:
-                    gram_matrix = gram_matrix.at[i,j].set(chunked_compute_gram_entry(dX[i], dY[j], v_s, v_t, psi_s, psi_t, diagonal_count, diagonal_batch_size, longest_diagonal, ic, indices, exponents, order=self.order, device=X.device))
+                    gram_matrix = gram_matrix.at[i,j].set(chunked_compute_gram_entry(dX[i], dY[j], v_s, v_t, psi_s, psi_t, diagonal_count, diagonal_batch_size, longest_diagonal, ic, indices, exponents, kernel=self.static_kernel, order=self.order, device=X.device))
 
         return gram_matrix
 
@@ -478,7 +480,7 @@ def stable_diagonal_entry(rho: jnp.ndarray,v_s: jnp.ndarray, v_t: jnp.ndarray, s
     U = toeplitz(t_coeff, s_coeff) * R
     return v_t @ U, U @ v_s
 
-@partial(jit, static_argnums=(6,7,11,12))
+@partial(jit, static_argnums=(6,7,11,12,13))
 def compute_gram_entry(
     dX_i: jnp.ndarray, 
     dY_j: jnp.ndarray, 
@@ -491,6 +493,7 @@ def compute_gram_entry(
     ic: jnp.ndarray,
     indices: jnp.ndarray, 
     exponents: jnp.ndarray, 
+    kernel,
     order: int = 32,
     device=None) -> jnp.ndarray:
     """
@@ -549,7 +552,8 @@ def compute_gram_entry(
             t = ((s_start - diagonal_index == 0) * ic) + ((s_start - diagonal_index != 0) * T[t_index])
             dX_idx = (s_start - diagonal_index) * ((s_start - diagonal_index) < dX_i.shape[0])
             dY_idx = (t_start + diagonal_index) * ((t_start + diagonal_index) < dY_j.shape[0])
-            rho = jnp.dot(dX_i[dX_idx], dY_j[dY_idx], precision = jax.lax.Precision.HIGHEST)
+            rho = kernel(dX_i[dX_idx], dY_j[dY_idx])
+            # rho = jnp.dot(dX_i[dX_idx], dY_j[dY_idx], precision = jax.lax.Precision.HIGHEST)
             # jax.debug.print("""
             #     d = {},
             #     diagonal_index {}:
@@ -645,7 +649,7 @@ def process_chunk(
         is_before_wrap,
     )
 
-@partial(jit, static_argnums=(6,7,8,12,13))
+@partial(jit, static_argnums=(6,7,8,12,13,14))
 def chunked_compute_gram_entry(
     dX_i: jnp.ndarray, 
     dY_j: jnp.ndarray, 
@@ -658,7 +662,8 @@ def chunked_compute_gram_entry(
     longest_diagonal: int,
     ic: jnp.ndarray,
     indices: jnp.ndarray, 
-    exponents: jnp.ndarray, 
+    exponents: jnp.ndarray,
+    kernel,  
     order: int = 32,
     device=None) -> jnp.ndarray:
     """
@@ -746,7 +751,8 @@ def chunked_compute_gram_entry(
                 t = ((s_start - index_in_diagonal == 0) * ic) + ((s_start - index_in_diagonal != 0) * T[t_index])
                 dX_idx = (s_start - index_in_diagonal) * ((s_start - index_in_diagonal) < dX_i.shape[0])
                 dY_idx = (t_start + index_in_diagonal) * ((t_start + index_in_diagonal) < dY_j.shape[0])
-                rho = jnp.dot(dX_i[dX_idx], dY_j[dY_idx], precision = jax.lax.Precision.HIGHEST)
+                rho = kernel(dX_i[dX_idx], dY_j[dY_idx])
+                # rho = jnp.dot(dX_i[dX_idx], dY_j[dY_idx], precision = jax.lax.Precision.HIGHEST)
                 # jax.debug.print("""
                 #     d = {},
                 #     diagonal_index {}:
