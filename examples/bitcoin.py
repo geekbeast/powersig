@@ -410,6 +410,7 @@ def validate_gram_matrix_powersig_vs_ksigpde(X_train, powersig):
     print("Computing KSigPDE gram matrix...")
     start_time = time.time()
     static_kernel = RBFKernel()
+    # static_kernel = LinearKernel()
     ksig_pde_kernel = SignaturePDEKernel(normalize=False, static_kernel=static_kernel)
     ksig_gram = ksig_pde_kernel(cupy.array(X_validate,dtype=cupy.float64), cupy.array(X_validate,dtype=cupy.float64))
     ksig_time = time.time() - start_time
@@ -422,7 +423,7 @@ def validate_gram_matrix_powersig_vs_ksigpde(X_train, powersig):
     # 3. KSig Truncated Signature Kernel computation (level=21)
     print("\nComputing KSig Truncated Signature Kernel gram matrix (level=21)...")
     start_time = time.time()
-    ksig_trunc_kernel = ksig.kernels.SignatureKernel(n_levels=51, order=1, normalize=False, static_kernel=static_kernel)
+    ksig_trunc_kernel = ksig.kernels.SignatureKernel(n_levels=21, order=0, normalize=False, static_kernel=static_kernel)
     ksig_trunc_gram = ksig_trunc_kernel(cupy.array(X_validate,dtype=cupy.float64), cupy.array(X_validate,dtype=cupy.float64))
     ksig_trunc_time = time.time() - start_time
     print(f"KSig Truncated time: {ksig_trunc_time:.3f}s")
