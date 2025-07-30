@@ -29,7 +29,8 @@ LENGTH = "length"
 ORDER = "order"
 DYADIC_ORDER = "dyadic_order"
 HURST = "hurst" 
-CSV_FIELDS = [LENGTH, RUN_ID, DURATION, GPU_MEMORY, CUPY_MEMORY, CPU_MEMORY, ORDER, DYADIC_ORDER, HURST, SIGNATURE_KERNEL]
+DIMENSION = "dimension"
+CSV_FIELDS = [LENGTH, DIMENSION, RUN_ID, DURATION, GPU_MEMORY, CUPY_MEMORY, CPU_MEMORY, ORDER, DYADIC_ORDER, HURST, SIGNATURE_KERNEL]
 
 POWERSIG_BACKEND = "PowerSig"
 KSIG_BACKEND = "KSigSignatureKernel"
@@ -53,6 +54,7 @@ KSIG_RESULTS = "ksig_results.csv"
 KSIG_CPU_RESULTS = "ksig_cpu_results.csv"
 KSIG_PDE_RESULTS = "ksig_pde_results.csv"
 KSIG_PDE_CPU_RESULTS = "ksig_pde_cpu_results.csv"
+POLYSIG_RESULTS = "polysig_results.csv"
 
 def get_benchmark_config(fresh=_fresh):
     if os.path.exists("tests.run"):

@@ -7,6 +7,7 @@ from powersig.torch.utils import fractional_brownian_motion
 from benchmarks.kernel_benchmarks import (
     KSigBenchmark,
     KSigPDEBenchmark,
+    PolySigBenchmark,
     PowerSigBenchmark,
     PowerSigCupyBenchmark,
     SigKernelBenchmark
@@ -38,9 +39,10 @@ if __name__== '__main__':
     
     setup_torch()
     generators.set_seed(42)
-    benchmark_accuracy = True
-    benchmark_rough_accuracy = True
-    benchmark_length = True
+    benchmark_accuracy = False
+    benchmark_rough_accuracy = False
+    benchmark_high_dimension = True
+    benchmark_length = False
     ctx = mp.get_context('spawn')
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
     
@@ -54,7 +56,8 @@ if __name__== '__main__':
                 KSigPDEBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
                 SigKernelBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
                 PowerSigCupyBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
-                PowerSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy",order=8,device_index=1),
+                PowerSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy",order=9,device_index=1),
+                PolySigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/accuracy"),
             ]
             X, _ = fractional_brownian_motion(length,n_paths=NUM_PATHS, dim=2)
             for benchmark in active_benchmarks:
@@ -72,7 +75,7 @@ if __name__== '__main__':
                     KSigPDEBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
                     SigKernelBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
                     PowerSigCupyBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough"),
-                    PowerSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough",order=8,device_index=1),
+                    PowerSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/rough",order=9,device_index=1),
                 ]
                 num_paths = 2 # This will take forever otherwise. (2^13 - 1) * 99 = 810 K signature kernels to evaluate 
                 X, _ = fractional_brownian_motion(50,n_paths=num_paths, dim=2, hurst=hurst)
@@ -80,6 +83,24 @@ if __name__== '__main__':
                 for benchmark in active_benchmarks:
                     # We don't care about the multiprocessing here, we just want to run the benchmark
                     mp_benchmark("roughness", benchmark, X, hurst)
+    
+    if benchmark_high_dimension:
+        length = 4096  
+        for dimension in [ 2**i for i in range(1, 14)]:
+            active_benchmarks : list[Benchmark] = [
+                # KSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/dimension"),
+                KSigPDEBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/dimension"),
+                SigKernelBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/dimension"),
+                PowerSigCupyBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/dimension"),
+                PowerSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/dimension",order=9,device_index=1),
+                PolySigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/dimension"),
+            ]
+            X, _ = fractional_brownian_motion(length,n_paths=NUM_PATHS, dim=dimension)
+            for benchmark in active_benchmarks:
+                print(f"Spawning {benchmark.name} for length {length}")
+                p = ctx.Process(target=mp_benchmark, args=("dimension", benchmark, X, .5))
+                p.start()
+                p.join()
         
 
     if (benchmark_length):

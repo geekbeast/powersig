@@ -95,6 +95,7 @@ class Benchmark(ABC):
         # Initialize stats with basic info
         stats = {
             "length": data.shape[1],
+            "dimension": data.shape[2],
             RUN_ID: run_id
         }
         

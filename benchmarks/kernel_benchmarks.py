@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import cupy as cp
 import os
 import ksig
+from polysigkernel import SigKernel
 from benchmarks.benchmark import Benchmark
 from benchmarks.util import Backend
 from benchmarks.configuration import (
@@ -13,6 +14,7 @@ from benchmarks.configuration import (
     KSIG_PDE_CPU_RESULTS,
     LEVELS,
     ORDER,
+    POLYSIG_RESULTS,
     POWERSIG_CUPY_RESULTS,
     POWERSIG_TORCH_RESULTS,
     SIGKERNEL_BACKEND,
@@ -26,6 +28,7 @@ from benchmarks.configuration import (
 )
 import configuration
 import powersig
+from powersig import cupy_backend
 from powersig.cupy_backend.cupy_series import cupy_compute_derivative_batch
 
 import sigkernel
@@ -100,8 +103,11 @@ class PowerSigBenchmark(Benchmark):
         X_np = data.cpu().numpy()
         
         # Convert numpy array to JAX array
-        return jnp.array(X_np, device=self.device)
-        
+        X_np = jnp.array(X_np, device=self.device)
+        if X_np.shape[0] == 1 and len(X_np.shape) == 3:
+            return X_np[0]
+        else:
+            return X_np
 
     def compute_signature_kernel(self, data) -> float:
         if data.shape[1] > 1024:
@@ -131,7 +137,7 @@ class PowerSigCupyBenchmark(Benchmark):
         return cp.copy(dX_i)
 
     def compute_signature_kernel(self, data: cp.ndarray) -> float:
-        return powersig_cupy.batch_compute_gram_entry(data, data, POLYNOMIAL_ORDER).item()
+        return cupy_backend.algorithm.batch_compute_gram_entry(data, data, POLYNOMIAL_ORDER).item()
         
 
 class PowerSigTorchBenchmark(Benchmark):
@@ -184,7 +190,7 @@ class KSigBenchmark(Benchmark):
 
     def before_run(self, data: torch.Tensor, stats: dict) -> torch.Tensor:
         stats[ORDER] = self.levels
-        return data
+        return data.cpu().numpy()
 
     def compute_signature_kernel(self, data: torch.Tensor) -> float:
         if self.ksig_kernel == None:
@@ -264,5 +270,41 @@ class KSigPDECPUBenchmark(Benchmark):
         result = ksig_pde_kernel(data, data)
         if result.shape[0] == 1 and result.shape[1] == 1:
             return result.item()
+        else:
+            raise ValueError("Result is not a scalar")
+
+class PolySigBenchmark(Benchmark):
+    def __init__(self, debug: bool = False, results_dir: str = BENCHMARKS_RESULTS_DIR, order = POLYNOMIAL_ORDER, device_index: int = -1):
+        super().__init__(
+            filename=os.path.join(results_dir, POLYSIG_RESULTS),
+            csv_fields=CSV_FIELDS,
+            backend=Backend.JAX_CUDA,
+            name="PolySig",
+            debug=debug
+        )
+        self.order = order
+        self.polysig_sk = None
+        self.device_index = device_index
+        self.device = None
+
+    def setup(self) -> None:
+        pass
+
+    def before_run(self, data: torch.Tensor, stats: dict) -> jnp.ndarray:
+        if self.polysig_sk is None:
+            self.polysig_sk = SigKernel(order=self.order, static_kernel="linear")
+        if self.device is None:
+            devices = jax.devices("cuda")
+            self.device = devices[self.device_index if self.device_index != -1 else jax.device_count() - 1]
+
+        stats["order"] = self.order
+
+        return jnp.array(data.cpu().numpy(), device=self.device)
+
+    def compute_signature_kernel(self, data: jnp.ndarray) -> float:
+        result = self.polysig_sk.kernel_matrix(data, data)
+        assert result.dtype == jnp.float64, "Result dtype is not float64"
+        if result.shape[0] == 1 and result.shape[1] == 1:
+            return float(result[0, 0])
         else:
             raise ValueError("Result is not a scalar")
