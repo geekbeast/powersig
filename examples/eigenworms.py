@@ -1,0 +1,1063 @@
+"""
+Eigenworms Classification using SVC with Custom Kernels
+
+This script implements Eigenworms classification using Support Vector Classification (SVC)
+with custom signature kernels: KSigPDE, KSig RFSF-TRP, and PowerSigJax.
+"""
+import os
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+import jax
+import numpy as np
+from numpy.linalg import cond
+import jax.numpy as jnp
+import cupy as cp
+import torch
+from sklearn.svm import SVC
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.metrics import accuracy_score, classification_report, precision_score, recall_score, f1_score, mean_absolute_percentage_error
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+import multiprocessing as mp
+from functools import partial
+import matplotlib.pyplot as plt
+
+import time
+import logging
+from typing import Tuple, Dict, Any, Optional, Literal
+import os
+import pickle
+from enum import Enum
+
+# Import PowerSig modules
+from powersig.jax.algorithm import PowerSigJax
+from powersig.jax import static_kernels
+
+# Import KSig modules
+import ksig
+from ksig.kernels import SignaturePDEKernel, SignatureKernel
+from ksig.static.kernels import LinearKernel, RBFKernel
+
+# Import AEON for dataset
+from aeon.datasets import load_classification
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Try to import cuML SVC, fallback to sklearn if not available
+try:
+    from cuml.svm import SVC as cuMLSVC
+    CUMUL_AVAILABLE = True
+    logger.info("cuML SVC available - will use for faster training")
+except ImportError:
+    CUMUL_AVAILABLE = False
+    logger.warning("cuML not available - falling back to sklearn SVC")
+
+# Constants for quick experiments
+MAX_TIMESTEPS = 200  # Limit number of timesteps for faster experiments max is 17984
+
+# Cache directory for gram matrices
+CACHE_DIR = "gram_matrix_cache"
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+# Kernel type constants
+KERNEL_LINEAR = "linear"
+KERNEL_RBF = "rbf"
+KernelType = Literal["linear", "rbf"]
+
+# Kernel names and control set
+KERNEL_NAMES = {
+    "KSigPDE": "KSigPDE",
+    "KSig RFSF-TRP": "KSig RFSF-TRP", 
+    "PowerSigJax": "PowerSigJax"
+}
+
+# Set of kernels to run (modify this to control which kernels execute)
+KERNELS_TO_RUN = {
+    "KSigPDE",
+    "KSig RFSF-TRP", 
+    "PowerSigJax",
+    "cuML_Baseline"
+}
+
+# C parameter grid for GridSearchCV
+C_GRID = [10 ** (i-1) for i in range(6)]  # [0.1, 1, 10, 100, 1000, 10000]
+
+
+def generate_cache_filename(kernel_name: str, X_train_shape: Tuple[int, ...], X_test_shape: Tuple[int, ...], 
+                          kernel_type: Optional[KernelType] = None, **kwargs) -> str:
+    """
+    Generate a cache filename based on kernel name, data shapes, and parameters.
+    
+    Args:
+        kernel_name: Name of the kernel
+        X_train_shape: Shape of training data
+        X_test_shape: Shape of test data
+        kernel_type: Type of kernel (linear or rbf), optional
+        **kwargs: Additional parameters for the kernel
+        
+    Returns:
+        Cache filename
+    """
+    # Build plaintext filename components
+    filename_parts = [kernel_name]
+    
+    if kernel_type is not None:
+        filename_parts.append(kernel_type)
+    
+    # Add shape information
+    train_shape_str = f"{X_train_shape[0]}x{X_train_shape[1]}x{X_train_shape[2]}" if len(X_train_shape) == 3 else f"{X_train_shape[0]}x{X_train_shape[1]}"
+    test_shape_str = f"{X_test_shape[0]}x{X_test_shape[1]}x{X_test_shape[2]}" if len(X_test_shape) == 3 else f"{X_test_shape[0]}x{X_test_shape[1]}"
+    filename_parts.extend([train_shape_str, test_shape_str])
+    
+    # Add MAX_TIMESTEPS
+    filename_parts.append(f"t{MAX_TIMESTEPS}")
+    
+    # Add additional parameters
+    for key, value in sorted(kwargs.items()):
+        filename_parts.append(f"{key}{value}")
+    
+    # Create filename - ensure all parts are strings
+    filename = "_".join(str(part) for part in filename_parts) + ".pkl"
+    return os.path.join(CACHE_DIR, filename)
+
+
+def validate_gram_matrices(train_gram: np.ndarray, test_gram: np.ndarray, 
+                          X_train: np.ndarray, X_test: np.ndarray) -> bool:
+    """
+    Validate that loaded gram matrices have correct dimensions.
+    
+    Args:
+        train_gram: Training gram matrix
+        test_gram: Test gram matrix
+        X_train: Training data
+        X_test: Test data
+        
+    Returns:
+        True if dimensions match, False otherwise
+    """
+    expected_train_shape = (X_train.shape[0], X_train.shape[0])
+    expected_test_shape = (X_test.shape[0], X_train.shape[0])
+    
+    if train_gram.shape != expected_train_shape:
+        logger.warning(f"Train gram matrix shape mismatch: expected {expected_train_shape}, got {train_gram.shape}")
+        return False
+    
+    if test_gram.shape != expected_test_shape:
+        logger.warning(f"Test gram matrix shape mismatch: expected {expected_test_shape}, got {test_gram.shape}")
+        return False
+    
+    return True
+
+
+def download_aeon_dataset(dataset_name: str = "EigenWorms") -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Download and load the AEON dataset.
+    
+    Args:
+        dataset_name: Name of the dataset to load
+        
+    Returns:
+        Tuple of (X, y) where X is the time series data and y are the labels
+    """
+    logger.info(f"Downloading {dataset_name} dataset from AEON...")
+    
+    X, y = load_classification(dataset_name)
+    logger.info("Dataset loaded successfully!")
+
+    # AEON returns shape (samples, channels, timesteps); we need (samples, timesteps, channels)
+    if X.ndim == 3:
+        X = X.transpose(0, 2, 1)
+        logger.info("Transposed dataset to (samples, timesteps, channels) format.")
+
+    # Limit timesteps for faster experiments
+    if X.shape[1] > MAX_TIMESTEPS:
+        X = X[:, :MAX_TIMESTEPS, :]
+        logger.info(f"Limited timesteps to {MAX_TIMESTEPS} for faster experiments. New shape: {X.shape}")
+
+    # Ensure labels are integers
+    if y.dtype.kind not in {'i', 'u'}:
+        le = LabelEncoder()
+        y = le.fit_transform(y)
+        logger.info("Encoded string labels to integers.")
+
+    logger.info(f"X shape: {X.shape}")
+    logger.info(f"y shape: {y.shape}")
+    logger.info(f"Number of classes: {len(np.unique(y))}")
+    logger.info(f"Class distribution: {np.bincount(y)}")
+    
+    return X, y
+
+
+def plot_eigenworms_samples(X: np.ndarray, num_samples: int = 3):
+    """
+    Plot the first few samples of the Eigenworms dataset.
+    
+    Args:
+        X: Dataset with shape (samples, timesteps, dimensions)
+        num_samples: Number of samples to plot
+    """
+    logger.info(f"Plotting first {num_samples} samples of Eigenworms dataset...")
+    
+    # Create time axis
+    timesteps = X.shape[1]
+    time_axis = np.linspace(0, timesteps - 1, timesteps)
+    
+    # Plot each sample
+    for sample_idx in range(min(num_samples, X.shape[0])):
+        plt.figure(figsize=(12, 8))
+        
+        # Get the sample data
+        sample_data = X[sample_idx]  # Shape: (timesteps, dimensions)
+        num_dimensions = sample_data.shape[1]
+        
+        # Create subplots for each dimension
+        fig, axes = plt.subplots(num_dimensions, 1, figsize=(12, 3*num_dimensions))
+        if num_dimensions == 1:
+            axes = [axes]
+        
+        # Plot each dimension
+        for dim_idx in range(num_dimensions):
+            dimension_data = sample_data[:, dim_idx]
+            axes[dim_idx].plot(time_axis, dimension_data, linewidth=1.5)
+            axes[dim_idx].set_title(f'Sample {sample_idx + 1}, Dimension {dim_idx + 1}')
+            axes[dim_idx].set_xlabel('Time Step')
+            axes[dim_idx].set_ylabel('Value')
+            axes[dim_idx].grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(f'eigenworms_sample_{sample_idx + 1}.png', dpi=300, bbox_inches='tight')
+        plt.close()
+        logger.info(f"Saved plot for sample {sample_idx + 1}")
+
+
+def print_dataset_statistics(X_train: np.ndarray, X_test: np.ndarray):
+    """
+    Print statistics for each dimension across training and test sets.
+    
+    Args:
+        X_train: Training dataset with shape (samples, timesteps, dimensions)
+        X_test: Test dataset with shape (samples, timesteps, dimensions)
+    """
+    logger.info("Dataset statistics:")
+    logger.info("=" * 50)
+    
+    num_train_samples, num_timesteps, num_dimensions = X_train.shape
+    num_test_samples = X_test.shape[0]
+    
+    logger.info(f"Training set shape: {X_train.shape}")
+    logger.info(f"Test set shape: {X_test.shape}")
+    logger.info(f"Number of training samples: {num_train_samples}")
+    logger.info(f"Number of test samples: {num_test_samples}")
+    logger.info(f"Number of timesteps: {num_timesteps}")
+    logger.info(f"Number of dimensions: {num_dimensions}")
+    logger.info("=" * 50)
+    
+    # Calculate statistics for each dimension
+    for dim_idx in range(num_dimensions):
+        # Extract all values for this dimension across all samples and timesteps
+        train_dimension_data = X_train[:, :, dim_idx].flatten()
+        test_dimension_data = X_test[:, :, dim_idx].flatten()
+        
+        # Training set statistics
+        train_min_val = np.min(train_dimension_data)
+        train_max_val = np.max(train_dimension_data)
+        train_mean_val = np.mean(train_dimension_data)
+        train_std_val = np.std(train_dimension_data)
+        
+        # Test set statistics
+        test_min_val = np.min(test_dimension_data)
+        test_max_val = np.max(test_dimension_data)
+        test_mean_val = np.mean(test_dimension_data)
+        test_std_val = np.std(test_dimension_data)
+        
+        logger.info(f"Dimension {dim_idx + 1}:")
+        logger.info(f"  Training Set:")
+        logger.info(f"    Min: {train_min_val:.6f}")
+        logger.info(f"    Max: {train_max_val:.6f}")
+        logger.info(f"    Mean: {train_mean_val:.6f}")
+        logger.info(f"    Std Dev: {train_std_val:.6f}")
+        logger.info(f"  Test Set:")
+        logger.info(f"    Min: {test_min_val:.6f}")
+        logger.info(f"    Max: {test_max_val:.6f}")
+        logger.info(f"    Mean: {test_mean_val:.6f}")
+        logger.info(f"    Std Dev: {test_std_val:.6f}")
+        logger.info("-" * 30)
+
+
+def compute_gram_matrix_ksig_pde(X_train: np.ndarray, X_test: np.ndarray, kernel_type: KernelType = KERNEL_LINEAR) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute gram matrices using KSigPDE kernel with local caching.
+    
+    Args:
+        X_train: Training data
+        X_test: Test data
+        kernel_type: Type of kernel to use (linear or rbf)
+        
+    Returns:
+        Tuple of (train_gram, test_gram) matrices
+    """
+    # Generate cache filename
+    cache_filename = generate_cache_filename("KSigPDE", kernel_type, X_train.shape, X_test.shape)
+    
+    # Check if cache exists and try to load
+    if os.path.exists(cache_filename):
+        logger.info(f"Loading cached KSigPDE gram matrices from {cache_filename}...")
+        try:
+            with open(cache_filename, 'rb') as f:
+                cached_data = pickle.load(f)
+                train_gram = cached_data['train_gram']
+                test_gram = cached_data['test_gram']
+            
+            # Validate dimensions
+            if validate_gram_matrices(train_gram, test_gram, X_train, X_test):
+                logger.info("Successfully loaded cached KSigPDE gram matrices")
+                logger.info(f"Train gram shape: {train_gram.shape}")
+                logger.info(f"Test gram shape: {test_gram.shape}")
+                return train_gram, test_gram
+            else:
+                logger.warning("Cached gram matrices have incorrect dimensions, recomputing...")
+        except Exception as e:
+            logger.warning(f"Failed to load cached gram matrices: {e}")
+    
+    logger.info(f"Computing gram matrices using KSigPDE with {kernel_type} kernel...")
+    start_time = time.time()
+    
+    try:
+        # Initialize KSigPDE kernel based on kernel type
+        if kernel_type == KERNEL_LINEAR:
+            static_kernel = LinearKernel()
+        elif kernel_type == KERNEL_RBF:
+            static_kernel = RBFKernel()
+        else:
+            raise ValueError(f"Unsupported kernel type: {kernel_type}")
+        
+        ksig_pde_kernel = SignaturePDEKernel(normalize=False, static_kernel=static_kernel)
+        
+        # Convert to CuPy arrays for GPU acceleration
+        X_train_cp = cp.array(X_train, dtype=cp.float64)
+        X_test_cp = cp.array(X_test, dtype=cp.float64)
+        
+        # Compute gram matrices
+        train_gram = ksig_pde_kernel(X_train_cp, X_train_cp)
+        test_gram = ksig_pde_kernel(X_test_cp, X_train_cp)
+        
+        # Convert back to numpy
+        train_gram = cp.asnumpy(train_gram)
+        test_gram = cp.asnumpy(test_gram)
+        
+        # Cache the results
+        try:
+            with open(cache_filename, 'wb') as f:
+                pickle.dump({
+                    'train_gram': train_gram,
+                    'test_gram': test_gram
+                }, f)
+            logger.info(f"Cached KSigPDE gram matrices to {cache_filename}")
+        except Exception as e:
+            logger.warning(f"Failed to cache gram matrices: {e}")
+        
+        # Calculate and log condition number early
+        try:
+            condition_number = np.linalg.cond(train_gram)
+            logger.info(f"KSigPDE train gram condition number: {condition_number:.2e}")
+            if condition_number > 1e12:
+                logger.warning(f"High condition number ({condition_number:.2e}) may cause training issues!")
+            elif condition_number > 1e8:
+                logger.warning(f"Moderately high condition number ({condition_number:.2e})")
+        except Exception as e:
+            logger.warning(f"Could not compute condition number: {e}")
+        
+        logger.info(f"KSigPDE computation time: {time.time() - start_time:.3f}s")
+        logger.info(f"Train gram shape: {train_gram.shape}")
+        logger.info(f"Test gram shape: {test_gram.shape}")
+        
+        return train_gram, test_gram
+        
+    except (MemoryError, RuntimeError) as e:
+        if "out of memory" in str(e).lower() or "out_of_memory" in str(e).lower() or "oom" in str(e).lower() or isinstance(e, MemoryError):
+            logger.error(f"KSigPDE ran out of memory: {e}")
+            logger.info("KSigPDE computation skipped due to OOM")
+            # Return None to indicate OOM failure
+            return None, None
+        else:
+            logger.error(f"KSigPDE computation failed with error: {e}")
+            raise
+    except Exception as e:
+        logger.error(f"KSigPDE computation failed with unexpected error: {e}")
+        raise
+
+
+def compute_gram_matrix_ksig_rfsf_trp(X_train: np.ndarray, X_test: np.ndarray, 
+                                      n_levels: int = 21, n_features: int = 1000) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute the train–train and test–train kernel matrices using
+    Random Fourier Signature Features with Tensorized Random Projection (RFSF‑TRP) with local caching.
+
+    Parameters
+    ----------Pl
+    X_train : np.ndarray
+        Array of shape (n_train, L_train, d), training time‐series.
+    X_test : np.ndarray
+        Array of shape (n_test, L_test, d), test time‐series.
+    n_levels : int, default=21
+        Truncation level for the signature feature map.
+    n_features : int, default=1000
+        Number of components for both the static RFF and the TRP.
+
+    Returns
+    -------
+    K_train : np.ndarray
+        Gram matrix on the training set, shape (n_train, n_train).
+    K_test : np.ndarray
+        Cross‐Gram matrix between test and train, shape (n_test, n_train).
+    """
+    # Generate cache filename
+    cache_filename = generate_cache_filename("KSigRFSFTRP", X_train.shape, X_test.shape, 
+                                          n_levels=n_levels, n_features=n_features)
+    
+    # Check if cache exists and try to load
+    if os.path.exists(cache_filename):
+        logger.info(f"Loading cached KSig RFSF-TRP gram matrices from {cache_filename}...")
+        try:
+            with open(cache_filename, 'rb') as f:
+                cached_data = pickle.load(f)
+                K_train = cached_data['train_gram']
+                K_test = cached_data['test_gram']
+            
+            # Validate dimensions
+            if validate_gram_matrices(K_train, K_test, X_train, X_test):
+                logger.info("Successfully loaded cached KSig RFSF-TRP gram matrices")
+                logger.info(f"Train gram shape: {K_train.shape}")
+                logger.info(f"Test gram shape: {K_test.shape}")
+                return K_train, K_test
+            else:
+                logger.warning("Cached gram matrices have incorrect dimensions, recomputing...")
+        except Exception as e:
+            logger.warning(f"Failed to load cached gram matrices: {e}")
+    
+    logger.info("Computing gram matrices using KSig RFSF-TRP...")
+    start_time = time.time()
+    
+    try:
+        # 1) Static Random Fourier Features
+        static_feat = ksig.static.features.RandomFourierFeatures(
+            n_components=n_features
+        )
+        # 2) Tensorized Random Projection for coupling tensor products
+        proj = ksig.projections.TensorizedRandomProjection(
+            n_components=n_features
+        )
+        # 3) Wrap into the RFSF-TRP signature feature map
+        rfsf_trp = ksig.kernels.SignatureFeatures(
+            n_levels=n_levels,
+            static_features=static_feat,
+            projection=proj
+        )
+        # 4) Fit feature map on training data
+        rfsf_trp.fit(X_train)
+        # 5) Compute train–train Gram matrix
+        K_train = rfsf_trp(X_train)
+        # 6) Compute test–train Gram matrix
+        K_test = rfsf_trp(X_test, X_train)
+        
+        # Cache the results
+        try:
+            with open(cache_filename, 'wb') as f:
+                pickle.dump({
+                    'train_gram': K_train,
+                    'test_gram': K_test
+                }, f)
+            logger.info(f"Cached KSig RFSF-TRP gram matrices to {cache_filename}")
+        except Exception as e:
+            logger.warning(f"Failed to cache gram matrices: {e}")
+        
+        # Calculate and log condition number early
+        try:
+            condition_number = np.linalg.cond(K_train)
+            logger.info(f"KSig RFSF-TRP train gram condition number: {condition_number:.2e}")
+            if condition_number > 1e12:
+                logger.warning(f"High condition number ({condition_number:.2e}) may cause training issues!")
+            elif condition_number > 1e8:
+                logger.warning(f"Moderately high condition number ({condition_number:.2e})")
+        except Exception as e:
+            logger.warning(f"Could not compute condition number: {e}")
+        
+        logger.info(f"KSig RFSF-TRP computation time: {time.time() - start_time:.3f}s")
+        logger.info(f"Train gram shape: {K_train.shape}")
+        logger.info(f"Test gram shape: {K_test.shape}")
+        
+        return K_train, K_test
+        
+    except (MemoryError, RuntimeError) as e:
+        if "out of memory" in str(e).lower() or "out_of_memory" in str(e).lower() or "oom" in str(e).lower() or isinstance(e, MemoryError):
+            logger.error(f"KSig RFSF-TRP ran out of memory: {e}")
+            logger.info("KSig RFSF-TRP computation skipped due to OOM")
+            # Return None to indicate OOM failure
+            return None, None
+        else:
+            logger.error(f"KSig RFSF-TRP computation failed with error: {e}")
+            raise
+    except Exception as e:
+        logger.error(f"KSig RFSF-TRP computation failed with unexpected error: {e}")
+        raise
+
+
+def compute_gram_matrix_powersig_jax(X_train: np.ndarray, X_test: np.ndarray, kernel_type: KernelType = KERNEL_LINEAR, order: int = 8) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute gram matrices using PowerSigJax with local caching.
+    
+    Args:
+        X_train: Training data
+        X_test: Test data
+        kernel_type: Type of kernel to use (linear or rbf)
+        order: Order for PowerSigJax
+        
+    Returns:
+        Tuple of (train_gram, test_gram) matrices
+    """
+    # Generate cache filename
+    cache_filename = generate_cache_filename("PowerSigJax", kernel_type, X_train.shape, X_test.shape, order=order)
+    
+    # Check if cache exists and try to load
+    if os.path.exists(cache_filename):
+        logger.info(f"Loading cached PowerSigJax gram matrices from {cache_filename}...")
+        try:
+            with open(cache_filename, 'rb') as f:
+                cached_data = pickle.load(f)
+                train_gram = cached_data['train_gram']
+                test_gram = cached_data['test_gram']
+            
+            # Validate dimensions
+            if validate_gram_matrices(train_gram, test_gram, X_train, X_test):
+                logger.info("Successfully loaded cached PowerSigJax gram matrices")
+                logger.info(f"Train gram shape: {train_gram.shape}")
+                logger.info(f"Test gram shape: {test_gram.shape}")
+                return train_gram, test_gram
+            else:
+                logger.warning("Cached gram matrices have incorrect dimensions, recomputing...")
+        except Exception as e:
+            logger.warning(f"Failed to load cached gram matrices: {e}")
+    
+    logger.info(f"Computing gram matrices using PowerSigJax (order={order}) with {kernel_type} kernel...")
+    start_time = time.time()
+    
+    # Select JAX device: prefer CUDA device 1, then CUDA device 0, then default
+    devices = jax.devices()
+    cuda_devices = [d for d in devices if d.platform == 'gpu']
+    
+    if len(cuda_devices) >= 2:
+        device = cuda_devices[1]  # CUDA device 1
+        logger.info(f"Using CUDA device 1: {device}")
+    elif len(cuda_devices) >= 1:
+        device = cuda_devices[0]  # CUDA device 0
+        logger.info(f"Using CUDA device 0: {device}")
+    else:
+        device = devices[0]  # Default device
+        logger.info(f"Using default device: {device}")
+    
+    # Initialize PowerSigJax with selected device and kernel type
+    if kernel_type == KERNEL_LINEAR:
+        static_kernel = static_kernels.linear_kernel
+    elif kernel_type == KERNEL_RBF:
+        static_kernel = static_kernels.rbf_kernel
+    else:
+        raise ValueError(f"Unsupported kernel type: {kernel_type}")
+    
+    powersig = PowerSigJax(order=order, static_kernel=static_kernel, device=device)
+    
+    # Convert to JAX arrays on the selected device
+    X_train_jax = jnp.array(X_train, dtype=jnp.float64, device=device)
+    X_test_jax = jnp.array(X_test, dtype=jnp.float64, device=device)
+    
+    # Compute gram matrices
+    train_gram = powersig.compute_gram_matrix(X_train_jax, X_train_jax)
+    test_gram = powersig.compute_gram_matrix(X_test_jax, X_train_jax)
+    
+    # Convert back to numpy
+    train_gram = np.array(train_gram)
+    test_gram = np.array(test_gram)
+    
+    # Cache the results
+    try:
+        with open(cache_filename, 'wb') as f:
+            pickle.dump({
+                'train_gram': train_gram,
+                'test_gram': test_gram
+            }, f)
+        logger.info(f"Cached PowerSigJax gram matrices to {cache_filename}")
+    except Exception as e:
+        logger.warning(f"Failed to cache gram matrices: {e}")
+    
+    # Calculate and log condition number early
+    try:
+        condition_number = cond(train_gram)
+        logger.info(f"PowerSigJax train gram condition number: {condition_number:.2e}")
+        if condition_number > 1e12:
+            logger.warning(f"High condition number ({condition_number:.2e}) may cause training issues!")
+        elif condition_number > 1e8:
+            logger.warning(f"Moderately high condition number ({condition_number:.2e})")
+    except Exception as e:
+        logger.warning(f"Could not compute condition number: {e}")
+    
+    logger.info(f"PowerSigJax computation time: {time.time() - start_time:.3f}s")
+    logger.info(f"Train gram shape: {train_gram.shape}")
+    logger.info(f"Test gram shape: {test_gram.shape}")
+    
+    return train_gram, test_gram
+
+
+def train_svc_with_gram_matrices(train_gram: np.ndarray, y_train: np.ndarray, 
+                                test_gram: np.ndarray, y_test: np.ndarray,
+                                kernel_name: str) -> Dict[str, Any]:
+    """
+    Train SVC using precomputed gram matrices and evaluate performance.
+    
+    Args:
+        train_gram: Training gram matrix
+        y_train: Training labels
+        test_gram: Test gram matrix
+        y_test: Test labels
+        kernel_name: Name of the kernel used
+        
+    Returns:
+        Dictionary containing results
+    """
+    logger.info(f"Training SVC with {kernel_name} kernel...")
+    
+    # Calculate condition number early to help diagnose training issues
+    try:
+        condition_number = np.linalg.cond(cp.asnumpy(train_gram))
+        logger.info(f"Gram matrix condition number: {condition_number:.2e}")
+        if condition_number > 1e12:
+            logger.warning(f"High condition number ({condition_number:.2e}) may cause training issues!")
+        elif condition_number > 1e8:
+            logger.warning(f"Moderately high condition number ({condition_number:.2e})")
+    except Exception as e:
+        condition_number = np.inf
+        logger.warning(f"Could not compute condition number: {e}")
+    
+    start_time = time.time()
+    
+    # Initialize and train SVC (use cuML if available, otherwise sklearn)
+    if CUMUL_AVAILABLE:
+        logger.info("Using cuML SVC for faster training...")
+        try:
+            # Convert to cupy arrays for cuML
+            train_gram_cp = cp.array(train_gram, dtype=cp.float32)
+            y_train_cp = cp.array(y_train, dtype=cp.int32)
+            test_gram_cp = cp.array(test_gram, dtype=cp.float32)
+            
+            svc = cuMLSVC(metric='precomputed', C=1.0, random_state=42)
+            svc.fit(train_gram_cp, y_train_cp)
+            
+            # Predict
+            y_pred_cp = svc.predict(test_gram_cp)
+            y_pred = cp.asnumpy(y_pred_cp)
+        except Exception as e:
+            logger.warning(f"cuML SVC failed, falling back to sklearn SVC: {e}")
+            svc = SVC(kernel='precomputed', C=1.0, random_state=42)
+            svc.fit(train_gram, y_train)
+            y_pred = svc.predict(test_gram)
+    else:
+        logger.info("Using sklearn SVC...")
+        svc = SVC(kernel='precomputed', C=1.0, random_state=42)
+        svc.fit(train_gram, y_train)
+        
+        # Predict
+        y_pred = svc.predict(test_gram)
+    
+    # Calculate metrics
+    accuracy = accuracy_score(y_test, y_pred)
+    precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
+    recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
+    f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0)
+    
+    # Calculate MAPE (convert to percentage)
+    try:
+        mape = mean_absolute_percentage_error(y_test, y_pred) * 100
+    except:
+        # If MAPE fails (e.g., zero values), use a fallback
+        mape = np.mean(np.abs((y_test - y_pred) / (y_test + 1e-8))) * 100
+    
+    training_time = time.time() - start_time
+    
+    logger.info(f"SVC training time: {training_time:.3f}s")
+    logger.info(f"Accuracy: {accuracy:.4f}")
+    logger.info(f"Precision: {precision:.4f}")
+    logger.info(f"Recall: {recall:.4f}")
+    logger.info(f"F1-Score: {f1:.4f}")
+    logger.info(f"MAPE: {mape:.2f}%")
+    
+    # Generate classification report
+    report = classification_report(y_test, y_pred, output_dict=True)
+    
+    results = {
+        'kernel_name': kernel_name,
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1_score': f1,
+        'mape': mape,
+        'training_time': training_time,
+        'condition_number': condition_number,
+        'classification_report': report,
+        'y_pred': y_pred,
+        'y_true': y_test
+    }
+    
+    return results
+
+
+def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.ndarray, 
+                                     y_train: np.ndarray, y_test: np.ndarray, 
+                                     kernel_name: str) -> Dict[str, Any]:
+    """
+    Shared function to run grid search with precomputed gram matrices.
+    
+    Args:
+        train_gram: Training gram matrix
+        test_gram: Test gram matrix
+        y_train: Training labels
+        y_test: Test labels
+        kernel_name: Name of the kernel
+        
+    Returns:
+        Dictionary containing results
+    """
+    # Use GridSearchCV with sklearn SVC
+    param_grid = {'C': C_GRID}
+    svc = SVC(kernel='precomputed', random_state=42)
+    
+    # Create custom fold that uses all indices
+    full_idx = np.arange(len(y_train))  # All samples in same fold
+    cv = [(full_idx, full_idx)]
+    
+    grid_search = GridSearchCV(svc, param_grid, cv=cv, scoring='accuracy', n_jobs=len(C_GRID))
+    grid_search.fit(train_gram, y_train)
+    
+    # Get best model and predict
+    best_svc = grid_search.best_estimator_
+    y_pred = best_svc.predict(test_gram)
+    
+    # Calculate metrics
+    accuracy = accuracy_score(y_test, y_pred)
+    precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
+    recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
+    f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0)
+    
+    try:
+        mape = mean_absolute_percentage_error(y_test, y_pred) * 100
+    except:
+        mape = np.mean(np.abs((y_test - y_pred) / (y_test + 1e-8))) * 100
+    
+    # Calculate condition number
+    try:
+        condition_number = np.linalg.cond(train_gram)
+    except Exception as e:
+        condition_number = np.inf
+    
+    results = {
+        'kernel_name': kernel_name,
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1_score': f1,
+        'mape': mape,
+        'condition_number': condition_number,
+        'best_C': grid_search.best_params_['C'],
+        'cv_scores': grid_search.cv_results_,
+        'y_pred': y_pred,
+        'y_true': y_test
+    }
+    
+    return results
+
+
+def run_ksig_pde_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tensor, 
+                         y_train: np.ndarray, y_test: np.ndarray, kernel_type: KernelType) -> Dict[str, Any]:
+    """
+    Run KSigPDE computation in separate process.
+    """
+    # Convert torch tensors to numpy arrays
+    X_train = X_train_tensor.numpy()
+    X_test = X_test_tensor.numpy()
+    
+    # Compute gram matrices
+    train_gram, test_gram = compute_gram_matrix_ksig_pde(X_train, X_test, kernel_type)
+    
+    # Check if OOM occurred
+    if train_gram is None or test_gram is None:
+        logger.warning("KSigPDE computation failed due to OOM, returning default results")
+        return {
+            'kernel_name': f"KSigPDE_{kernel_type}",
+            'accuracy': 0.0,
+            'precision': 0.0,
+            'recall': 0.0,
+            'f1_score': 0.0,
+            'mape': 100.0,
+            'condition_number': np.inf,
+            'best_kernel': 'none',
+            'error': 'OOM - computation skipped'
+        }
+    
+    # Use shared grid search function
+    return run_grid_search_with_gram_matrices(train_gram, test_gram, y_train, y_test, f"KSigPDE_{kernel_type}")
+
+
+def run_ksig_rfsf_trp_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tensor,
+                              y_train: np.ndarray, y_test: np.ndarray) -> Dict[str, Any]:
+    """
+    Run KSig RFSF-TRP computation in separate process.
+    """
+    # Convert torch tensors to numpy arrays
+    X_train = X_train_tensor.numpy()
+    X_test = X_test_tensor.numpy()
+    
+    # Compute gram matrices
+    train_gram, test_gram = compute_gram_matrix_ksig_rfsf_trp(X_train, X_test, n_levels=21, n_features=1000)
+    
+    # Check if OOM occurred
+    if train_gram is None or test_gram is None:
+        logger.warning("KSig RFSF-TRP computation failed due to OOM, returning default results")
+        return {
+            'kernel_name': "KSig RFSF-TRP",
+            'accuracy': 0.0,
+            'precision': 0.0,
+            'recall': 0.0,
+            'f1_score': 0.0,
+            'mape': 100.0,
+            'condition_number': np.inf,
+            'best_kernel': 'none',
+            'error': 'OOM - computation skipped'
+        }
+    
+    # Use shared grid search function
+    return run_grid_search_with_gram_matrices(train_gram, test_gram, y_train, y_test, "KSig RFSF-TRP")
+
+
+def run_powersig_jax_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tensor,
+                            y_train: np.ndarray, y_test: np.ndarray, kernel_type: KernelType, order: int) -> Dict[str, Any]:
+    """
+    Run PowerSigJax computation in separate process.
+    """
+    # Convert torch tensors to numpy arrays
+    X_train = X_train_tensor.numpy()
+    X_test = X_test_tensor.numpy()
+    
+    # Compute gram matrices
+    train_gram, test_gram = compute_gram_matrix_powersig_jax(X_train, X_test, kernel_type, order)
+    
+    # Use shared grid search function
+    return run_grid_search_with_gram_matrices(train_gram, test_gram, y_train, y_test, f"PowerSigJax_{kernel_type}")
+
+
+def run_cuml_baseline_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tensor,
+                             y_train: np.ndarray, y_test: np.ndarray) -> Dict[str, Any]:
+    """
+    Run cuML SVC baseline with RBF and linear kernels in separate process.
+    """
+    # Convert torch tensors to cupy arrays
+    X_train_cp = cp.array(X_train_tensor.numpy(), dtype=cp.float32)
+    X_test_cp = cp.array(X_test_tensor.numpy(), dtype=cp.float32)
+    y_train_cp = cp.array(y_train, dtype=cp.int32)
+    y_test_cp = cp.array(y_test, dtype=cp.int32)
+    
+    # Try to import cuML SVC
+    try:
+        from cuml.svm import SVC as cuMLSVC
+        CUMUL_AVAILABLE = True
+    except ImportError:
+        CUMUL_AVAILABLE = False
+    
+    if not CUMUL_AVAILABLE:
+        return {
+            'kernel_name': "cuML_Baseline",
+            'accuracy': 0.0,
+            'precision': 0.0,
+            'recall': 0.0,
+            'f1_score': 0.0,
+            'mape': 100.0,
+            'condition_number': np.inf,
+            'best_kernel': 'none',
+            'error': 'cuML not available'
+        }
+    
+    # Test both RBF and linear kernels
+    kernels = ['rbf', 'linear']
+    best_score = -1
+    best_results = None
+    best_kernel = None
+    
+    for kernel in kernels:
+        try:
+            # Create cuML SVC with current kernel
+            svc = cuMLSVC(kernel=kernel, C=1.0, random_state=42)
+            svc.fit(X_train_cp, y_train_cp)
+            
+            # Predict
+            y_pred_cp = svc.predict(X_test_cp)
+            y_pred = cp.asnumpy(y_pred_cp)
+            
+            # Calculate accuracy
+            accuracy = accuracy_score(y_test, y_pred)
+            
+            # Update best if this is better
+            if accuracy > best_score:
+                best_score = accuracy
+                best_kernel = kernel
+                
+                # Calculate all metrics for best result
+                precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
+                recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
+                f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0)
+                
+                try:
+                    mape = mean_absolute_percentage_error(y_test, y_pred) * 100
+                except:
+                    mape = np.mean(np.abs((y_test - y_pred) / (y_test + 1e-8))) * 100
+                
+                best_results = {
+                    'kernel_name': f"cuML_Baseline_{kernel}",
+                    'accuracy': accuracy,
+                    'precision': precision,
+                    'recall': recall,
+                    'f1_score': f1,
+                    'mape': mape,
+                    'condition_number': np.inf,  # Not applicable for direct data
+                    'best_kernel': kernel,
+                    'y_pred': y_pred,
+                    'y_true': y_test
+                }
+                
+        except Exception as e:
+            continue
+    
+    if best_results is None:
+        return {
+            'kernel_name': "cuML_Baseline",
+            'error': 'All kernels failed'
+        }
+    
+    return best_results
+
+
+def main():
+    """
+    Main function to run Eigenworms classification with different kernels using multiprocessing.
+    """
+    logger.info("Starting Eigenworms classification experiment...")
+    logger.info(f"Kernels to run: {KERNELS_TO_RUN}")
+    logger.info(f"Available kernels: {set(KERNEL_NAMES.keys())}")
+    logger.info(f"Skipped kernels: {set(KERNEL_NAMES.keys()) - KERNELS_TO_RUN}")
+    
+    # 1. Download and load dataset
+    try:
+        X, y = download_aeon_dataset("EigenWorms")
+    except Exception as e:
+        logger.error(f"Failed to load dataset: {e}")
+        return
+    
+    # 1.5. Plot samples and print statistics
+    plot_eigenworms_samples(X, num_samples=3)
+    
+    # 2. Split data
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.3, random_state=42, stratify=y
+    )
+    
+    # 2.5. Print statistics for both training and test sets
+    print_dataset_statistics(X_train, X_test)
+    
+    logger.info(f"Training set size: {X_train.shape[0]}")
+    logger.info(f"Test set size: {X_test.shape[0]}")
+    
+    # 3. Wrap data in torch tensors for multiprocessing
+    X_train_tensor = torch.from_numpy(X_train).share_memory_()
+    X_test_tensor = torch.from_numpy(X_test).share_memory_()
+    
+    # 4. Initialize results storage
+    all_results = {}
+    
+ 
+    
+    # Define kernel functions mapping
+    kernel_functions = {
+        "KSigPDE": (run_ksig_pde_process, (X_train_tensor, X_test_tensor, y_train, y_test, KERNEL_RBF)),
+        "KSig RFSF-TRP": (run_ksig_rfsf_trp_process, (X_train_tensor, X_test_tensor, y_train, y_test)),
+        "PowerSigJax": (run_powersig_jax_process, (X_train_tensor, X_test_tensor, y_train, y_test, KERNEL_RBF, 8)),
+        "cuML_Baseline": (run_cuml_baseline_process, (X_train_tensor, X_test_tensor, y_train, y_test))
+    }
+    
+    ctx = mp.get_context("spawn")
+    with ctx.Pool(processes=1, maxtasksperchild=1) as pool:
+        for kernel_name in kernel_functions:
+            if kernel_name in KERNELS_TO_RUN:
+                if kernel_name == "PowerSigJax":
+                       os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
+                results = pool.apply(kernel_functions[kernel_name][0], kernel_functions[kernel_name][1])
+                all_results[kernel_name] = results
+                logger.info(f"Completed {kernel_name}")
+               
+    
+    # 7. Print summary
+    logger.info("\n" + "="*80)
+    logger.info("FINAL RESULTS SUMMARY")
+    logger.info("="*80)
+    
+    # Print header
+    logger.info(f"{'Kernel':<20} {'Accuracy':<10} {'Precision':<10} {'Recall':<10} {'F1-Score':<10} {'MAPE':<10} {'Time(s)':<10} {'Cond#':<12} {'Status':<10}")
+    logger.info("-" * 102)
+    
+    for kernel_name, results in all_results.items():
+        cond_str = f"{results['condition_number']:.2e}" if results['condition_number'] != np.inf else "inf"
+        status = results.get('error', 'OK')
+        if status != 'OK':
+            logger.info(f"{kernel_name:<20} {'OOM':<10} {'OOM':<10} {'OOM':<10} {'OOM':<10} {'OOM':<10} {'OOM':<10} {'OOM':<12} {status:<10}")
+        else:
+            logger.info(f"{kernel_name:<20} {results['accuracy']:<10.4f} {results['precision']:<10.4f} "
+                       f"{results['recall']:<10.4f} {results['f1_score']:<10.4f} {results['mape']:<10.2f} "
+                       f"{results['training_time']:<10.3f} {cond_str:<12} {'OK':<10}")
+    
+    logger.info("-" * 102)
+    
+    # 8. Find best performing kernels for each metric
+    if all_results:
+        # Filter out kernels that failed due to OOM
+        successful_results = {k: v for k, v in all_results.items() if v.get('error', 'OK') == 'OK'}
+        
+        if successful_results:
+            metrics = ['accuracy', 'precision', 'recall', 'f1_score']
+            logger.info("\nBEST PERFORMING KERNELS BY METRIC:")
+            logger.info("="*50)
+            
+            for metric in metrics:
+                best_kernel = max(successful_results.keys(), key=lambda k: successful_results[k][metric])
+                best_value = successful_results[best_kernel][metric]
+                logger.info(f"{metric.upper():<12}: {best_kernel:<20} ({best_value:.4f})")
+            
+            # Find kernel with lowest MAPE
+            best_mape_kernel = min(successful_results.keys(), key=lambda k: successful_results[k]['mape'])
+            best_mape = successful_results[best_mape_kernel]['mape']
+            logger.info(f"{'MAPE':<12}: {best_mape_kernel:<20} ({best_mape:.2f}%)")
+            
+            # Find kernel with best condition number (lowest)
+            best_cond_kernel = min(successful_results.keys(), key=lambda k: successful_results[k]['condition_number'])
+            best_cond = successful_results[best_cond_kernel]['condition_number']
+            cond_str = f"{best_cond:.2e}" if best_cond != np.inf else "inf"
+            logger.info(f"{'CONDITION':<12}: {best_cond_kernel:<20} ({cond_str})")
+        else:
+            logger.warning("No kernels completed successfully due to OOM errors")
+        
+        # Report OOM failures
+        oom_kernels = [k for k, v in all_results.items() if v.get('error', 'OK') != 'OK']
+        if oom_kernels:
+            logger.info(f"\nKERNELS THAT FAILED DUE TO OOM:")
+            logger.info("="*40)
+            for kernel in oom_kernels:
+                logger.info(f"- {kernel}")
+    
+    logger.info("\nExperiment completed!")
+
+
+if __name__ == "__main__":
+    main()
