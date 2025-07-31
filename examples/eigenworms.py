@@ -1085,7 +1085,7 @@ def main():
     }
     
     ctx = mp.get_context("spawn")
-    with ctx.Pool(processes=1, maxtasksperchild=1) as pool:
+    with ctx.Pool(processes=2, maxtasksperchild=1) as pool:
         for kernel_name in kernel_functions:
             if kernel_name in KERNELS_TO_RUN:
                 if kernel_name == "PowerSigJax":
