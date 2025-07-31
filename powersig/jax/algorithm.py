@@ -13,6 +13,7 @@ import jax.numpy as jnp
 from jax import jit, vmap
 from jax.scipy.linalg import toeplitz
 from functools import partial
+from tqdm.auto import tqdm
 
 from powersig.jax.jax_series import jax_compute_derivative, jax_compute_derivative_batch
 
@@ -130,7 +131,7 @@ class PowerSigJax:
 
         indices = jnp.arange(longest_diagonal,dtype=jnp.int32,device=device)
         diagonal_batch_size = ceil(sqrt(longest_diagonal))
-        return self.chunked_compute_gram_entry(X, Y, v_s, v_t, self.psi_s, self.psi_t, diagonal_count, diagonal_batch_size, longest_diagonal, ic, indices, exponents, kernel=self.static_kernel, order=self.order)
+        return self.chunked_compute_gram_entry(X, Y, v_s, v_t, diagonal_count, diagonal_batch_size, longest_diagonal, indices, order=self.order)
 
     # TODO: Think about jitting this
     def compute_gram_matrix(self, X: jnp.ndarray, Y: jnp.ndarray, symmetric: bool = False) -> jnp.ndarray:
@@ -159,7 +160,6 @@ class PowerSigJax:
 
         # psi_s = build_stencil(self.order, dX.dtype, X.device)
         # psi_t = psi_s
-        ic = jnp.zeros([self.order], dtype=X.dtype, device=X.device).at[0].set(1)
 
         longest_diagonal = min(X.shape[1] - 1, Y.shape[1] - 1)
         diagonal_count = (X.shape[1] - 1) + (Y.shape[1] - 1) - 1
@@ -167,19 +167,25 @@ class PowerSigJax:
         diagonal_batch_size = ceil(sqrt(longest_diagonal))
 
         # Ensure exponents are on the same device as input
-        exponents = jax.device_put(self.exponents, X.device)
-        
+        self.exponents = jax.device_put(self.exponents, X.device)
+        self.psi_s = jax.device_put(self.psi_s, X.device)
+        self.psi_t = jax.device_put(self.psi_t, X.device)
 
         # If the longest diagonal is greater than the JIT threshold, use the chunked approach.
         # The chunked approach wastes less work and is more memory efficient for large diagonals,
         # while avoiding recompilation
+        total_entries = int(X.shape[0] * Y.shape[0])
+        pbar = tqdm(total=total_entries, desc="Computing Gram Matrix")
         for i in range(X.shape[0]):
             for j in range(Y.shape[0]):
                 if longest_diagonal <= JIT_BOUNDARY_THRESHOLD:
-                    gram_matrix = gram_matrix.at[i,j].set(compute_gram_entry(X[i], Y[j], v_s, v_t, self.psi_s, self.psi_t, diagonal_count,longest_diagonal, ic, indices, exponents, kernel=self.static_kernel, order=self.order, device=X.device))
+                    gram_matrix = gram_matrix.at[i,j].set(self.compute_gram_entry(X[i], Y[j], v_s, v_t, diagonal_count,longest_diagonal, indices, order=self.order, device=X.device))
+                    pbar.update(1)
                 else:
-                    gram_matrix = gram_matrix.at[i,j].set(chunked_compute_gram_entry(X[i], Y[j], v_s, v_t, self.psi_s, self.psi_t, diagonal_count, diagonal_batch_size, longest_diagonal, ic, indices, exponents, kernel=self.static_kernel, order=self.order, device=X.device))
+                    gram_matrix = gram_matrix.at[i,j].set(self.chunked_compute_gram_entry(X[i], Y[j], v_s, v_t, diagonal_count, diagonal_batch_size, longest_diagonal, indices, order=self.order, device=X.device))
+                    pbar.update(1)
 
+        pbar.close()
         return gram_matrix
 
     @partial(jit, static_argnums=(0,5,6,8,9))

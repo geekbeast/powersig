@@ -307,8 +307,8 @@ def compute_gram_matrix_powersig(X_train, X_test, powersig):
         Tuple of (train_gram, test_gram)
     """
 
-    static_kernel = ksig.static.kernels.RBFKernel()
-    # static_kernel = ksig.static.kernels.LinearKernel()
+    # static_kernel = ksig.static.kernels.RBFKernel()
+    static_kernel = ksig.static.kernels.LinearKernel()
     ksig_pde_kernel = SignaturePDEKernel(normalize=False, static_kernel=static_kernel)
     
     print("Computing training gram matrix...")
@@ -409,8 +409,8 @@ def validate_gram_matrix_powersig_vs_ksigpde(X_train, powersig):
     # 2. KSigPDE computation
     print("Computing KSigPDE gram matrix...")
     start_time = time.time()
-    static_kernel = RBFKernel()
-    # static_kernel = LinearKernel()
+    # static_kernel = RBFKernel()
+    static_kernel = LinearKernel()
     ksig_pde_kernel = SignaturePDEKernel(normalize=False, static_kernel=static_kernel)
     ksig_gram = ksig_pde_kernel(cupy.array(X_validate,dtype=cupy.float64), cupy.array(X_validate,dtype=cupy.float64))
     ksig_time = time.time() - start_time
@@ -703,7 +703,7 @@ def main():
     
     # Initialize PowerSigJax
     print("\nInitializing PowerSigJax...")
-    powersig = PowerSigJax(order=8,static_kernel=static_kernels.rbf_kernel, device=device)  # Using order 8 for validation
+    powersig = PowerSigJax(order=8,static_kernel=static_kernels.linear_kernel, device=device)  # Using order 8 for validation
 
     
     # Validate PowerSigJax against KSigPDE

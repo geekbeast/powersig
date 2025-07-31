@@ -10,7 +10,8 @@ from benchmarks.configuration import (
     GPU_MEMORY,
     DURATION,
     HURST,
-    RUN_ID
+    RUN_ID,
+    DIMENSION
 )
 import numpy as np
 import pandas as pd
@@ -30,7 +31,10 @@ def generate_plots():
     accuracy_results = get_accuracy(accuracy_data)
     
     # Use accuracy data for MAPE plot
-    plot_mape(accuracy_results['lengths'], accuracy_results['mape_data'])
+    # plot_mape(accuracy_results['lengths'], accuracy_results['mape_data'])
+    
+    # Add PowerSig vs PolySig dimension comparison plots
+    plot_powersig_vs_polysig_dimension_comparison()
     
     # rough_data = load_rough_csvs()
     # Add rough time series plots
@@ -372,6 +376,82 @@ def plot_memory_and_duration(lengths, data):
     # Save the combined plot
     plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'memory_and_duration_comparison.png'))
     plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'memory_and_duration_comparison.svg'))
+    plt.close()
+
+def plot_powersig_vs_polysig_dimension_comparison():
+    """Create side-by-side plots comparing PowerSig vs PolySig for dimension comparison."""
+    
+    # Load dimension data
+    dimension_dir = os.path.join(BENCHMARKS_RESULTS_DIR, 'dimension')
+    powersig_df = pd.read_csv(os.path.join(dimension_dir, POWERSIG_RESULTS))
+    polysig_df = pd.read_csv(os.path.join(dimension_dir, POLYSIG_RESULTS))
+    
+    # Filter out first run (run_id = 0) and group by dimension
+    powersig_stats = powersig_df[powersig_df[RUN_ID] > 0].groupby(DIMENSION).agg({
+        DURATION: ['mean', 'std'],
+        GPU_MEMORY: ['mean', 'std']
+    }).reset_index()
+    
+    polysig_stats = polysig_df[polysig_df[RUN_ID] > 0].groupby(DIMENSION).agg({
+        DURATION: ['mean', 'std'],
+        GPU_MEMORY: ['mean', 'std']
+    }).reset_index()
+    
+    # Create side-by-side plots
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    
+    # Plot 1: Duration comparison
+    ax1.errorbar(
+        powersig_stats[DIMENSION], 
+        powersig_stats[DURATION]['mean'],
+        yerr=powersig_stats[DURATION]['std'],
+        fmt='r-o', label='PowerSig', capsize=5, markersize=6
+    )
+    
+    ax1.errorbar(
+        polysig_stats[DIMENSION], 
+        polysig_stats[DURATION]['mean'],
+        yerr=polysig_stats[DURATION]['std'],
+        fmt='g-o', label='PolySig', capsize=5, markersize=6
+    )
+    
+    ax1.set_xscale('log', base=2)
+    ax1.set_yscale('log')
+    ax1.set_xlabel('Dimension')
+    ax1.set_ylabel('Duration (seconds)')
+    ax1.set_title('Computation Time vs Dimension')
+    ax1.grid(True, which="both", ls="-", alpha=0.2)
+    ax1.legend()
+    
+    # Plot 2: Memory usage comparison
+    ax2.errorbar(
+        powersig_stats[DIMENSION], 
+        powersig_stats[GPU_MEMORY]['mean'],
+        yerr=powersig_stats[GPU_MEMORY]['std'],
+        fmt='r-o', label='PowerSig', capsize=5, markersize=6
+    )
+    
+    ax2.errorbar(
+        polysig_stats[DIMENSION], 
+        polysig_stats[GPU_MEMORY]['mean'],
+        yerr=polysig_stats[GPU_MEMORY]['std'],
+        fmt='g-o', label='PolySig', capsize=5, markersize=6
+    )
+    
+    ax2.set_xscale('log', base=2)
+    ax2.set_yscale('log')
+    ax2.set_xlabel('Dimension')
+    ax2.set_ylabel('Memory Usage (MB)')
+    ax2.set_title('Memory Usage vs Dimension')
+    ax2.grid(True, which="both", ls="-", alpha=0.2)
+    ax2.legend()
+    
+    # Adjust layout
+    plt.tight_layout()
+    
+    # Save the plots
+    plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'powersig_vs_polysig_dimension_comparison.png'))
+    plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'powersig_vs_polysig_dimension_comparison.svg'))
     plt.close()
 
 def plot_rough_mape_vs_hurst(data):

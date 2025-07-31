@@ -8,6 +8,7 @@ using both JAX and CuPy for GPU acceleration.
 # Import submodules first
 from . import jax
 from . import util
+from . import cupy_backend
 
 # Main implementations
 from .jax.algorithm import PowerSigJax
@@ -21,5 +22,6 @@ __all__ = [
     'fractional_brownian_motion',
     'fbm',
     'jax',
-    'util'
+    'util',
+    'cupy_backend'
 ]

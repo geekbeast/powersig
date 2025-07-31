@@ -86,16 +86,17 @@ if __name__== '__main__':
     
     if benchmark_high_dimension:
         length = 4096  
-        for dimension in [ 2**i for i in range(1, 14)]:
+        for dimension in [ (8192//32)*2**i for i in range(1, 6)]:
             active_benchmarks : list[Benchmark] = [
                 # KSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/dimension"),
-                KSigPDEBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/dimension"),
-                SigKernelBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/dimension"),
-                PowerSigCupyBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/dimension"),
-                PowerSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/dimension",order=9,device_index=1),
-                PolySigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/dimension"),
+                # KSigPDEBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/dimension"),
+                # SigKernelBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/dimension"),
+                # PowerSigCupyBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/dimension"),
+                # PowerSigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/dimension",order=9,device_index=1),
+                PolySigBenchmark(debug=False,results_dir=f"{BENCHMARKS_RESULTS_DIR}/dimension",device_index=1),
             ]
             X, _ = fractional_brownian_motion(length,n_paths=NUM_PATHS, dim=dimension)
+            X /= 64
             for benchmark in active_benchmarks:
                 print(f"Spawning {benchmark.name} for length {length}")
                 p = ctx.Process(target=mp_benchmark, args=("dimension", benchmark, X, .5))
