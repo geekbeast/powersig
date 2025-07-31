@@ -384,6 +384,18 @@ def compute_gram_matrix_ksig_pde(X_train: np.ndarray, X_test: np.ndarray, kernel
                 logger.info("Successfully loaded cached KSigPDE gram matrices")
                 logger.info(f"Train gram shape: {train_gram.shape}")
                 logger.info(f"Test gram shape: {test_gram.shape}")
+                
+                # Calculate and log condition number for cached gram matrix
+                try:
+                    condition_number = np.linalg.cond(train_gram)
+                    logger.info(f"KSigPDE cached train gram condition number: {condition_number:.2e}")
+                    if condition_number > 1e12:
+                        logger.warning(f"High condition number ({condition_number:.2e}) may cause training issues!")
+                    elif condition_number > 1e8:
+                        logger.warning(f"Moderately high condition number ({condition_number:.2e})")
+                except Exception as e:
+                    logger.warning(f"Could not compute condition number for cached gram matrix: {e}")
+                
                 return train_gram, test_gram
             else:
                 logger.warning("Cached gram matrices have incorrect dimensions, recomputing...")
