@@ -14,7 +14,7 @@ import cupy as cp
 import torch
 from sklearn.svm import SVC
 from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.metrics import accuracy_score, classification_report, precision_score, recall_score, f1_score, mean_absolute_percentage_error
+from sklearn.metrics import accuracy_score, classification_report, precision_score, recall_score, f1_score
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 import multiprocessing as mp
 from functools import partial
@@ -46,13 +46,13 @@ logger = logging.getLogger(__name__)
 # Try to import cuML SVC, fallback to sklearn if not available
 try:
     from cuml.svm import SVC as cuMLSVC
-    CUMUL_AVAILABLE = True
+    CUML_AVAILABLE = True
     logger.info("cuML SVC available - will use for baseline kernel")
 except ImportError:
-    CUMUL_AVAILABLE = False
+    CUML_AVAILABLE = False
 
 # Constants for quick experiments
-MAX_TIMESTEPS = 200  # Limit number of timesteps for faster experiments max is 17984
+MAX_TIMESTEPS = 500  # Limit number of timesteps for faster experiments max is 17984
 
 # Cache directory for gram matrices
 CACHE_DIR = "gram_matrix_cache"
@@ -355,7 +355,7 @@ def print_dataset_statistics(X_train: np.ndarray, X_test: np.ndarray):
         logger.info("-" * 30)
 
 
-def compute_gram_matrix_ksig_pde(X_train: np.ndarray, X_test: np.ndarray, kernel_type: KernelType = KERNEL_LINEAR) -> Tuple[np.ndarray, np.ndarray]:
+def compute_gram_matrix_ksig_pde(X_train: np.ndarray, X_test: np.ndarray, kernel_type: KernelType = KERNEL_LINEAR) -> Tuple[np.ndarray, np.ndarray, float]:
     """
     Compute gram matrices using KSigPDE kernel with local caching.
     
@@ -365,7 +365,7 @@ def compute_gram_matrix_ksig_pde(X_train: np.ndarray, X_test: np.ndarray, kernel
         kernel_type: Type of kernel to use (linear or rbf)
         
     Returns:
-        Tuple of (train_gram, test_gram) matrices
+        Tuple of (train_gram, test_gram, computation_time) where computation_time is -1.0 if loaded from cache
     """
     # Generate cache filename
     cache_filename = generate_cache_filename("KSigPDE", kernel_type, X_train.shape, X_test.shape)
@@ -396,7 +396,7 @@ def compute_gram_matrix_ksig_pde(X_train: np.ndarray, X_test: np.ndarray, kernel
                 except Exception as e:
                     logger.warning(f"Could not compute condition number for cached gram matrix: {e}")
                 
-                return train_gram, test_gram
+                return train_gram, test_gram, -1.0  # -1.0 indicates loaded from cache
             else:
                 logger.warning("Cached gram matrices have incorrect dimensions, recomputing...")
         except Exception as e:
@@ -440,7 +440,7 @@ def compute_gram_matrix_ksig_pde(X_train: np.ndarray, X_test: np.ndarray, kernel
             logger.warning(f"Failed to cache gram matrices: {e}")
         
         # Add small epsilon * I to improve numerical stability
-        epsilon = 1e-8
+        epsilon = 1e-6  # Increased from 1e-8 for better stability
         n_train = train_gram.shape[0]
         train_gram += epsilon * np.eye(n_train)
         
@@ -455,18 +455,19 @@ def compute_gram_matrix_ksig_pde(X_train: np.ndarray, X_test: np.ndarray, kernel
         except Exception as e:
             logger.warning(f"Could not compute condition number: {e}")
         
-        logger.info(f"KSigPDE computation time: {time.time() - start_time:.3f}s")
+        computation_time = time.time() - start_time
+        logger.info(f"KSigPDE computation time: {computation_time:.3f}s")
         logger.info(f"Train gram shape: {train_gram.shape}")
         logger.info(f"Test gram shape: {test_gram.shape}")
         
-        return train_gram, test_gram
+        return train_gram, test_gram, computation_time
         
     except (MemoryError, RuntimeError) as e:
         if "out of memory" in str(e).lower() or "out_of_memory" in str(e).lower() or "oom" in str(e).lower() or isinstance(e, MemoryError):
             logger.error(f"KSigPDE ran out of memory: {e}")
             logger.info("KSigPDE computation skipped due to OOM")
             # Return None to indicate OOM failure
-            return None, None
+            return None, None, -1.0
         else:
             logger.error(f"KSigPDE computation failed with error: {e}")
             raise
@@ -666,7 +667,7 @@ def compute_gram_matrix_powersig_jax(X_train: np.ndarray, X_test: np.ndarray, ke
     test_gram = np.array(test_gram)
     
     # Add small epsilon * I to improve numerical stability
-    epsilon = 1e-8
+    epsilon = 1e-6  # Increased from 1e-8 for better stability
     n_train = train_gram.shape[0]
     train_gram += epsilon * np.eye(n_train)
     
@@ -744,13 +745,7 @@ def train_svc_with_gram_matrices(train_gram: np.ndarray, y_train: np.ndarray,
     precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
     recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
     f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0)
-    
-    # Calculate MAPE (convert to percentage)
-    try:
-        mape = mean_absolute_percentage_error(y_test, y_pred) * 100
-    except:
-        # If MAPE fails (e.g., zero values), use a fallback
-        mape = np.mean(np.abs((y_test - y_pred) / (y_test + 1e-8))) * 100
+
     
     training_time = time.time() - start_time
     
@@ -759,7 +754,6 @@ def train_svc_with_gram_matrices(train_gram: np.ndarray, y_train: np.ndarray,
     logger.info(f"Precision: {precision:.4f}")
     logger.info(f"Recall: {recall:.4f}")
     logger.info(f"F1-Score: {f1:.4f}")
-    logger.info(f"MAPE: {mape:.2f}%")
     
     # Generate classification report
     report = classification_report(y_test, y_pred, output_dict=True)
@@ -770,7 +764,6 @@ def train_svc_with_gram_matrices(train_gram: np.ndarray, y_train: np.ndarray,
         'precision': precision,
         'recall': recall,
         'f1_score': f1,
-        'mape': mape,
         'training_time': training_time,
         'condition_number': condition_number,
         'classification_report': report,
@@ -783,7 +776,7 @@ def train_svc_with_gram_matrices(train_gram: np.ndarray, y_train: np.ndarray,
 
 def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.ndarray, 
                                      y_train: np.ndarray, y_test: np.ndarray, 
-                                     kernel_name: str) -> Dict[str, Any]:
+                                     kernel_name: str, gram_computation_time: float = -1.0) -> Dict[str, Any]:
     """
     Shared function to run grid search with precomputed gram matrices.
     
@@ -793,10 +786,13 @@ def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.nda
         y_train: Training labels
         y_test: Test labels
         kernel_name: Name of the kernel
+        gram_computation_time: Time taken to compute gram matrices (-1.0 if loaded from cache)
         
     Returns:
         Dictionary containing results
     """
+    start_time = time.time()
+    
     # Use GridSearchCV with sklearn SVC
     param_grid = {'C': C_GRID}
     svc = SVC(kernel='precomputed', random_state=42)
@@ -812,16 +808,13 @@ def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.nda
     best_svc = grid_search.best_estimator_
     y_pred = best_svc.predict(test_gram)
     
+    grid_search_time = time.time() - start_time
+    
     # Calculate metrics
     accuracy = accuracy_score(y_test, y_pred)
     precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
     recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
     f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0)
-    
-    try:
-        mape = mean_absolute_percentage_error(y_test, y_pred) * 100
-    except:
-        mape = np.mean(np.abs((y_test - y_pred) / (y_test + 1e-8))) * 100
     
     # Calculate condition number
     try:
@@ -835,7 +828,9 @@ def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.nda
         'precision': precision,
         'recall': recall,
         'f1_score': f1,
-        'mape': mape,
+        'gram_computation_time': gram_computation_time,
+        'grid_search_time': grid_search_time,
+        'total_time': gram_computation_time + grid_search_time if gram_computation_time >= 0 else grid_search_time,
         'condition_number': condition_number,
         'best_C': grid_search.best_params_['C'],
         'cv_scores': grid_search.cv_results_,
@@ -856,7 +851,7 @@ def run_ksig_pde_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tens
     X_test = X_test_tensor.numpy()
     
     # Compute gram matrices
-    train_gram, test_gram = compute_gram_matrix_ksig_pde(X_train, X_test, kernel_type)
+    train_gram, test_gram, gram_computation_time = compute_gram_matrix_ksig_pde(X_train, X_test, kernel_type)
     
     # Check if OOM occurred
     if train_gram is None or test_gram is None:
@@ -865,6 +860,7 @@ def run_ksig_pde_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tens
             'kernel_name': f"KSigPDE_{kernel_type}",
             'train_gram': None,
             'test_gram': None,
+            'gram_computation_time': -1.0,
             'y_train': y_train,
             'y_test': y_test,
             'error': 'OOM - computation skipped'
@@ -875,6 +871,7 @@ def run_ksig_pde_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tens
         'kernel_name': f"KSigPDE_{kernel_type}",
         'train_gram': train_gram,
         'test_gram': test_gram,
+        'gram_computation_time': gram_computation_time,
         'y_train': y_train,
         'y_test': y_test,
         'error': 'OK'
@@ -944,19 +941,19 @@ def run_cuml_baseline_process(X_train_tensor: torch.Tensor, X_test_tensor: torch
     """
     Run cuML SVC baseline with RBF and linear kernels in separate process.
     """
-    # Convert torch tensors to cupy arrays
-    X_train_cp = cp.array(X_train_tensor.numpy(), dtype=cp.float32)
-    X_test_cp = cp.array(X_test_tensor.numpy(), dtype=cp.float32)
+    # Convert torch tensors to cupy arrays and reshape for cuML SVC
+    X_train_np = X_train_tensor.numpy()  # Shape: (samples, timesteps, features)
+    X_test_np = X_test_tensor.numpy()    # Shape: (samples, timesteps, features)
+    
+    # Reshape to 2D: (samples, timesteps * features)
+    X_train_2d = X_train_np.reshape(X_train_np.shape[0], -1)
+    X_test_2d = X_test_np.reshape(X_test_np.shape[0], -1)
+    
+    X_train_cp = cp.array(X_train_2d, dtype=cp.float32)
+    X_test_cp = cp.array(X_test_2d, dtype=cp.float32)
     y_train_cp = cp.array(y_train, dtype=cp.int32)
     y_test_cp = cp.array(y_test, dtype=cp.int32)
-    
-    # Try to import cuML SVC
-    try:
-        from cuml.svm import SVC as cuMLSVC
-        CUML_AVAILABLE = True
-    except ImportError:
-        CUML_AVAILABLE = False
-    
+        
     if not CUML_AVAILABLE:
         return {
             'kernel_name': "cuML_Baseline",
@@ -964,67 +961,97 @@ def run_cuml_baseline_process(X_train_tensor: torch.Tensor, X_test_tensor: torch
             'precision': 0.0,
             'recall': 0.0,
             'f1_score': 0.0,
-            'mape': 100.0,
             'condition_number': np.inf,
+            'gram_computation_time': -1.0,
+            'grid_search_time': 0.0,
+            'total_time': 0.0,
             'best_kernel': 'none',
             'error': 'cuML not available'
         }
     
-    # Test both RBF and linear kernels
+    # Test both RBF and linear kernels with grid search over C values
     kernels = ['rbf', 'linear']
     best_score = -1
     best_results = None
     best_kernel = None
+    best_C = None
     
     for kernel in kernels:
-        try:
-            # Create cuML SVC with current kernel
-            svc = cuMLSVC(kernel=kernel, C=1.0, random_state=42)
-            svc.fit(X_train_cp, y_train_cp)
-            
-            # Predict
-            y_pred_cp = svc.predict(X_test_cp)
-            y_pred = cp.asnumpy(y_pred_cp)
-            
-            # Calculate accuracy
-            accuracy = accuracy_score(y_test, y_pred)
-            
-            # Update best if this is better
-            if accuracy > best_score:
-                best_score = accuracy
-                best_kernel = kernel
+        print(f"Running cuML grid search with {kernel} kernel")
+        kernel_best_score = -1
+        kernel_best_C = None
+        kernel_best_results = None
+        
+        for C in C_GRID:
+            print(f"  Testing C={C}")
+            try:
+                # Create cuML SVC with current kernel and C value
+                svc = cuMLSVC(kernel=kernel, C=C, random_state=42, verbose=0)
+                svc.fit(X_train_cp, y_train_cp)
                 
-                # Calculate all metrics for best result
-                precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
-                recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
-                f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0)
+                # Predict
+                y_pred_cp = svc.predict(X_test_cp)
+                y_pred = cp.asnumpy(y_pred_cp)
                 
-                try:
-                    mape = mean_absolute_percentage_error(y_test, y_pred) * 100
-                except:
-                    mape = np.mean(np.abs((y_test - y_pred) / (y_test + 1e-8))) * 100
+                # Calculate accuracy
+                accuracy = accuracy_score(y_test, y_pred)
+                print(f"    C={C} accuracy: {accuracy:.4f}")
                 
-                best_results = {
-                    'kernel_name': f"cuML_Baseline_{kernel}",
-                    'accuracy': accuracy,
-                    'precision': precision,
-                    'recall': recall,
-                    'f1_score': f1,
-                    'mape': mape,
-                    'condition_number': np.inf,  # Not applicable for direct data
-                    'best_kernel': kernel,
-                    'y_pred': y_pred,
-                    'y_true': y_test
-                }
-                
-        except Exception as e:
-            continue
+                # Update best for this kernel if this is better
+                if accuracy > kernel_best_score:
+                    kernel_best_score = accuracy
+                    kernel_best_C = C
+                    
+                    # Calculate all metrics for best result for this kernel
+                    precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
+                    recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
+                    f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0)
+                    
+                    kernel_best_results = {
+                        'kernel_name': f"cuML_Baseline_{kernel}",
+                        'accuracy': accuracy,
+                        'precision': precision,
+                        'recall': recall,
+                        'f1_score': f1,
+                        'condition_number': np.inf,  # Not applicable for direct data
+                        'gram_computation_time': -1.0,  # Not applicable for direct data
+                        'grid_search_time': 0.0,  # Not applicable for direct data
+                        'total_time': 0.0,  # Not applicable for direct data
+                        'best_kernel': kernel,
+                        'best_C': C,
+                        'y_pred': y_pred,
+                        'y_true': y_test
+                    }
+                    
+            except Exception as e:
+                print(f"    cuML SVC failed with {kernel} kernel, C={C}: {e}")
+                continue
+        
+        # Update overall best if this kernel's best is better
+        if kernel_best_score > best_score:
+            best_score = kernel_best_score
+            best_kernel = kernel
+            best_C = kernel_best_C
+            best_results = kernel_best_results
+        
+        print(f"  Best for {kernel} kernel: C={kernel_best_C}, accuracy={kernel_best_score:.4f}")
     
     if best_results is None:
         return {
             'kernel_name': "cuML_Baseline",
+            'accuracy': 0.0,
+            'precision': 0.0,
+            'recall': 0.0,
+            'f1_score': 0.0,
+            'condition_number': np.inf,
+            'gram_computation_time': -1.0,
+            'grid_search_time': 0.0,
+            'total_time': 0.0,
             'error': 'All kernels failed'
         }
+    
+    # Log which kernel was selected
+    logger.info(f"cuML_Baseline selected {best_kernel} kernel with C={best_C} and accuracy: {best_results['accuracy']:.4f}")
     
     return best_results
 
@@ -1111,7 +1138,8 @@ def main():
                 kernel_data['test_gram'], 
                 kernel_data['y_train'], 
                 kernel_data['y_test'], 
-                kernel_name
+                kernel_name,
+                kernel_data.get('gram_computation_time', -1.0)
             )
             final_results[kernel_name] = grid_results
         else:
@@ -1122,7 +1150,6 @@ def main():
                 'precision': 0.0,
                 'recall': 0.0,
                 'f1_score': 0.0,
-                'mape': 100.0,
                 'condition_number': np.inf,
                 'best_kernel': 'none',
                 'error': kernel_data.get('error', 'Unknown error')
@@ -1134,20 +1161,39 @@ def main():
     logger.info("="*80)
     
     # Print header
-    logger.info(f"{'Kernel':<20} {'Accuracy':<10} {'Precision':<10} {'Recall':<10} {'F1-Score':<10} {'MAPE':<10} {'Time(s)':<10} {'Cond#':<12} {'Status':<10}")
-    logger.info("-" * 102)
+    logger.info(f"{'Kernel':<20} {'Accuracy':<10} {'Precision':<10} {'Recall':<10} {'F1-Score':<10} {'Grid(s)':<10} {'Cond#':<12} {'Status':<10}")
+    logger.info("-" * 85)
     
     for kernel_name, results in final_results.items():
         cond_str = f"{results['condition_number']:.2e}" if results['condition_number'] != np.inf else "inf"
         status = results.get('error', 'OK')
         if status != 'OK':
-            logger.info(f"{kernel_name:<20} {'OOM':<10} {'OOM':<10} {'OOM':<10} {'OOM':<10} {'OOM':<10} {'OOM':<10} {'OOM':<12} {status:<10}")
+            logger.info(f"{kernel_name:<20} {'OOM':<10} {'OOM':<10} {'OOM':<10} {'OOM':<10} {'OOM':<10} {'OOM':<12} {status:<10}")
         else:
+            grid_time = results.get('grid_search_time', 0.0)
             logger.info(f"{kernel_name:<20} {results['accuracy']:<10.4f} {results['precision']:<10.4f} "
-                       f"{results['recall']:<10.4f} {results['f1_score']:<10.4f} {results['mape']:<10.2f} "
-                       f"{results['training_time']:<10.3f} {cond_str:<12} {'OK':<10}")
+                       f"{results['recall']:<10.4f} {results['f1_score']:<10.4f} "
+                       f"{grid_time:<10.3f} {cond_str:<12} {'OK':<10}")
     
-    logger.info("-" * 102)
+    logger.info("-" * 85)
+    
+    # 7.5. Print detailed timing information
+    logger.info("\n" + "="*80)
+    logger.info("DETAILED TIMING INFORMATION")
+    logger.info("="*80)
+    
+    for kernel_name, results in final_results.items():
+        if results.get('error', 'OK') == 'OK':
+            gram_time = results.get('gram_computation_time', -1.0)
+            grid_time = results.get('grid_search_time', 0.0)
+            total_time = results.get('total_time', 0.0)
+            
+            if gram_time >= 0:
+                logger.info(f"{kernel_name:<20}: Gram computation: {gram_time:.3f}s, Grid search: {grid_time:.3f}s, Total: {total_time:.3f}s")
+            else:
+                logger.info(f"{kernel_name:<20}: Gram computation: CACHED, Grid search: {grid_time:.3f}s, Total: {total_time:.3f}s")
+    
+    logger.info("="*80)
     
     # 8. Find best performing kernels for each metric
     if final_results:
@@ -1163,11 +1209,6 @@ def main():
                 best_kernel = max(successful_results.keys(), key=lambda k: successful_results[k][metric])
                 best_value = successful_results[best_kernel][metric]
                 logger.info(f"{metric.upper():<12}: {best_kernel:<20} ({best_value:.4f})")
-            
-            # Find kernel with lowest MAPE
-            best_mape_kernel = min(successful_results.keys(), key=lambda k: successful_results[k]['mape'])
-            best_mape = successful_results[best_mape_kernel]['mape']
-            logger.info(f"{'MAPE':<12}: {best_mape_kernel:<20} ({best_mape:.2f}%)")
             
             # Find kernel with best condition number (lowest)
             best_cond_kernel = min(successful_results.keys(), key=lambda k: successful_results[k]['condition_number'])
