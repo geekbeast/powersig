@@ -148,19 +148,20 @@ def validate_gram_matrices(train_gram: np.ndarray, test_gram: np.ndarray,
     return True
 
 
-def download_aeon_dataset(dataset_name: str = "EigenWorms") -> Tuple[np.ndarray, np.ndarray]:
+def download_aeon_dataset(dataset_name: str = "EigenWorms", split: str = "train") -> Tuple[np.ndarray, np.ndarray]:
     """
     Download and load the AEON dataset.
     
     Args:
         dataset_name: Name of the dataset to load
+        split: Which split to load ('train' or 'test')
         
     Returns:
         Tuple of (X, y) where X is the time series data and y are the labels
     """
-    logger.info(f"Downloading {dataset_name} dataset from AEON...")
+    logger.info(f"Downloading {dataset_name} dataset from AEON ({split} split)...")
     
-    X, y = load_classification(dataset_name)
+    X, y = load_classification(dataset_name, split=split)
     logger.info("Dataset loaded successfully!")
 
     # AEON returns shape (samples, channels, timesteps); we need (samples, timesteps, channels)
@@ -1065,36 +1066,38 @@ def main():
     logger.info(f"Available kernels: {set(KERNEL_NAMES.keys())}")
     logger.info(f"Skipped kernels: {set(KERNEL_NAMES.keys()) - KERNELS_TO_RUN}")
     
-    # 1. Download and load dataset
+    # 1. Download and load training dataset
     try:
-        X, y = download_aeon_dataset("EigenWorms")
+        X_train, y_train = download_aeon_dataset("EigenWorms", split="train")
     except Exception as e:
-        logger.error(f"Failed to load dataset: {e}")
+        logger.error(f"Failed to load training dataset: {e}")
         return
     
-    # 1.5. Plot samples and print statistics
-    plot_eigenworms_samples(X, num_samples=3)
+    # 1.5. Download and load test dataset
+    try:
+        X_test, y_test = download_aeon_dataset("EigenWorms", split="test")
+    except Exception as e:
+        logger.error(f"Failed to load test dataset: {e}")
+        return
     
-    # 2. Split data
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.3, random_state=42, stratify=y
-    )
+    # 1.6. Plot samples and print statistics
+    plot_eigenworms_samples(X_train, num_samples=3)
     
-    # 2.5. Print statistics for both training and test sets (before normalization)
+    # 2. Print statistics for both training and test sets (before normalization)
     logger.info("Dataset statistics BEFORE normalization:")
     print_dataset_statistics(X_train, X_test)
     
     logger.info(f"Training set size: {X_train.shape[0]}")
     logger.info(f"Test set size: {X_test.shape[0]}")
     
-    # 2.6. Normalize training data
+    # 3. Normalize training data
     X_train_normalized, X_test_normalized = normalize_training_data(X_train, X_test)
     
-    # 2.7. Print statistics for both training and test sets (after normalization)
+    # 4. Print statistics for both training and test sets (after normalization)
     logger.info("Dataset statistics AFTER normalization:")
     print_dataset_statistics(X_train_normalized, X_test_normalized)
     
-    # 3. Wrap normalized data in torch tensors for multiprocessing
+    # 5. Wrap normalized data in torch tensors for multiprocessing
     X_train_tensor = torch.from_numpy(X_train_normalized).share_memory_()
     X_test_tensor = torch.from_numpy(X_test_normalized).share_memory_()
     
