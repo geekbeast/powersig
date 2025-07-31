@@ -47,10 +47,9 @@ logger = logging.getLogger(__name__)
 try:
     from cuml.svm import SVC as cuMLSVC
     CUMUL_AVAILABLE = True
-    logger.info("cuML SVC available - will use for faster training")
+    logger.info("cuML SVC available - will use for baseline kernel")
 except ImportError:
     CUMUL_AVAILABLE = False
-    logger.warning("cuML not available - falling back to sklearn SVC")
 
 # Constants for quick experiments
 MAX_TIMESTEPS = 200  # Limit number of timesteps for faster experiments max is 17984
@@ -228,6 +227,78 @@ def plot_eigenworms_samples(X: np.ndarray, num_samples: int = 3):
         plt.savefig(f'eigenworms_sample_{sample_idx + 1}.png', dpi=300, bbox_inches='tight')
         plt.close()
         logger.info(f"Saved plot for sample {sample_idx + 1}")
+
+
+def normalize_training_data(X_train: np.ndarray, X_test: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Normalize training data by subtracting mean and dividing by std dev for each dimension.
+    Normalize test data using its own means and std dev for each dimension.
+    
+    Args:
+        X_train: Training dataset with shape (samples, timesteps, dimensions)
+        X_test: Test dataset with shape (samples, timesteps, dimensions)
+        
+    Returns:
+        Tuple of (normalized_X_train, normalized_X_test)
+    """
+    logger.info("Normalizing training and test data...")
+    
+    num_train_samples, num_timesteps, num_dimensions = X_train.shape
+    num_test_samples = X_test.shape[0]
+    
+    # Calculate mean and std for each dimension across all training samples and timesteps
+    train_means = np.zeros(num_dimensions)
+    train_stds = np.zeros(num_dimensions)
+    
+    for dim_idx in range(num_dimensions):
+        # Extract all values for this dimension across all training samples and timesteps
+        train_dimension_data = X_train[:, :, dim_idx].flatten()
+        train_means[dim_idx] = np.mean(train_dimension_data)
+        train_stds[dim_idx] = np.std(train_dimension_data)
+        
+        # Avoid division by zero
+        if train_stds[dim_idx] == 0:
+            train_stds[dim_idx] = 1.0
+            logger.warning(f"Training dimension {dim_idx + 1} has zero standard deviation, setting to 1.0")
+    
+    # Calculate mean and std for each dimension across all test samples and timesteps
+    test_means = np.zeros(num_dimensions)
+    test_stds = np.zeros(num_dimensions)
+    
+    for dim_idx in range(num_dimensions):
+        # Extract all values for this dimension across all test samples and timesteps
+        test_dimension_data = X_test[:, :, dim_idx].flatten()
+        test_means[dim_idx] = np.mean(test_dimension_data)
+        test_stds[dim_idx] = np.std(test_dimension_data)
+        
+        # Avoid division by zero
+        if test_stds[dim_idx] == 0:
+            test_stds[dim_idx] = 1.0
+            logger.warning(f"Test dimension {dim_idx + 1} has zero standard deviation, setting to 1.0")
+    
+    logger.info("Training set normalization statistics:")
+    for dim_idx in range(num_dimensions):
+        logger.info(f"  Dimension {dim_idx + 1}: mean={train_means[dim_idx]:.6f}, std={train_stds[dim_idx]:.6f}")
+    
+    logger.info("Test set normalization statistics:")
+    for dim_idx in range(num_dimensions):
+        logger.info(f"  Dimension {dim_idx + 1}: mean={test_means[dim_idx]:.6f}, std={test_stds[dim_idx]:.6f}")
+    
+    # Normalize training data using training statistics
+    normalized_X_train = np.zeros_like(X_train)
+    for dim_idx in range(num_dimensions):
+        normalized_X_train[:, :, dim_idx] = (X_train[:, :, dim_idx] - train_means[dim_idx]) / train_stds[dim_idx]
+    
+    # Normalize test data using test statistics
+    normalized_X_test = np.zeros_like(X_test)
+    for dim_idx in range(num_dimensions):
+        normalized_X_test[:, :, dim_idx] = (X_test[:, :, dim_idx] - test_means[dim_idx]) / test_stds[dim_idx]
+    
+    logger.info("Normalization completed!")
+    logger.info(f"Normalized training set shape: {normalized_X_train.shape}")
+    logger.info(f"Normalized test set shape: {normalized_X_test.shape}")
+    
+    return normalized_X_train, normalized_X_test
 
 
 def print_dataset_statistics(X_train: np.ndarray, X_test: np.ndarray):
@@ -970,15 +1041,23 @@ def main():
         X, y, test_size=0.3, random_state=42, stratify=y
     )
     
-    # 2.5. Print statistics for both training and test sets
+    # 2.5. Print statistics for both training and test sets (before normalization)
+    logger.info("Dataset statistics BEFORE normalization:")
     print_dataset_statistics(X_train, X_test)
     
     logger.info(f"Training set size: {X_train.shape[0]}")
     logger.info(f"Test set size: {X_test.shape[0]}")
     
-    # 3. Wrap data in torch tensors for multiprocessing
-    X_train_tensor = torch.from_numpy(X_train).share_memory_()
-    X_test_tensor = torch.from_numpy(X_test).share_memory_()
+    # 2.6. Normalize training data
+    X_train_normalized, X_test_normalized = normalize_training_data(X_train, X_test)
+    
+    # 2.7. Print statistics for both training and test sets (after normalization)
+    logger.info("Dataset statistics AFTER normalization:")
+    print_dataset_statistics(X_train_normalized, X_test_normalized)
+    
+    # 3. Wrap normalized data in torch tensors for multiprocessing
+    X_train_tensor = torch.from_numpy(X_train_normalized).share_memory_()
+    X_test_tensor = torch.from_numpy(X_test_normalized).share_memory_()
     
     # 4. Initialize results storage
     all_results = {}
