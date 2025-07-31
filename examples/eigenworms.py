@@ -356,6 +356,11 @@ def compute_gram_matrix_ksig_pde(X_train: np.ndarray, X_test: np.ndarray, kernel
         except Exception as e:
             logger.warning(f"Failed to cache gram matrices: {e}")
         
+        # Add small epsilon * I to improve numerical stability
+        epsilon = 1e-8
+        n_train = train_gram.shape[0]
+        train_gram += epsilon * np.eye(n_train)
+        
         # Calculate and log condition number early
         try:
             condition_number = np.linalg.cond(train_gram)
@@ -577,6 +582,11 @@ def compute_gram_matrix_powersig_jax(X_train: np.ndarray, X_test: np.ndarray, ke
     train_gram = np.array(train_gram)
     test_gram = np.array(test_gram)
     
+    # Add small epsilon * I to improve numerical stability
+    epsilon = 1e-8
+    n_train = train_gram.shape[0]
+    train_gram += epsilon * np.eye(n_train)
+    
     # Cache the results
     try:
         with open(cache_filename, 'wb') as f:
@@ -638,33 +648,13 @@ def train_svc_with_gram_matrices(train_gram: np.ndarray, y_train: np.ndarray,
     
     start_time = time.time()
     
-    # Initialize and train SVC (use cuML if available, otherwise sklearn)
-    if CUMUL_AVAILABLE:
-        logger.info("Using cuML SVC for faster training...")
-        try:
-            # Convert to cupy arrays for cuML
-            train_gram_cp = cp.array(train_gram, dtype=cp.float32)
-            y_train_cp = cp.array(y_train, dtype=cp.int32)
-            test_gram_cp = cp.array(test_gram, dtype=cp.float32)
-            
-            svc = cuMLSVC(metric='precomputed', C=1.0, random_state=42)
-            svc.fit(train_gram_cp, y_train_cp)
-            
-            # Predict
-            y_pred_cp = svc.predict(test_gram_cp)
-            y_pred = cp.asnumpy(y_pred_cp)
-        except Exception as e:
-            logger.warning(f"cuML SVC failed, falling back to sklearn SVC: {e}")
-            svc = SVC(kernel='precomputed', C=1.0, random_state=42)
-            svc.fit(train_gram, y_train)
-            y_pred = svc.predict(test_gram)
-    else:
-        logger.info("Using sklearn SVC...")
-        svc = SVC(kernel='precomputed', C=1.0, random_state=42)
-        svc.fit(train_gram, y_train)
-        
-        # Predict
-        y_pred = svc.predict(test_gram)
+    # Initialize and train SVC with sklearn
+    logger.info("Using sklearn SVC...")
+    svc = SVC(kernel='precomputed', C=1.0, random_state=42)
+    svc.fit(train_gram, y_train)
+    
+    # Predict
+    y_pred = svc.predict(test_gram)
     
     # Calculate metrics
     accuracy = accuracy_score(y_test, y_pred)
@@ -790,18 +780,22 @@ def run_ksig_pde_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tens
         logger.warning("KSigPDE computation failed due to OOM, returning default results")
         return {
             'kernel_name': f"KSigPDE_{kernel_type}",
-            'accuracy': 0.0,
-            'precision': 0.0,
-            'recall': 0.0,
-            'f1_score': 0.0,
-            'mape': 100.0,
-            'condition_number': np.inf,
-            'best_kernel': 'none',
+            'train_gram': None,
+            'test_gram': None,
+            'y_train': y_train,
+            'y_test': y_test,
             'error': 'OOM - computation skipped'
         }
     
-    # Use shared grid search function
-    return run_grid_search_with_gram_matrices(train_gram, test_gram, y_train, y_test, f"KSigPDE_{kernel_type}")
+    # Return gram matrices and labels for main process grid search
+    return {
+        'kernel_name': f"KSigPDE_{kernel_type}",
+        'train_gram': train_gram,
+        'test_gram': test_gram,
+        'y_train': y_train,
+        'y_test': y_test,
+        'error': 'OK'
+    }
 
 
 def run_ksig_rfsf_trp_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tensor,
@@ -821,18 +815,22 @@ def run_ksig_rfsf_trp_process(X_train_tensor: torch.Tensor, X_test_tensor: torch
         logger.warning("KSig RFSF-TRP computation failed due to OOM, returning default results")
         return {
             'kernel_name': "KSig RFSF-TRP",
-            'accuracy': 0.0,
-            'precision': 0.0,
-            'recall': 0.0,
-            'f1_score': 0.0,
-            'mape': 100.0,
-            'condition_number': np.inf,
-            'best_kernel': 'none',
+            'train_gram': None,
+            'test_gram': None,
+            'y_train': y_train,
+            'y_test': y_test,
             'error': 'OOM - computation skipped'
         }
     
-    # Use shared grid search function
-    return run_grid_search_with_gram_matrices(train_gram, test_gram, y_train, y_test, "KSig RFSF-TRP")
+    # Return gram matrices and labels for main process grid search
+    return {
+        'kernel_name': "KSig RFSF-TRP",
+        'train_gram': train_gram,
+        'test_gram': test_gram,
+        'y_train': y_train,
+        'y_test': y_test,
+        'error': 'OK'
+    }
 
 
 def run_powersig_jax_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tensor,
@@ -847,8 +845,15 @@ def run_powersig_jax_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.
     # Compute gram matrices
     train_gram, test_gram = compute_gram_matrix_powersig_jax(X_train, X_test, kernel_type, order)
     
-    # Use shared grid search function
-    return run_grid_search_with_gram_matrices(train_gram, test_gram, y_train, y_test, f"PowerSigJax_{kernel_type}")
+    # Return gram matrices and labels for main process grid search
+    return {
+        'kernel_name': f"PowerSigJax_{kernel_type}",
+        'train_gram': train_gram,
+        'test_gram': test_gram,
+        'y_train': y_train,
+        'y_test': y_test,
+        'error': 'OK'
+    }
 
 
 def run_cuml_baseline_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tensor,
@@ -865,11 +870,11 @@ def run_cuml_baseline_process(X_train_tensor: torch.Tensor, X_test_tensor: torch
     # Try to import cuML SVC
     try:
         from cuml.svm import SVC as cuMLSVC
-        CUMUL_AVAILABLE = True
+        CUML_AVAILABLE = True
     except ImportError:
-        CUMUL_AVAILABLE = False
+        CUML_AVAILABLE = False
     
-    if not CUMUL_AVAILABLE:
+    if not CUML_AVAILABLE:
         return {
             'kernel_name': "cuML_Baseline",
             'accuracy': 0.0,
@@ -997,8 +1002,41 @@ def main():
                 results = pool.apply(kernel_functions[kernel_name][0], kernel_functions[kernel_name][1])
                 all_results[kernel_name] = results
                 logger.info(f"Completed {kernel_name}")
-               
     
+    # 6.5. Run grid search for all successful kernels
+    logger.info("\n" + "="*80)
+    logger.info("RUNNING GRID SEARCH FOR ALL KERNELS")
+    logger.info("="*80)
+    
+    final_results = {}
+    for kernel_name, kernel_data in all_results.items():
+        if kernel_name == "cuML_Baseline":
+            # cuML_Baseline already returns final results, no grid search needed
+            final_results[kernel_name] = kernel_data
+        elif kernel_data.get('error', 'OK') == 'OK' and kernel_data['train_gram'] is not None:
+            logger.info(f"Running grid search for {kernel_name}...")
+            grid_results = run_grid_search_with_gram_matrices(
+                kernel_data['train_gram'], 
+                kernel_data['test_gram'], 
+                kernel_data['y_train'], 
+                kernel_data['y_test'], 
+                kernel_name
+            )
+            final_results[kernel_name] = grid_results
+        else:
+            logger.warning(f"Skipping grid search for {kernel_name} due to OOM or error")
+            final_results[kernel_name] = {
+                'kernel_name': kernel_name,
+                'accuracy': 0.0,
+                'precision': 0.0,
+                'recall': 0.0,
+                'f1_score': 0.0,
+                'mape': 100.0,
+                'condition_number': np.inf,
+                'best_kernel': 'none',
+                'error': kernel_data.get('error', 'Unknown error')
+            }
+   
     # 7. Print summary
     logger.info("\n" + "="*80)
     logger.info("FINAL RESULTS SUMMARY")
@@ -1008,7 +1046,7 @@ def main():
     logger.info(f"{'Kernel':<20} {'Accuracy':<10} {'Precision':<10} {'Recall':<10} {'F1-Score':<10} {'MAPE':<10} {'Time(s)':<10} {'Cond#':<12} {'Status':<10}")
     logger.info("-" * 102)
     
-    for kernel_name, results in all_results.items():
+    for kernel_name, results in final_results.items():
         cond_str = f"{results['condition_number']:.2e}" if results['condition_number'] != np.inf else "inf"
         status = results.get('error', 'OK')
         if status != 'OK':
@@ -1021,9 +1059,9 @@ def main():
     logger.info("-" * 102)
     
     # 8. Find best performing kernels for each metric
-    if all_results:
+    if final_results:
         # Filter out kernels that failed due to OOM
-        successful_results = {k: v for k, v in all_results.items() if v.get('error', 'OK') == 'OK'}
+        successful_results = {k: v for k, v in final_results.items() if v.get('error', 'OK') == 'OK'}
         
         if successful_results:
             metrics = ['accuracy', 'precision', 'recall', 'f1_score']
