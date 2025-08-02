@@ -54,7 +54,7 @@ except ImportError:
     CUML_AVAILABLE = False
 
 # Constants for quick experiments
-MAX_TIMESTEPS = 17984  # Limit number of timesteps for faster experiments max is 17984
+MAX_TIMESTEPS = 250  # Limit number of timesteps for faster experiments max is 17984
 # WINDOW_SIZE = 200
 # NUM_WINDOWS = 10
 # Cache directory for gram matrices
@@ -319,6 +319,35 @@ def normalize_training_data(X_train: np.ndarray, X_test: np.ndarray) -> Tuple[np
     logger.info(f"Normalized test set shape: {normalized_X_test.shape}")
     
     return normalized_X_train, normalized_X_test
+
+
+def time_augment(X):
+    """
+    Augment the input array by adding a time feature as the last dimension.
+    
+    Args:
+        X: Input array of shape (n_samples, n_timesteps) or (n_samples, n_timesteps, n_features)
+        
+    Returns:
+        Augmented array with time feature added as the last dimension
+    """
+    if len(X.shape) == 2:
+        # If X is 2D (samples, timesteps), add time feature
+        n_samples, length = X.shape
+        time_feature = np.linspace(0, 1, length)
+        time_feature = np.broadcast_to(time_feature, (n_samples, length))
+        time_feature = time_feature[..., None]  # shape (n_samples, length, 1)
+        X_expanded = X[..., None]  # shape (n_samples, length, 1)
+        return np.concatenate([time_feature, X_expanded], axis=-1)
+    elif len(X.shape) == 3:
+        # If X is already 3D (samples, timesteps, features), add time feature
+        n_samples, length, n_features = X.shape
+        time_feature = np.linspace(0, 1, length)
+        time_feature = np.broadcast_to(time_feature, (n_samples, length))
+        time_feature = time_feature[..., None]  # shape (n_samples, length, 1)
+        return np.concatenate([time_feature, X], axis=-1)
+    else:
+        raise ValueError(f"Expected 2D or 3D array, got shape {X.shape}")
 
 
 def print_dataset_statistics(X_train: np.ndarray, X_test: np.ndarray):
@@ -1226,7 +1255,8 @@ def main():
     logger.info(f"Test set size: {X_test.shape[0]}")
     
     # 3. Normalize training data
-    X_train_normalized, X_test_normalized = X_train/20, X_test/20 #normalize_training_data(X_train, X_test)
+    X_train_normalized, X_test_normalized = normalize_training_data(X_train, X_test)
+    X_train_normalized, X_test_normalized = time_augment(X_train_normalized), time_augment(X_test_normalized)
     
     # 4. Print statistics for both training and test sets (after normalization)
     logger.info("Dataset statistics AFTER normalization:")
