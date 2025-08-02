@@ -662,8 +662,6 @@ def compute_gram_matrix_powersig_jax(X_train: np.ndarray, X_test: np.ndarray, ke
     logger.info(f"Checking for PowerSigJax cache file: {cache_filename}")
     if os.path.exists(cache_filename):
         logger.info(f"Cache HIT: Loading cached PowerSigJax gram matrices from {cache_filename}...")
-    else:
-        logger.info(f"Cache MISS: No cached PowerSigJax gram matrices found at {cache_filename}")
         try:
             with open(cache_filename, 'rb') as f:
                 cached_data = pickle.load(f)
@@ -687,6 +685,8 @@ def compute_gram_matrix_powersig_jax(X_train: np.ndarray, X_test: np.ndarray, ke
                 logger.warning("Cached gram matrices have incorrect dimensions, recomputing...")
         except Exception as e:
             logger.warning(f"Failed to load cached gram matrices: {e}")
+    else:
+        logger.info(f"Cache MISS: No cached PowerSigJax gram matrices found at {cache_filename}")
     
     logger.info(f"Computing gram matrices using PowerSigJax (order={order}) with {kernel_type} kernel...")
     start_time = time.time()
