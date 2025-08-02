@@ -391,8 +391,11 @@ def compute_gram_matrix_ksig_pde(X_train: np.ndarray, X_test: np.ndarray, kernel
     cache_filename = generate_cache_filename("KSigPDE", kernel_type, X_train.shape, X_test.shape)
     
     # Check if cache exists and try to load
+    logger.info(f"Checking for KSigPDE cache file: {cache_filename}")
     if os.path.exists(cache_filename):
-        logger.info(f"Loading cached KSigPDE gram matrices from {cache_filename}...")
+        logger.info(f"Cache HIT: Loading cached KSigPDE gram matrices from {cache_filename}...")
+    else:
+        logger.info(f"Cache MISS: No cached KSigPDE gram matrices found at {cache_filename}")
         try:
             with open(cache_filename, 'rb') as f:
                 cached_data = pickle.load(f)
@@ -404,6 +407,12 @@ def compute_gram_matrix_ksig_pde(X_train: np.ndarray, X_test: np.ndarray, kernel
                 logger.info("Successfully loaded cached KSigPDE gram matrices")
                 logger.info(f"Train gram shape: {train_gram.shape}")
                 logger.info(f"Test gram shape: {test_gram.shape}")
+                
+                # Print a small portion of the training gram matrix (from cache)
+                print(f"KSigPDE Training gram shape (cached): {train_gram.shape}")
+                print("Small portion of KSigPDE training gram matrix (5x5) - from cache:")
+                print(train_gram[:5, :5])
+                print(f"KSigPDE Training gram min: {train_gram.min():.6f}, max: {train_gram.max():.6f}, mean: {train_gram.mean():.6f}")
                 
                 # Calculate and log condition number for cached gram matrix
                 try:
@@ -448,7 +457,12 @@ def compute_gram_matrix_ksig_pde(X_train: np.ndarray, X_test: np.ndarray, kernel
         train_gram = cp.asnumpy(train_gram)
         test_gram = cp.asnumpy(test_gram)
         
-        # Cache the results (ensure numpy arrays)
+        # Add small epsilon * I to improve numerical stability
+        epsilon = 1e-6  # Increased from 1e-8 for better stability
+        n_train = train_gram.shape[0]
+        train_gram += epsilon * np.eye(n_train)
+        
+        # Cache the results (ensure numpy arrays) - AFTER post-processing
         try:
             with open(cache_filename, 'wb') as f:
                 pickle.dump({
@@ -459,10 +473,11 @@ def compute_gram_matrix_ksig_pde(X_train: np.ndarray, X_test: np.ndarray, kernel
         except Exception as e:
             logger.warning(f"Failed to cache gram matrices: {e}")
         
-        # Add small epsilon * I to improve numerical stability
-        epsilon = 1e-6  # Increased from 1e-8 for better stability
-        n_train = train_gram.shape[0]
-        train_gram += epsilon * np.eye(n_train)
+        # Print a small portion of the training gram matrix
+        print(f"KSigPDE Training gram shape: {train_gram.shape}")
+        print("Small portion of KSigPDE training gram matrix (5x5):")
+        print(train_gram[:5, :5])
+        print(f"KSigPDE Training gram min: {train_gram.min():.6f}, max: {train_gram.max():.6f}, mean: {train_gram.mean():.6f}")
         
         # Calculate and log condition number early
         try:
@@ -525,8 +540,11 @@ def compute_gram_matrix_ksig_rfsf_trp(X_train: np.ndarray, X_test: np.ndarray,
                                           n_levels=n_levels, n_features=n_features)
     
     # Check if cache exists and try to load
+    logger.info(f"Checking for KSig RFSF-TRP cache file: {cache_filename}")
     if os.path.exists(cache_filename):
-        logger.info(f"Loading cached KSig RFSF-TRP gram matrices from {cache_filename}...")
+        logger.info(f"Cache HIT: Loading cached KSig RFSF-TRP gram matrices from {cache_filename}...")
+    else:
+        logger.info(f"Cache MISS: No cached KSig RFSF-TRP gram matrices found at {cache_filename}")
         try:
             with open(cache_filename, 'rb') as f:
                 cached_data = pickle.load(f)
@@ -538,6 +556,13 @@ def compute_gram_matrix_ksig_rfsf_trp(X_train: np.ndarray, X_test: np.ndarray,
                 logger.info("Successfully loaded cached KSig RFSF-TRP gram matrices")
                 logger.info(f"Train gram shape: {K_train.shape}")
                 logger.info(f"Test gram shape: {K_test.shape}")
+                
+                # Print a small portion of the training gram matrix (from cache)
+                print(f"KSig RFSF-TRP Training gram shape (cached): {K_train.shape}")
+                print("Small portion of KSig RFSF-TRP training gram matrix (5x5) - from cache:")
+                print(K_train[:5, :5])
+                print(f"KSig RFSF-TRP Training gram min: {K_train.min():.6f}, max: {K_train.max():.6f}, mean: {K_train.mean():.6f}")
+                
                 return K_train, K_test
             else:
                 logger.warning("Cached gram matrices have incorrect dimensions, recomputing...")
@@ -579,6 +604,12 @@ def compute_gram_matrix_ksig_rfsf_trp(X_train: np.ndarray, X_test: np.ndarray,
             logger.info(f"Cached KSig RFSF-TRP gram matrices to {cache_filename}")
         except Exception as e:
             logger.warning(f"Failed to cache gram matrices: {e}")
+        
+        # Print a small portion of the training gram matrix
+        print(f"KSig RFSF-TRP Training gram shape: {K_train.shape}")
+        print("Small portion of KSig RFSF-TRP training gram matrix (5x5):")
+        print(K_train[:5, :5])
+        print(f"KSig RFSF-TRP Training gram min: {K_train.min():.6f}, max: {K_train.max():.6f}, mean: {K_train.mean():.6f}")
         
         # Calculate and log condition number early
         try:
@@ -628,8 +659,11 @@ def compute_gram_matrix_powersig_jax(X_train: np.ndarray, X_test: np.ndarray, ke
     cache_filename = generate_cache_filename("PowerSigJax", kernel_type, X_train.shape, X_test.shape, order=order)
     
     # Check if cache exists and try to load
+    logger.info(f"Checking for PowerSigJax cache file: {cache_filename}")
     if os.path.exists(cache_filename):
-        logger.info(f"Loading cached PowerSigJax gram matrices from {cache_filename}...")
+        logger.info(f"Cache HIT: Loading cached PowerSigJax gram matrices from {cache_filename}...")
+    else:
+        logger.info(f"Cache MISS: No cached PowerSigJax gram matrices found at {cache_filename}")
         try:
             with open(cache_filename, 'rb') as f:
                 cached_data = pickle.load(f)
@@ -641,6 +675,13 @@ def compute_gram_matrix_powersig_jax(X_train: np.ndarray, X_test: np.ndarray, ke
                 logger.info("Successfully loaded cached PowerSigJax gram matrices")
                 logger.info(f"Train gram shape: {train_gram.shape}")
                 logger.info(f"Test gram shape: {test_gram.shape}")
+                
+                # Print a small portion of the training gram matrix (from cache)
+                print(f"PowerSigJax Training gram shape (cached): {train_gram.shape}")
+                print("Small portion of PowerSigJax training gram matrix (5x5) - from cache:")
+                print(train_gram[:5, :5])
+                print(f"PowerSigJax Training gram min: {train_gram.min():.6f}, max: {train_gram.max():.6f}, mean: {train_gram.mean():.6f}")
+                
                 return train_gram, test_gram
             else:
                 logger.warning("Cached gram matrices have incorrect dimensions, recomputing...")
@@ -701,6 +742,12 @@ def compute_gram_matrix_powersig_jax(X_train: np.ndarray, X_test: np.ndarray, ke
         logger.info(f"Cached PowerSigJax gram matrices to {cache_filename}")
     except Exception as e:
         logger.warning(f"Failed to cache gram matrices: {e}")
+    
+    # Print a small portion of the training gram matrix
+    print(f"PowerSigJax Training gram shape: {train_gram.shape}")
+    print("Small portion of PowerSigJax training gram matrix (5x5):")
+    print(train_gram[:5, :5])
+    print(f"PowerSigJax Training gram min: {train_gram.min():.6f}, max: {train_gram.max():.6f}, mean: {train_gram.mean():.6f}")
     
     # Calculate and log condition number early
     try:
@@ -1161,7 +1208,7 @@ def main():
     logger.info(f"Test set size: {X_test.shape[0]}")
     
     # 3. Normalize training data
-    X_train_normalized, X_test_normalized = X_train, X_test #normalize_training_data(X_train, X_test)
+    X_train_normalized, X_test_normalized = X_train/10, X_test/10 #normalize_training_data(X_train, X_test)
     
     # 4. Print statistics for both training and test sets (after normalization)
     logger.info("Dataset statistics AFTER normalization:")
