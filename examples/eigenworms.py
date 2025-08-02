@@ -54,7 +54,7 @@ except ImportError:
     CUML_AVAILABLE = False
 
 # Constants for quick experiments
-MAX_TIMESTEPS = 300  # Limit number of timesteps for faster experiments max is 17984
+MAX_TIMESTEPS = 17984  # Limit number of timesteps for faster experiments max is 17984
 # WINDOW_SIZE = 200
 # NUM_WINDOWS = 10
 # Cache directory for gram matrices
@@ -470,6 +470,12 @@ def compute_gram_matrix_ksig_pde(X_train: np.ndarray, X_test: np.ndarray, kernel
                     'test_gram': ensure_numpy_array(test_gram)
                 }, f)
             logger.info(f"Cached KSigPDE gram matrices to {cache_filename}")
+            # Verify the file was actually created
+            if os.path.exists(cache_filename):
+                file_size = os.path.getsize(cache_filename)
+                logger.info(f"Cache file created successfully: {cache_filename} (size: {file_size} bytes)")
+            else:
+                logger.warning(f"Cache file was not created: {cache_filename}")
         except Exception as e:
             logger.warning(f"Failed to cache gram matrices: {e}")
         
@@ -602,6 +608,12 @@ def compute_gram_matrix_ksig_rfsf_trp(X_train: np.ndarray, X_test: np.ndarray,
                     'test_gram': ensure_numpy_array(K_test)
                 }, f)
             logger.info(f"Cached KSig RFSF-TRP gram matrices to {cache_filename}")
+            # Verify the file was actually created
+            if os.path.exists(cache_filename):
+                file_size = os.path.getsize(cache_filename)
+                logger.info(f"Cache file created successfully: {cache_filename} (size: {file_size} bytes)")
+            else:
+                logger.warning(f"Cache file was not created: {cache_filename}")
         except Exception as e:
             logger.warning(f"Failed to cache gram matrices: {e}")
         
@@ -740,6 +752,12 @@ def compute_gram_matrix_powersig_jax(X_train: np.ndarray, X_test: np.ndarray, ke
                 'test_gram': ensure_numpy_array(test_gram)
             }, f)
         logger.info(f"Cached PowerSigJax gram matrices to {cache_filename}")
+        # Verify the file was actually created
+        if os.path.exists(cache_filename):
+            file_size = os.path.getsize(cache_filename)
+            logger.info(f"Cache file created successfully: {cache_filename} (size: {file_size} bytes)")
+        else:
+            logger.warning(f"Cache file was not created: {cache_filename}")
     except Exception as e:
         logger.warning(f"Failed to cache gram matrices: {e}")
     
@@ -1208,7 +1226,7 @@ def main():
     logger.info(f"Test set size: {X_test.shape[0]}")
     
     # 3. Normalize training data
-    X_train_normalized, X_test_normalized = X_train/10, X_test/10 #normalize_training_data(X_train, X_test)
+    X_train_normalized, X_test_normalized = X_train/20, X_test/20 #normalize_training_data(X_train, X_test)
     
     # 4. Print statistics for both training and test sets (after normalization)
     logger.info("Dataset statistics AFTER normalization:")
