@@ -36,6 +36,8 @@ import ksig
 from ksig.kernels import SignaturePDEKernel, SignatureKernel
 from ksig.static.kernels import LinearKernel, RBFKernel
 
+from examples.neural import create_k_layer_mlp, create_k_layer_mlp_classification, train_mlp_model_classification
+
 # Import AEON for dataset
 from aeon.datasets import load_classification
 
@@ -52,8 +54,9 @@ except ImportError:
     CUML_AVAILABLE = False
 
 # Constants for quick experiments
-MAX_TIMESTEPS = 500  # Limit number of timesteps for faster experiments max is 17984
-
+MAX_TIMESTEPS = 300  # Limit number of timesteps for faster experiments max is 17984
+# WINDOW_SIZE = 200
+# NUM_WINDOWS = 10
 # Cache directory for gram matrices
 CACHE_DIR = "gram_matrix_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -118,6 +121,22 @@ def generate_cache_filename(kernel_name: str, X_train_shape: Tuple[int, ...], X_
     # Create filename - ensure all parts are strings
     filename = "_".join(str(part) for part in filename_parts) + ".pkl"
     return os.path.join(CACHE_DIR, filename)
+
+
+def ensure_numpy_array(array):
+    """
+    Ensure an array is a numpy array, converting from cupy if necessary.
+    
+    Args:
+        array: Input array (numpy or cupy)
+        
+    Returns:
+        numpy.ndarray: The array as a numpy array
+    """
+    if hasattr(array, 'get'):  # cupy array
+        return array.get()
+    else:
+        return array
 
 
 def validate_gram_matrices(train_gram: np.ndarray, test_gram: np.ndarray, 
@@ -429,12 +448,12 @@ def compute_gram_matrix_ksig_pde(X_train: np.ndarray, X_test: np.ndarray, kernel
         train_gram = cp.asnumpy(train_gram)
         test_gram = cp.asnumpy(test_gram)
         
-        # Cache the results
+        # Cache the results (ensure numpy arrays)
         try:
             with open(cache_filename, 'wb') as f:
                 pickle.dump({
-                    'train_gram': train_gram,
-                    'test_gram': test_gram
+                    'train_gram': ensure_numpy_array(train_gram),
+                    'test_gram': ensure_numpy_array(test_gram)
                 }, f)
             logger.info(f"Cached KSigPDE gram matrices to {cache_filename}")
         except Exception as e:
@@ -550,12 +569,12 @@ def compute_gram_matrix_ksig_rfsf_trp(X_train: np.ndarray, X_test: np.ndarray,
         # 6) Compute test–train Gram matrix
         K_test = rfsf_trp(X_test, X_train)
         
-        # Cache the results
+        # Cache the results (ensure numpy arrays)
         try:
             with open(cache_filename, 'wb') as f:
                 pickle.dump({
-                    'train_gram': K_train,
-                    'test_gram': K_test
+                    'train_gram': ensure_numpy_array(K_train),
+                    'test_gram': ensure_numpy_array(K_test)
                 }, f)
             logger.info(f"Cached KSig RFSF-TRP gram matrices to {cache_filename}")
         except Exception as e:
@@ -672,12 +691,12 @@ def compute_gram_matrix_powersig_jax(X_train: np.ndarray, X_test: np.ndarray, ke
     n_train = train_gram.shape[0]
     train_gram += epsilon * np.eye(n_train)
     
-    # Cache the results
+    # Cache the results (ensure numpy arrays)
     try:
         with open(cache_filename, 'wb') as f:
             pickle.dump({
-                'train_gram': train_gram,
-                'test_gram': test_gram
+                'train_gram': ensure_numpy_array(train_gram),
+                'test_gram': ensure_numpy_array(test_gram)
             }, f)
         logger.info(f"Cached PowerSigJax gram matrices to {cache_filename}")
     except Exception as e:
@@ -701,75 +720,96 @@ def compute_gram_matrix_powersig_jax(X_train: np.ndarray, X_test: np.ndarray, ke
     return train_gram, test_gram
 
 
-def train_svc_with_gram_matrices(train_gram: np.ndarray, y_train: np.ndarray, 
-                                test_gram: np.ndarray, y_test: np.ndarray,
-                                kernel_name: str) -> Dict[str, Any]:
+
+
+def run_mlp_with_gram_matrices(train_gram: np.ndarray, test_gram: np.ndarray, 
+                              y_train: np.ndarray, y_test: np.ndarray) -> Dict[str, Any]:
     """
-    Train SVC using precomputed gram matrices and evaluate performance.
+    Run MLP training and prediction using gram matrices for multi-class classification.
     
     Args:
         train_gram: Training gram matrix
-        y_train: Training labels
-        test_gram: Test gram matrix
-        y_test: Test labels
-        kernel_name: Name of the kernel used
+        test_gram: Test gram matrix  
+        y_train: Training labels (integer)
+        y_test: Test labels (integer)
         
     Returns:
         Dictionary containing results
     """
-    logger.info(f"Training SVC with {kernel_name} kernel...")
-    
-    # Calculate condition number early to help diagnose training issues
-    try:
-        condition_number = np.linalg.cond(cp.asnumpy(train_gram))
-        logger.info(f"Gram matrix condition number: {condition_number:.2e}")
-        if condition_number > 1e12:
-            logger.warning(f"High condition number ({condition_number:.2e}) may cause training issues!")
-        elif condition_number > 1e8:
-            logger.warning(f"Moderately high condition number ({condition_number:.2e})")
-    except Exception as e:
-        condition_number = np.inf
-        logger.warning(f"Could not compute condition number: {e}")
-    
     start_time = time.time()
     
-    # Initialize and train SVC with sklearn
-    logger.info("Using sklearn SVC...")
-    svc = SVC(kernel='precomputed', C=1.0, random_state=42)
-    svc.fit(train_gram, y_train)
+    # Get number of unique classes
+    unique_classes = np.unique(np.concatenate([y_train, y_test]))
+    num_classes = len(unique_classes)
     
-    # Predict
-    y_pred = svc.predict(test_gram)
+    # Create label encoder to ensure sequential integer labels (0, 1, 2, ...)
+    from sklearn.preprocessing import LabelEncoder
+    label_encoder = LabelEncoder()
+    y_train_encoded = label_encoder.fit_transform(y_train)
+    y_test_encoded = label_encoder.transform(y_test)
+    
+    # Convert to PyTorch tensors
+    train_gram_tensor = torch.tensor(ensure_numpy_array(train_gram), dtype=torch.float32)
+    test_gram_tensor = torch.tensor(ensure_numpy_array(test_gram), dtype=torch.float32)
+    y_train_tensor = torch.tensor(y_train_encoded, dtype=torch.long)
+    
+    # Create MLP model for classification
+    input_size = train_gram.shape[0]
+    model = create_k_layer_mlp_classification(n=input_size, k=3, num_classes=num_classes)
+    
+    # Train the model using the classification training function
+    trained_model, losses = train_mlp_model_classification(
+        model=model,
+        kernel=train_gram_tensor,
+        y_train=y_train_tensor,
+        epochs=100,
+        lr=0.5,
+        optimizer_type='lbfgs'
+    )
+    
+    # Compute predictions on test set
+    trained_model.eval()
+    with torch.no_grad():
+        test_outputs = trained_model(test_gram_tensor)
+        # Apply softmax to get probabilities
+        probabilities = torch.softmax(test_outputs, dim=1)
+        # Get predicted class indices
+        y_pred_encoded = torch.argmax(probabilities, dim=1).numpy()
+    
+    # Convert back to original labels
+    y_pred = label_encoder.inverse_transform(y_pred_encoded)
+    
+    mlp_time = time.time() - start_time
     
     # Calculate metrics
     accuracy = accuracy_score(y_test, y_pred)
     precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
     recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
     f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0)
-
     
-    training_time = time.time() - start_time
+    # Print MLP accuracy
+    logger.info(f"MLP accuracy: {accuracy:.4f}")
     
-    logger.info(f"SVC training time: {training_time:.3f}s")
-    logger.info(f"Accuracy: {accuracy:.4f}")
-    logger.info(f"Precision: {precision:.4f}")
-    logger.info(f"Recall: {recall:.4f}")
-    logger.info(f"F1-Score: {f1:.4f}")
-    
-    # Generate classification report
-    report = classification_report(y_test, y_pred, output_dict=True)
+    # Calculate condition number
+    try:
+        condition_number = np.linalg.cond(train_gram)
+    except Exception as e:
+        condition_number = np.inf
     
     results = {
-        'kernel_name': kernel_name,
+        'kernel_name': 'MLP',
         'accuracy': accuracy,
         'precision': precision,
         'recall': recall,
         'f1_score': f1,
-        'training_time': training_time,
+        'gram_computation_time': -1.0,  # Not applicable for MLP
+        'grid_search_time': mlp_time,
+        'total_time': mlp_time,
         'condition_number': condition_number,
-        'classification_report': report,
         'y_pred': y_pred,
-        'y_true': y_test
+        'y_true': y_test,
+        'final_loss': losses[-1] if losses else 0.0,
+        'training_losses': losses
     }
     
     return results
@@ -780,6 +820,7 @@ def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.nda
                                      kernel_name: str, gram_computation_time: float = -1.0) -> Dict[str, Any]:
     """
     Shared function to run grid search with precomputed gram matrices.
+    Always runs both SVC and MLP, returns the better performing one.
     
     Args:
         train_gram: Training gram matrix
@@ -794,52 +835,81 @@ def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.nda
     """
     start_time = time.time()
     
-    # Use GridSearchCV with sklearn SVC
+    # Run SVC grid search
     param_grid = {'C': C_GRID}
     svc = SVC(kernel='precomputed', random_state=42)
+    
+    # Convert cupy arrays to numpy arrays if needed
+    if hasattr(train_gram, 'get'):  # cupy array
+        train_gram_np = train_gram.get()
+    else:
+        train_gram_np = train_gram
+        
+    if hasattr(test_gram, 'get'):  # cupy array
+        test_gram_np = test_gram.get()
+    else:
+        test_gram_np = test_gram
     
     # Create custom fold that uses all indices
     full_idx = np.arange(len(y_train))  # All samples in same fold
     cv = [(full_idx, full_idx)]
     
     grid_search = GridSearchCV(svc, param_grid, cv=cv, scoring='accuracy', n_jobs=len(C_GRID))
-    grid_search.fit(train_gram, y_train)
+    grid_search.fit(train_gram_np, y_train)
     
     # Get best model and predict
     best_svc = grid_search.best_estimator_
-    y_pred = best_svc.predict(test_gram)
+    y_pred_svc = best_svc.predict(test_gram_np)
     
-    grid_search_time = time.time() - start_time
+    svc_time = time.time() - start_time
     
-    # Calculate metrics
-    accuracy = accuracy_score(y_test, y_pred)
-    precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
-    recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
-    f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0)
+    # Calculate SVC metrics
+    svc_accuracy = accuracy_score(y_test, y_pred_svc)
+    svc_precision = precision_score(y_test, y_pred_svc, average='weighted', zero_division=0)
+    svc_recall = recall_score(y_test, y_pred_svc, average='weighted', zero_division=0)
+    svc_f1 = f1_score(y_test, y_pred_svc, average='weighted', zero_division=0)
     
-    # Calculate condition number
+    # Run MLP
+    mlp_start_time = time.time()
+    mlp_results = run_mlp_with_gram_matrices(train_gram, test_gram, y_train, y_test)
+    mlp_time = time.time() - mlp_start_time
+    
+    # Calculate condition number for the training gram matrix
     try:
-        condition_number = np.linalg.cond(train_gram)
+        condition_number = np.linalg.cond(train_gram_np)
     except Exception as e:
         condition_number = np.inf
     
-    results = {
-        'kernel_name': kernel_name,
-        'accuracy': accuracy,
-        'precision': precision,
-        'recall': recall,
-        'f1_score': f1,
-        'gram_computation_time': gram_computation_time,
-        'grid_search_time': grid_search_time,
-        'total_time': gram_computation_time + grid_search_time if gram_computation_time >= 0 else grid_search_time,
-        'condition_number': condition_number,
-        'best_C': grid_search.best_params_['C'],
-        'cv_scores': grid_search.cv_results_,
-        'y_pred': y_pred,
-        'y_true': y_test
-    }
-    
-    return results
+    # Compare performances and return the better one
+    if mlp_results['accuracy'] > svc_accuracy:
+        # MLP performed better, return MLP results with updated timing
+        mlp_results['grid_search_time'] = svc_time + mlp_time
+        mlp_results['total_time'] = gram_computation_time + svc_time + mlp_time if gram_computation_time >= 0 else svc_time + mlp_time
+        mlp_results['svc_accuracy'] = svc_accuracy  # Store SVC results for comparison
+        mlp_results['mlp_vs_svc'] = 'MLP_WIN'
+        mlp_results['condition_number'] = condition_number  # Always include condition number
+        return mlp_results
+    else:
+        # SVC performed better, return SVC results
+        results = {
+            'kernel_name': kernel_name,
+            'accuracy': svc_accuracy,
+            'precision': svc_precision,
+            'recall': svc_recall,
+            'f1_score': svc_f1,
+            'gram_computation_time': gram_computation_time,
+            'grid_search_time': svc_time + mlp_time,
+            'total_time': gram_computation_time + svc_time + mlp_time if gram_computation_time >= 0 else svc_time + mlp_time,
+            'condition_number': condition_number,
+            'best_C': grid_search.best_params_['C'],
+            'cv_scores': grid_search.cv_results_,
+            'y_pred': y_pred_svc,
+            'y_true': y_test,
+            'mlp_accuracy': mlp_results['accuracy'],  # Store MLP results for comparison
+            'mlp_vs_svc': 'SVC_WIN'
+        }
+        
+        return results
 
 
 def run_ksig_pde_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tensor, 
@@ -1091,7 +1161,7 @@ def main():
     logger.info(f"Test set size: {X_test.shape[0]}")
     
     # 3. Normalize training data
-    X_train_normalized, X_test_normalized = normalize_training_data(X_train, X_test)
+    X_train_normalized, X_test_normalized = X_train, X_test #normalize_training_data(X_train, X_test)
     
     # 4. Print statistics for both training and test sets (after normalization)
     logger.info("Dataset statistics AFTER normalization:")
@@ -1110,7 +1180,7 @@ def main():
     kernel_functions = {
         "KSigPDE": (run_ksig_pde_process, (X_train_tensor, X_test_tensor, y_train, y_test, KERNEL_RBF)),
         "KSig RFSF-TRP": (run_ksig_rfsf_trp_process, (X_train_tensor, X_test_tensor, y_train, y_test)),
-        "PowerSigJax": (run_powersig_jax_process, (X_train_tensor, X_test_tensor, y_train, y_test, KERNEL_RBF, 8)),
+        "PowerSigJax": (run_powersig_jax_process, (X_train_tensor, X_test_tensor, y_train, y_test, KERNEL_RBF, 9)),
         "cuML_Baseline": (run_cuml_baseline_process, (X_train_tensor, X_test_tensor, y_train, y_test))
     }
     
@@ -1164,19 +1234,21 @@ def main():
     logger.info("="*80)
     
     # Print header
-    logger.info(f"{'Kernel':<20} {'Accuracy':<10} {'Precision':<10} {'Recall':<10} {'F1-Score':<10} {'Grid(s)':<10} {'Cond#':<12} {'Status':<10}")
+    logger.info(f"{'Kernel':<20} {'Accuracy':<10} {'Precision':<10} {'Recall':<10} {'F1-Score':<10} {'Grid(s)':<10} {'Cond#':<12} {'MLP/SVC':<10}")
     logger.info("-" * 85)
     
     for kernel_name, results in final_results.items():
         cond_str = f"{results['condition_number']:.2e}" if results['condition_number'] != np.inf else "inf"
         status = results.get('error', 'OK')
+        mlp_vs_svc = results.get('mlp_vs_svc', 'N/A')
+        
         if status != 'OK':
-            logger.info(f"{kernel_name:<20} {'OOM':<10} {'OOM':<10} {'OOM':<10} {'OOM':<10} {'OOM':<10} {'OOM':<12} {status:<10}")
+            logger.info(f"{kernel_name:<20} {'OOM':<10} {'OOM':<10} {'OOM':<10} {'OOM':<10} {'OOM':<10} {'OOM':<12} {'OOM':<10}")
         else:
             grid_time = results.get('grid_search_time', 0.0)
             logger.info(f"{kernel_name:<20} {results['accuracy']:<10.4f} {results['precision']:<10.4f} "
                        f"{results['recall']:<10.4f} {results['f1_score']:<10.4f} "
-                       f"{grid_time:<10.3f} {cond_str:<12} {'OK':<10}")
+                       f"{grid_time:<10.3f} {cond_str:<12} {mlp_vs_svc:<10}")
     
     logger.info("-" * 85)
     
@@ -1195,6 +1267,23 @@ def main():
                 logger.info(f"{kernel_name:<20}: Gram computation: {gram_time:.3f}s, Grid search: {grid_time:.3f}s, Total: {total_time:.3f}s")
             else:
                 logger.info(f"{kernel_name:<20}: Gram computation: CACHED, Grid search: {grid_time:.3f}s, Total: {total_time:.3f}s")
+    
+    logger.info("="*80)
+    
+    # 7.7. Print MLP vs SVC comparison
+    logger.info("\n" + "="*80)
+    logger.info("MLP vs SVC COMPARISON")
+    logger.info("="*80)
+    
+    for kernel_name, results in final_results.items():
+        if results.get('error', 'OK') == 'OK' and 'mlp_vs_svc' in results:
+            mlp_vs_svc = results['mlp_vs_svc']
+            if mlp_vs_svc == 'MLP_WIN':
+                svc_acc = results.get('svc_accuracy', 'N/A')
+                logger.info(f"{kernel_name:<20}: MLP won (MLP: {results['accuracy']:.4f}, SVC: {svc_acc:.4f})")
+            elif mlp_vs_svc == 'SVC_WIN':
+                mlp_acc = results.get('mlp_accuracy', 'N/A')
+                logger.info(f"{kernel_name:<20}: SVC won (SVC: {results['accuracy']:.4f}, MLP: {mlp_acc:.4f})")
     
     logger.info("="*80)
     
