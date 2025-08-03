@@ -244,6 +244,7 @@ def plot_eigenworms_samples(X: np.ndarray, y: np.ndarray = None, num_samples_per
             # Get the sample data
             sample_data = X[sample_idx]  # Shape: (timesteps, dimensions)
             
+            
             # Create subplots for each dimension
             fig, axes = plt.subplots(num_dimensions, 1, figsize=(12, 3*num_dimensions))
             if num_dimensions == 1:
@@ -508,7 +509,7 @@ def compute_gram_matrix_ksig_pde(X_train: np.ndarray, X_test: np.ndarray, kernel
         else:
             raise ValueError(f"Unsupported kernel type: {kernel_type}")
         
-        ksig_pde_kernel = SignaturePDEKernel(normalize=True, static_kernel=static_kernel)
+        ksig_pde_kernel = SignaturePDEKernel(normalize=False, static_kernel=static_kernel)
         
         # Convert to CuPy arrays for GPU acceleration
         X_train_cp = cp.array(X_train, dtype=cp.float64)
@@ -1359,14 +1360,14 @@ def main():
     
     # 1. Download and load training dataset
     try:
-        X_train, y_train = download_aeon_dataset("BinaryHeartbeat", split="train")
+        X_train, y_train = download_aeon_dataset("StandWalkJump", split="train")
     except Exception as e:
         logger.error(f"Failed to load training dataset: {e}")
         return
     
     # 1.5. Download and load test dataset
     try:
-        X_test, y_test = download_aeon_dataset("BinaryHeartbeat", split="test")
+        X_test, y_test = download_aeon_dataset("StandWalkJump", split="test")
     except Exception as e:
         logger.error(f"Failed to load test dataset: {e}")
         return
@@ -1435,10 +1436,13 @@ def main():
     
     final_results = {}
     for kernel_name, kernel_data in all_results.items():
-        if kernel_name == "cuML_Baseline":
-            # cuML_Baseline already returns final results, no grid search needed
+        # Check if this kernel uses gram matrices or works directly with data
+        uses_gram_matrices = 'train_gram' in kernel_data and kernel_data['train_gram'] is not None
+        
+        if kernel_name in ["cuML_Baseline", "KNN_DTW"] or not uses_gram_matrices:
+            # These kernels already return final results, no grid search needed
             final_results[kernel_name] = kernel_data
-        elif kernel_data.get('error', 'OK') == 'OK' and kernel_data['train_gram'] is not None:
+        elif kernel_data.get('error', 'OK') == 'OK' and uses_gram_matrices:
             logger.info(f"Running grid search for {kernel_name}...")
             grid_results = run_grid_search_with_gram_matrices(
                 kernel_data['train_gram'], 
@@ -1472,7 +1476,8 @@ def main():
     logger.info("-" * 85)
     
     for kernel_name, results in final_results.items():
-        cond_str = f"{results['condition_number']:.2e}" if results['condition_number'] != np.inf else "inf"
+        condition_number = results.get('condition_number', np.inf)
+        cond_str = f"{condition_number:.2e}" if condition_number != np.inf else "inf"
         status = results.get('error', 'OK')
         mlp_vs_svc = results.get('mlp_vs_svc', 'N/A')
         
