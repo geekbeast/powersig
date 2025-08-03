@@ -54,7 +54,7 @@ except ImportError:
     CUML_AVAILABLE = False
 
 # Constants for quick experiments
-MAX_TIMESTEPS = 250  # Limit number of timesteps for faster experiments max is 17984
+MAX_TIMESTEPS = 100  # Limit number of timesteps for faster experiments max is 17984
 # WINDOW_SIZE = 200
 # NUM_WINDOWS = 10
 # Cache directory for gram matrices
@@ -70,7 +70,8 @@ KernelType = Literal["linear", "rbf"]
 KERNEL_NAMES = {
     "KSigPDE": "KSigPDE",
     "KSig RFSF-TRP": "KSig RFSF-TRP", 
-    "PowerSigJax": "PowerSigJax"
+    "PowerSigJax": "PowerSigJax",
+    "KNN_DTW": "KNN_DTW"
 }
 
 # Set of kernels to run (modify this to control which kernels execute)
@@ -78,7 +79,8 @@ KERNELS_TO_RUN = {
     "KSigPDE",
     "KSig RFSF-TRP", 
     "PowerSigJax",
-    "cuML_Baseline"
+    "cuML_Baseline",
+    "KNN_DTW"
 }
 
 # C parameter grid for GridSearchCV
@@ -188,16 +190,26 @@ def download_aeon_dataset(dataset_name: str = "EigenWorms", split: str = "train"
         X = X.transpose(0, 2, 1)
         logger.info("Transposed dataset to (samples, timesteps, channels) format.")
 
-    # Limit timesteps for faster experiments
+    # Downsample timesteps for faster experiments
     if X.shape[1] > MAX_TIMESTEPS:
-        X = X[:, :MAX_TIMESTEPS, :]
-        logger.info(f"Limited timesteps to {MAX_TIMESTEPS} for faster experiments. New shape: {X.shape}")
+        # Take MAX_TIMESTEPS evenly spaced points from the full sequence
+        original_length = X.shape[1]
+        indices = np.linspace(0, original_length - 1, MAX_TIMESTEPS, dtype=int)
+        X = X[:, indices, :]
+        logger.info(f"Downsampled from {original_length} to {MAX_TIMESTEPS} timesteps for faster experiments. New shape: {X.shape}")
 
     # Ensure labels are integers
     if y.dtype.kind not in {'i', 'u'}:
         le = LabelEncoder()
         y = le.fit_transform(y)
         logger.info("Encoded string labels to integers.")
+    
+    # Print label encoder classes
+    logger.info(f"Label encoder classes: {le.classes_}")
+    
+    # Print label encoder mapping
+    for i, label in enumerate(le.classes_):
+        logger.info(f"Label mapping: {label} -> {i}")
 
     logger.info(f"X shape: {X.shape}")
     logger.info(f"y shape: {y.shape}")
@@ -207,46 +219,94 @@ def download_aeon_dataset(dataset_name: str = "EigenWorms", split: str = "train"
     return X, y
 
 
-def plot_eigenworms_samples(X: np.ndarray, num_samples: int = 3):
+def plot_eigenworms_samples(X: np.ndarray, y: np.ndarray = None, num_samples_per_class: int = 3):
     """
-    Plot the first few samples of the Eigenworms dataset.
+    Plot Eigenworms samples grouped by class.
     
     Args:
         X: Dataset with shape (samples, timesteps, dimensions)
-        num_samples: Number of samples to plot
+        y: Labels with shape (samples,) - optional
+        num_samples_per_class: Number of samples to plot per class
     """
-    logger.info(f"Plotting first {num_samples} samples of Eigenworms dataset...")
+    logger.info(f"Plotting Eigenworms samples grouped by class...")
     
     # Create time axis
     timesteps = X.shape[1]
     time_axis = np.linspace(0, timesteps - 1, timesteps)
+    num_dimensions = X.shape[2]
     
-    # Plot each sample
-    for sample_idx in range(min(num_samples, X.shape[0])):
-        plt.figure(figsize=(12, 8))
-        
-        # Get the sample data
-        sample_data = X[sample_idx]  # Shape: (timesteps, dimensions)
-        num_dimensions = sample_data.shape[1]
+    if y is None:
+        # Fallback to original behavior if no labels provided
+        logger.info("No labels provided, plotting first few samples...")
+        for sample_idx in range(min(3, X.shape[0])):
+            plt.figure(figsize=(12, 8))
+            
+            # Get the sample data
+            sample_data = X[sample_idx]  # Shape: (timesteps, dimensions)
+            
+            # Create subplots for each dimension
+            fig, axes = plt.subplots(num_dimensions, 1, figsize=(12, 3*num_dimensions))
+            if num_dimensions == 1:
+                axes = [axes]
+            
+            # Plot each dimension
+            for dim_idx in range(num_dimensions):
+                dimension_data = sample_data[:, dim_idx]
+                axes[dim_idx].plot(time_axis, dimension_data, linewidth=1.5)
+                axes[dim_idx].set_title(f'Sample {sample_idx + 1}, Dimension {dim_idx + 1}')
+                axes[dim_idx].set_xlabel('Time Step')
+                axes[dim_idx].set_ylabel('Value')
+                axes[dim_idx].grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            plt.savefig(f'eigenworms_sample_{sample_idx + 1}.png', dpi=300, bbox_inches='tight')
+            plt.close()
+            logger.info(f"Saved plot for sample {sample_idx + 1}")
+        return
+    
+    # Get unique classes
+    unique_classes = np.unique(y)
+    num_classes = len(unique_classes)
+    
+    logger.info(f"Found {num_classes} classes: {unique_classes}")
+    
+    # Create 5 plots, each corresponding to a specific class
+    for plot_idx in range(min(5, num_classes)):
+        class_label = unique_classes[plot_idx]
+        plt.figure(figsize=(15, 10))
         
         # Create subplots for each dimension
-        fig, axes = plt.subplots(num_dimensions, 1, figsize=(12, 3*num_dimensions))
+        fig, axes = plt.subplots(num_dimensions, 1, figsize=(15, 3*num_dimensions))
         if num_dimensions == 1:
             axes = [axes]
         
-        # Plot each dimension
+        # Get samples for this specific class
+        class_indices = np.where(y == class_label)[0]
+        
+        # Sample a few examples from this class
+        num_samples_to_plot = min(num_samples_per_class, len(class_indices))
+        selected_indices = np.random.choice(class_indices, num_samples_to_plot, replace=False)
+        
+        # Use different colors for different samples within the class
+        colors = plt.cm.viridis(np.linspace(0, 1, num_samples_to_plot))
+        
         for dim_idx in range(num_dimensions):
-            dimension_data = sample_data[:, dim_idx]
-            axes[dim_idx].plot(time_axis, dimension_data, linewidth=1.5)
-            axes[dim_idx].set_title(f'Sample {sample_idx + 1}, Dimension {dim_idx + 1}')
+            for sample_idx, color in zip(selected_indices, colors):
+                dimension_data = X[sample_idx, :, dim_idx]
+                axes[dim_idx].plot(time_axis, dimension_data, 
+                                 color=color, alpha=0.8, linewidth=1.5,
+                                 label=f'Sample {sample_idx + 1}')
+            
+            axes[dim_idx].set_title(f'Class {class_label} - Dimension {dim_idx + 1}')
             axes[dim_idx].set_xlabel('Time Step')
             axes[dim_idx].set_ylabel('Value')
             axes[dim_idx].grid(True, alpha=0.3)
+            axes[dim_idx].legend()
         
         plt.tight_layout()
-        plt.savefig(f'eigenworms_sample_{sample_idx + 1}.png', dpi=300, bbox_inches='tight')
+        plt.savefig(f'eigenworms_plot_class_{class_label}.png', dpi=300, bbox_inches='tight')
         plt.close()
-        logger.info(f"Saved plot for sample {sample_idx + 1}")
+        logger.info(f"Saved plot for class {class_label}")
 
 
 def normalize_training_data(X_train: np.ndarray, X_test: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -266,53 +326,29 @@ def normalize_training_data(X_train: np.ndarray, X_test: np.ndarray) -> Tuple[np
     num_train_samples, num_timesteps, num_dimensions = X_train.shape
     num_test_samples = X_test.shape[0]
     
-    # Calculate mean and std for each dimension across all training samples and timesteps
-    train_means = np.zeros(num_dimensions)
-    train_stds = np.zeros(num_dimensions)
+    # Calculate mean and std for each dimension across all training samples and timesteps using broadcasting
+    # Reshape to (num_dimensions,) for broadcasting
+    train_means = np.mean(X_train, axis=(0, 1))  # Shape: (num_dimensions,)
+    train_stds = 2 * np.std(X_train, axis=(0, 1))  # Shape: (num_dimensions,)
     
-    for dim_idx in range(num_dimensions):
-        # Extract all values for this dimension across all training samples and timesteps
-        train_dimension_data = X_train[:, :, dim_idx].flatten()
-        train_means[dim_idx] = np.mean(train_dimension_data)
-        train_stds[dim_idx] = np.std(train_dimension_data)
-        
-        # Avoid division by zero
-        if train_stds[dim_idx] == 0:
-            train_stds[dim_idx] = 1.0
-            logger.warning(f"Training dimension {dim_idx + 1} has zero standard deviation, setting to 1.0")
+    # Avoid division by zero
+    train_stds = np.where(train_stds == 0, 1.0, train_stds)
+    zero_std_dims = np.where(train_stds == 1.0)[0]
+    for dim_idx in zero_std_dims:
+        logger.warning(f"Training dimension {dim_idx + 1} has zero standard deviation, setting to 1.0")
     
-    # Calculate mean and std for each dimension across all test samples and timesteps
-    test_means = np.zeros(num_dimensions)
-    test_stds = np.zeros(num_dimensions)
-    
-    for dim_idx in range(num_dimensions):
-        # Extract all values for this dimension across all test samples and timesteps
-        test_dimension_data = X_test[:, :, dim_idx].flatten()
-        test_means[dim_idx] = np.mean(test_dimension_data)
-        test_stds[dim_idx] = np.std(test_dimension_data)
-        
-        # Avoid division by zero
-        if test_stds[dim_idx] == 0:
-            test_stds[dim_idx] = 1.0
-            logger.warning(f"Test dimension {dim_idx + 1} has zero standard deviation, setting to 1.0")
-    
-    logger.info("Training set normalization statistics:")
+    logger.info("Training set normalization statistics (used for both train and test):")
     for dim_idx in range(num_dimensions):
         logger.info(f"  Dimension {dim_idx + 1}: mean={train_means[dim_idx]:.6f}, std={train_stds[dim_idx]:.6f}")
     
-    logger.info("Test set normalization statistics:")
-    for dim_idx in range(num_dimensions):
-        logger.info(f"  Dimension {dim_idx + 1}: mean={test_means[dim_idx]:.6f}, std={test_stds[dim_idx]:.6f}")
+    # Normalize training data using training statistics with broadcasting
+    # Reshape means and stds to (1, 1, num_dimensions) for broadcasting with (num_samples, num_timesteps, num_dimensions)
+    train_means_broadcast = train_means.reshape(1, 1, -1)  # Shape: (1, 1, num_dimensions)
+    train_stds_broadcast = train_stds.reshape(1, 1, -1)    # Shape: (1, 1, num_dimensions)
+    normalized_X_train = (X_train - train_means_broadcast) / train_stds_broadcast
     
-    # Normalize training data using training statistics
-    normalized_X_train = np.zeros_like(X_train)
-    for dim_idx in range(num_dimensions):
-        normalized_X_train[:, :, dim_idx] = (X_train[:, :, dim_idx] - train_means[dim_idx]) / train_stds[dim_idx]
-    
-    # Normalize test data using test statistics
-    normalized_X_test = np.zeros_like(X_test)
-    for dim_idx in range(num_dimensions):
-        normalized_X_test[:, :, dim_idx] = (X_test[:, :, dim_idx] - test_means[dim_idx]) / test_stds[dim_idx]
+    # Normalize test data using training statistics with broadcasting (standard practice to avoid data leakage)
+    normalized_X_test = (X_test - train_means_broadcast) / train_stds_broadcast
     
     logger.info("Normalization completed!")
     logger.info(f"Normalized training set shape: {normalized_X_train.shape}")
@@ -472,7 +508,7 @@ def compute_gram_matrix_ksig_pde(X_train: np.ndarray, X_test: np.ndarray, kernel
         else:
             raise ValueError(f"Unsupported kernel type: {kernel_type}")
         
-        ksig_pde_kernel = SignaturePDEKernel(normalize=False, static_kernel=static_kernel)
+        ksig_pde_kernel = SignaturePDEKernel(normalize=True, static_kernel=static_kernel)
         
         # Convert to CuPy arrays for GPU acceleration
         X_train_cp = cp.array(X_train, dtype=cp.float64)
@@ -914,7 +950,7 @@ def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.nda
                                      kernel_name: str, gram_computation_time: float = -1.0) -> Dict[str, Any]:
     """
     Shared function to run grid search with precomputed gram matrices.
-    Always runs both SVC and MLP, returns the better performing one.
+    Runs MLP first, then SVC, returns the better performing one.
     
     Args:
         train_gram: Training gram matrix
@@ -928,6 +964,11 @@ def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.nda
         Dictionary containing results
     """
     start_time = time.time()
+    
+    # Run MLP first
+    mlp_start_time = time.time()
+    mlp_results = run_mlp_with_gram_matrices(train_gram, test_gram, y_train, y_test)
+    mlp_time = time.time() - mlp_start_time
     
     # Run SVC grid search
     param_grid = {'C': C_GRID}
@@ -955,18 +996,13 @@ def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.nda
     best_svc = grid_search.best_estimator_
     y_pred_svc = best_svc.predict(test_gram_np)
     
-    svc_time = time.time() - start_time
+    svc_time = time.time() - mlp_start_time
     
     # Calculate SVC metrics
     svc_accuracy = accuracy_score(y_test, y_pred_svc)
     svc_precision = precision_score(y_test, y_pred_svc, average='weighted', zero_division=0)
     svc_recall = recall_score(y_test, y_pred_svc, average='weighted', zero_division=0)
     svc_f1 = f1_score(y_test, y_pred_svc, average='weighted', zero_division=0)
-    
-    # Run MLP
-    mlp_start_time = time.time()
-    mlp_results = run_mlp_with_gram_matrices(train_gram, test_gram, y_train, y_test)
-    mlp_time = time.time() - mlp_start_time
     
     # Calculate condition number for the training gram matrix
     try:
@@ -977,8 +1013,8 @@ def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.nda
     # Compare performances and return the better one
     if mlp_results['accuracy'] > svc_accuracy:
         # MLP performed better, return MLP results with updated timing
-        mlp_results['grid_search_time'] = svc_time + mlp_time
-        mlp_results['total_time'] = gram_computation_time + svc_time + mlp_time if gram_computation_time >= 0 else svc_time + mlp_time
+        mlp_results['grid_search_time'] = mlp_time + svc_time
+        mlp_results['total_time'] = gram_computation_time + mlp_time + svc_time if gram_computation_time >= 0 else mlp_time + svc_time
         mlp_results['svc_accuracy'] = svc_accuracy  # Store SVC results for comparison
         mlp_results['mlp_vs_svc'] = 'MLP_WIN'
         mlp_results['condition_number'] = condition_number  # Always include condition number
@@ -992,8 +1028,8 @@ def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.nda
             'recall': svc_recall,
             'f1_score': svc_f1,
             'gram_computation_time': gram_computation_time,
-            'grid_search_time': svc_time + mlp_time,
-            'total_time': gram_computation_time + svc_time + mlp_time if gram_computation_time >= 0 else svc_time + mlp_time,
+            'grid_search_time': mlp_time + svc_time,
+            'total_time': gram_computation_time + mlp_time + svc_time if gram_computation_time >= 0 else mlp_time + svc_time,
             'condition_number': condition_number,
             'best_C': grid_search.best_params_['C'],
             'cv_scores': grid_search.cv_results_,
@@ -1221,6 +1257,97 @@ def run_cuml_baseline_process(X_train_tensor: torch.Tensor, X_test_tensor: torch
     return best_results
 
 
+def run_knn_dtw_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tensor,
+                        y_train: np.ndarray, y_test: np.ndarray) -> Dict[str, Any]:
+    """
+    Run cuML KNeighborsClassifier in separate process.
+    """
+    try:
+        # Check if cuML is available
+        if not CUML_AVAILABLE:
+            return {
+                'kernel_name': "KNN_DTW",
+                'accuracy': 0.0,
+                'precision': 0.0,
+                'recall': 0.0,
+                'f1_score': 0.0,
+                'condition_number': np.inf,
+                'gram_computation_time': -1.0,
+                'grid_search_time': 0.0,
+                'total_time': 0.0,
+                'best_kernel': 'none',
+                'error': 'cuML not available'
+            }
+        
+        # Import cuML KNeighborsClassifier
+        from cuml.neighbors import KNeighborsClassifier
+        
+        # Convert torch tensors to numpy arrays
+        X_train_np = X_train_tensor.numpy()  # Shape: (samples, timesteps, features)
+        X_test_np = X_test_tensor.numpy()    # Shape: (samples, timesteps, features)
+        
+        # Reshape to 2D: (samples, timesteps * features) for cuML compatibility
+        X_train_2d = X_train_np.reshape(X_train_np.shape[0], -1)
+        X_test_2d = X_test_np.reshape(X_test_np.shape[0], -1)
+        
+        # Convert to cuPy arrays
+        X_train_cp = cp.array(X_train_2d, dtype=cp.float64)
+        X_test_cp = cp.array(X_test_2d, dtype=cp.float64)
+        y_train_cp = cp.array(y_train, dtype=cp.int32)
+        
+        # Create and fit KNN classifier
+        start_time = time.time()
+        knn = KNeighborsClassifier(n_neighbors=5, algorithm='brute')
+        knn.fit(X_train_cp, y_train_cp)
+        
+        # Predict
+        y_pred_cp = knn.predict(X_test_cp)
+        y_pred = cp.asnumpy(y_pred_cp)
+        end_time = time.time()
+        
+        # Calculate metrics
+        accuracy = accuracy_score(y_test, y_pred)
+        precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
+        recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
+        f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0)
+        
+        total_time = end_time - start_time
+        
+        logger.info(f"KNN_DTW (cuML) completed with accuracy: {accuracy:.4f} in {total_time:.3f}s")
+        
+        return {
+            'kernel_name': "KNN_DTW",
+            'accuracy': accuracy,
+            'precision': precision,
+            'recall': recall,
+            'f1_score': f1,
+            'condition_number': np.inf,  # Not applicable for KNN
+            'gram_computation_time': -1.0,  # Not applicable for KNN
+            'grid_search_time': 0.0,  # Not applicable for KNN
+            'total_time': total_time,
+            'best_kernel': 'euclidean',  # cuML uses Euclidean distance by default
+            'y_pred': y_pred,
+            'y_true': y_test,
+            'error': 'OK'
+        }
+        
+    except Exception as e:
+        logger.error(f"KNN_DTW (cuML) failed: {e}")
+        return {
+            'kernel_name': "KNN_DTW",
+            'accuracy': 0.0,
+            'precision': 0.0,
+            'recall': 0.0,
+            'f1_score': 0.0,
+            'condition_number': np.inf,
+            'gram_computation_time': -1.0,
+            'grid_search_time': 0.0,
+            'total_time': 0.0,
+            'best_kernel': 'none',
+            'error': str(e)
+        }
+
+
 def main():
     """
     Main function to run Eigenworms classification with different kernels using multiprocessing.
@@ -1232,20 +1359,20 @@ def main():
     
     # 1. Download and load training dataset
     try:
-        X_train, y_train = download_aeon_dataset("EigenWorms", split="train")
+        X_train, y_train = download_aeon_dataset("BinaryHeartbeat", split="train")
     except Exception as e:
         logger.error(f"Failed to load training dataset: {e}")
         return
     
     # 1.5. Download and load test dataset
     try:
-        X_test, y_test = download_aeon_dataset("EigenWorms", split="test")
+        X_test, y_test = download_aeon_dataset("BinaryHeartbeat", split="test")
     except Exception as e:
         logger.error(f"Failed to load test dataset: {e}")
         return
     
     # 1.6. Plot samples and print statistics
-    plot_eigenworms_samples(X_train, num_samples=3)
+    plot_eigenworms_samples(X_train, y_train, num_samples_per_class=3)
     
     # 2. Print statistics for both training and test sets (before normalization)
     logger.info("Dataset statistics BEFORE normalization:")
@@ -1254,10 +1381,21 @@ def main():
     logger.info(f"Training set size: {X_train.shape[0]}")
     logger.info(f"Test set size: {X_test.shape[0]}")
     
-    # 3. Normalize training data
-    X_train_normalized, X_test_normalized = normalize_training_data(X_train, X_test)
-    X_train_normalized, X_test_normalized = time_augment(X_train_normalized), time_augment(X_test_normalized)
+        # Subtract the first timestep value from all timesteps for each sample and dimension
+    logger.info("Subtracting first timestep value from all timesteps...")
     
+    # # Use broadcasting to subtract first timestep values
+    # X_train = X_train - X_train[:, 0:1, :]  # Shape: (samples, 1, dimensions) broadcasts to (samples, timesteps, dimensions)
+    # X_test = X_test - X_test[:, 0:1, :]
+    
+    # logger.info("First timestep subtraction completed!")
+
+    # # 3. Normalize training data
+    # X_train_normalized, X_test_normalized = normalize_training_data(X_train, X_test)
+    # X_train_normalized, X_test_normalized = time_augment(X_train_normalized), time_augment(X_test_normalized)
+    
+    X_train_normalized, X_test_normalized = X_train, X_test
+
     # 4. Print statistics for both training and test sets (after normalization)
     logger.info("Dataset statistics AFTER normalization:")
     print_dataset_statistics(X_train_normalized, X_test_normalized)
@@ -1273,10 +1411,11 @@ def main():
     
     # Define kernel functions mapping
     kernel_functions = {
-        "KSigPDE": (run_ksig_pde_process, (X_train_tensor, X_test_tensor, y_train, y_test, KERNEL_RBF)),
+        "KNN_DTW": (run_knn_dtw_process, (X_train_tensor, X_test_tensor, y_train, y_test)),
+        "cuML_Baseline": (run_cuml_baseline_process, (X_train_tensor, X_test_tensor, y_train, y_test)),
+        "KSigPDE": (run_ksig_pde_process, (X_train_tensor, X_test_tensor, y_train, y_test, KERNEL_LINEAR)),
         "KSig RFSF-TRP": (run_ksig_rfsf_trp_process, (X_train_tensor, X_test_tensor, y_train, y_test)),
-        "PowerSigJax": (run_powersig_jax_process, (X_train_tensor, X_test_tensor, y_train, y_test, KERNEL_RBF, 9)),
-        "cuML_Baseline": (run_cuml_baseline_process, (X_train_tensor, X_test_tensor, y_train, y_test))
+        "PowerSigJax": (run_powersig_jax_process, (X_train_tensor, X_test_tensor, y_train, y_test, KERNEL_LINEAR, 9)),
     }
     
     ctx = mp.get_context("spawn")
