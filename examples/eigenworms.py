@@ -54,7 +54,7 @@ except ImportError:
     CUML_AVAILABLE = False
 
 # Constants for quick experiments
-MAX_TIMESTEPS = 100  # Limit number of timesteps for faster experiments max is 17984
+MAX_TIMESTEPS = 32000  # Limit number of timesteps for faster experiments max is 17984
 # WINDOW_SIZE = 200
 # NUM_WINDOWS = 10
 # Cache directory for gram matrices
@@ -1360,14 +1360,14 @@ def main():
     
     # 1. Download and load training dataset
     try:
-        X_train, y_train = download_aeon_dataset("StandWalkJump", split="train")
+        X_train, y_train = download_aeon_dataset("DucksAndGeese", split="train")
     except Exception as e:
         logger.error(f"Failed to load training dataset: {e}")
         return
     
     # 1.5. Download and load test dataset
     try:
-        X_test, y_test = download_aeon_dataset("StandWalkJump", split="test")
+        X_test, y_test = download_aeon_dataset("DucksAndGeese", split="test")
     except Exception as e:
         logger.error(f"Failed to load test dataset: {e}")
         return
@@ -1414,9 +1414,9 @@ def main():
     kernel_functions = {
         "KNN_DTW": (run_knn_dtw_process, (X_train_tensor, X_test_tensor, y_train, y_test)),
         "cuML_Baseline": (run_cuml_baseline_process, (X_train_tensor, X_test_tensor, y_train, y_test)),
-        "KSigPDE": (run_ksig_pde_process, (X_train_tensor, X_test_tensor, y_train, y_test, KERNEL_LINEAR)),
+        "KSigPDE": (run_ksig_pde_process, (X_train_tensor, X_test_tensor, y_train, y_test, KERNEL_RBF)),
         "KSig RFSF-TRP": (run_ksig_rfsf_trp_process, (X_train_tensor, X_test_tensor, y_train, y_test)),
-        "PowerSigJax": (run_powersig_jax_process, (X_train_tensor, X_test_tensor, y_train, y_test, KERNEL_LINEAR, 9)),
+        "PowerSigJax": (run_powersig_jax_process, (X_train_tensor, X_test_tensor, y_train, y_test, KERNEL_RBF, 9)),
     }
     
     ctx = mp.get_context("spawn")
