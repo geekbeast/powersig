@@ -1,3 +1,4 @@
+from typing import Tuple
 import torch
 
 
@@ -8,7 +9,7 @@ def build_dataset(
     dimensions: int,
     dtype=torch.float64,
     device=None,
-):
+) -> Tuple[torch.Tensor, torch.Tensor]:
     data = torch.zeros(
         num_samples, num_timestamps, dimensions, dtype=torch.float64, device=device
     )
@@ -27,14 +28,19 @@ def build_dataset(
 
     for i in range(num_samples):
         weights[i] =  (
-         base_weights + (torch.rand(history_length, dtype=dtype, device=device) -1/2)
+         base_weights + (torch.rand(history_length, dtype=dtype, device=device)-.5)/4
         )
 
     for t in range(history_length, num_timestamps):
         for i in range(num_samples):
-            data[i, t, :] += base_weights @ data[i, t - history_length : t, :]
-            data[:, t, :] += torch.randn((num_samples, dimensions), dtype=dtype, device=device)/4
+            data[i, t, :] += weights[i] @ data[i, t - history_length : t, :]
+            data[:, t, :] += (torch.rand((num_samples, dimensions), dtype=dtype, device=device)-.5)/16
 
-    y = base_weights @ data[:, -history_length:, :]
+    y= torch.zeros((num_samples, dimensions), dtype=dtype, device=device)
+
+    for i in range(num_samples):
+        y[i] = weights[i] @ data[i, t - history_length : t, :]
+    y += (torch.rand((num_samples, dimensions), dtype=dtype, device=device)-.5)/16
+    # y = base_weights @ data[:, -history_length:, :]
 
     return data, y

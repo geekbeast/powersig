@@ -5,9 +5,9 @@ This script implements Eigenworms regression using Support Vector Regression (SV
 with custom signature kernels: KSigPDE, KSig RFSF-TRP, and PowerSigJax.
 """
 import os
-
-from examples.large_window import build_dataset
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+from examples.large_window import build_dataset
+from powersig.util.normalization import normalize_kernel_matrix
 import jax
 import numpy as np
 from numpy.linalg import cond
@@ -48,12 +48,14 @@ logger = logging.getLogger(__name__)
 try:
     from cuml.svm import SVR as cuMLSVR
     CUML_AVAILABLE = True
-    logger.info("cuML SVR available - will use for baseline kernel")
+
 except ImportError:
     CUML_AVAILABLE = False
 
 # Constants for quick experiments
-MAX_TIMESTEPS = 100  # Limit number of timesteps for faster experiments max is 17984
+MAX_TIMESTEPS = 80  # Limit number of timesteps for faster experiments max is 17984
+# Subsample method: "equally_spaced" or "sliding_window"
+SUBSAMPLE_METHOD = "equally_spaced"  # Change to "sliding_window" to use sliding window approach
 # Cache directory for gram matrices
 CACHE_DIR = "gram_matrix_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -167,7 +169,7 @@ def validate_gram_matrices(train_gram: np.ndarray, test_gram: np.ndarray,
 
 
 def build_regression_dataset(history_length: int = 22, num_samples: int = 50, 
-                           num_timestamps: int = MAX_TIMESTEPS, dimensions: int = 2) -> Tuple[np.ndarray, np.ndarray]:
+                           num_timestamps: int = MAX_TIMESTEPS, dimensions: int = 2) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Build a regression dataset using large_window.build_dataset.
     
@@ -319,7 +321,7 @@ def time_augment(X):
         raise ValueError(f"Expected 2D or 3D array, got shape {X.shape}")
 
 
-def subsample_timesteps(X: np.ndarray, max_timesteps: int) -> np.ndarray:
+def subsample_timesteps(X: torch.Tensor, max_timesteps: int) -> torch.Tensor:
     """
     Subsample timesteps from time series data by taking equally spaced points.
     
@@ -336,13 +338,71 @@ def subsample_timesteps(X: np.ndarray, max_timesteps: int) -> np.ndarray:
     
     # Take max_timesteps equally spaced points from the full sequence
     original_length = X.shape[1]
-    indices = np.linspace(0, original_length - 1, max_timesteps, dtype=int)
+    indices = torch.linspace(0, original_length - 1, max_timesteps, dtype=torch.long, device=X.device)
     X_subsampled = X[:, indices, :]
     
     logger.info(f"Subsampled from {original_length} to {max_timesteps} timesteps")
     logger.info(f"Original shape: {X.shape}, New shape: {X_subsampled.shape}")
     
     return X_subsampled
+
+
+def sliding_window_subsample(X: torch.Tensor, y: torch.Tensor, window_length: int, stride: int = 1) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Create sliding window subsequences from time series data and predict next timestep.
+    
+    Args:
+        X: Time series data with shape (samples, timesteps, dimensions)
+        y: Original targets with shape (samples, dimensions)
+        window_length: Length of each sliding window
+        stride: Step size between windows (default=1 for overlapping windows)
+        
+    Returns:
+        Tuple of (X_windows, y_windows) where:
+        - X_windows: Windowed time series data (original + new windows)
+        - y_windows: Targets (original y for last window, next timestep for others)
+    """
+    if X.shape[1] <= window_length:
+        # No windowing needed, return original data
+        return X, y
+    
+    num_samples, num_timesteps, num_dimensions = X.shape
+    num_windows_per_sample = (num_timesteps - window_length) // stride
+    
+    # Calculate total samples: original samples + new window samples
+    total_samples = num_samples + (num_samples * num_windows_per_sample)
+    
+    # Initialize tensors for windowed data (including original samples)
+    X_windows = torch.zeros((total_samples, window_length, num_dimensions), dtype=X.dtype, device=X.device)
+    y_windows = torch.zeros((total_samples, num_dimensions), dtype=y.dtype, device=y.device)
+    
+    # First, add the original samples (using the last window of each original sample)
+    for sample_idx in range(num_samples):
+        # Use the last window for original samples
+        last_window_start = num_timesteps - window_length
+        X_windows[sample_idx] = X[sample_idx, last_window_start:last_window_start + window_length, :]
+        y_windows[sample_idx] = y[sample_idx]  # Use original target
+    
+    # Then, add all the sliding windows as new samples
+    window_idx = num_samples  # Start after original samples
+    for sample_idx in range(num_samples):
+        for window_start in range(0, num_timesteps - window_length, stride):
+            # Extract window
+            window_data = X[sample_idx, window_start:window_start + window_length, :]
+            X_windows[window_idx] = window_data
+            
+            # Target is the next timestep after the window
+            next_timestep = window_start + window_length
+            y_windows[window_idx] = X[sample_idx, next_timestep, :]
+            
+            window_idx += 1
+    
+    logger.info(f"Created {num_windows_per_sample} windows per sample with length {window_length}")
+    logger.info(f"Original shape: {X.shape}, Windowed shape: {X_windows.shape}")
+    logger.info(f"Original y shape: {y.shape}, Windowed y shape: {y_windows.shape}")
+    logger.info(f"Total samples: {num_samples} original + {num_samples * num_windows_per_sample} new = {total_samples}")
+    
+    return X_windows, y_windows
 
 
 def print_dataset_statistics(X_train: np.ndarray, X_test: np.ndarray):
@@ -682,7 +742,7 @@ def compute_gram_matrix_ksig_rfsf_trp(X_train: np.ndarray, X_test: np.ndarray,
         raise
 
 
-def compute_gram_matrix_powersig_jax(X_train: np.ndarray, X_test: np.ndarray, kernel_type: KernelType = KERNEL_LINEAR, order: int = 8) -> Tuple[np.ndarray, np.ndarray]:
+def compute_gram_matrix_powersig_jax(X_train: np.ndarray, X_test: np.ndarray, kernel_type: KernelType = KERNEL_LINEAR, order: int = 8, normalize: bool = False) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute gram matrices using PowerSigJax with local caching.
     
@@ -762,16 +822,33 @@ def compute_gram_matrix_powersig_jax(X_train: np.ndarray, X_test: np.ndarray, ke
     # Compute gram matrices
     train_gram = powersig.compute_gram_matrix(X_train_jax, X_train_jax)
     test_gram = powersig.compute_gram_matrix(X_test_jax, X_train_jax)
-    
+
     # Convert back to numpy
-    train_gram = np.array(train_gram)
-    test_gram = np.array(test_gram)
+    train_gram = np.array(train_gram, dtype=np.float64)
+    test_gram = np.array(test_gram, dtype=np.float64)
     
     # Add small epsilon * I to improve numerical stability
     epsilon = 1e-6  # Increased from 1e-8 for better stability
     n_train = train_gram.shape[0]
     train_gram += epsilon * np.eye(n_train)
+    # Check for NaN values after computation but before normalization
+    if np.any(np.isnan(train_gram)):
+        raise ValueError("train_gram contains NaN values after computation!")
+    if np.any(np.isnan(test_gram)):
+        raise ValueError("test_gram contains NaN values after computation!")
     
+    if normalize:
+        train_gram = normalize_kernel_matrix(train_gram)
+        # For test gram, we need to normalize using the training gram diagonal
+        # test_gram has shape (n_test, n_train), so we can't use normalize_kernel_matrix directly
+        # Instead, we'll normalize it manually using the training gram diagonal
+        train_diag = np.diag(train_gram)
+        test_gram = test_gram / np.sqrt(np.outer(np.ones(test_gram.shape[0]), train_diag))
+
+        if np.any(np.isnan(train_gram)):
+            raise ValueError("train_gram contains NaN values after normalization!")
+        if np.any(np.isnan(test_gram)):
+            raise ValueError("test_gram contains NaN values after normalization!")
     # Cache the results (ensure numpy arrays)
     try:
         with open(cache_filename, 'wb') as f:
@@ -849,6 +926,18 @@ def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.nda
     else:
         test_gram_np = test_gram
     
+    # Check for NaN values
+    if np.any(np.isnan(train_gram_np)):
+        print(f"ERROR: train_gram_np contains NaN values in grid search!")
+        print(f"train_gram_np shape: {train_gram_np.shape}")
+        print(f"train_gram_np min: {np.nanmin(train_gram_np)}, max: {np.nanmax(train_gram_np)}")
+    if np.any(np.isnan(test_gram_np)):
+        print(f"ERROR: test_gram_np contains NaN values in grid search!")
+    if np.any(np.isnan(y_train)):
+        print(f"ERROR: y_train contains NaN values in grid search!")
+    if np.any(np.isnan(y_test)):
+        print(f"ERROR: y_test contains NaN values in grid search!")
+    
     # Handle multi-dimensional targets
     if y_train.ndim == 2:
         num_dimensions = y_train.shape[1]
@@ -890,7 +979,7 @@ def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.nda
     
     # Calculate SVR metrics
     svr_mse = mean_squared_error(y_test, y_pred_svr)
-    svr_mae = mean_absolute_error(y_test, y_pred_svr)
+    svr_mape = np.mean(np.abs((y_test - y_pred_svr) / (y_test + 1e-8))) * 100  # MAPE in percentage
     svr_r2 = r2_score(y_test, y_pred_svr)
     
     # Calculate condition number for the training gram matrix
@@ -903,7 +992,7 @@ def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.nda
     results = {
         'kernel_name': kernel_name,
         'mse': svr_mse,
-        'mae': svr_mae,
+        'mape': svr_mape,
         'r2_score': svr_r2,
         'gram_computation_time': gram_computation_time,
         'grid_search_time': svr_time,
@@ -946,11 +1035,11 @@ def run_ksig_pde_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tens
     # Return gram matrices and labels for main process grid search
     return {
         'kernel_name': f"KSigPDE_{kernel_type}",
-        'train_gram': train_gram,
-        'test_gram': test_gram,
+        'train_gram': np.array(train_gram, dtype=np.float64),
+        'test_gram': np.array(test_gram, dtype=np.float64),
         'gram_computation_time': gram_computation_time,
-        'y_train': y_train,
-        'y_test': y_test,
+        'y_train': np.array(y_train, dtype=np.float64),
+        'y_test': np.array(y_test, dtype=np.float64),
         'error': 'OK'
     }
 
@@ -982,10 +1071,10 @@ def run_ksig_rfsf_trp_process(X_train_tensor: torch.Tensor, X_test_tensor: torch
     # Return gram matrices and labels for main process grid search
     return {
         'kernel_name': "KSig RFSF-TRP",
-        'train_gram': train_gram,
-        'test_gram': test_gram,
-        'y_train': y_train,
-        'y_test': y_test,
+        'train_gram': np.array(train_gram, dtype=np.float64),
+        'test_gram': np.array(test_gram, dtype=np.float64),
+        'y_train': np.array(y_train, dtype=np.float64),
+        'y_test': np.array(y_test, dtype=np.float64),
         'error': 'OK'
     }
 
@@ -1002,13 +1091,13 @@ def run_powersig_jax_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.
     # Compute gram matrices
     train_gram, test_gram = compute_gram_matrix_powersig_jax(X_train, X_test, kernel_type, order)
     
-    # Return gram matrices and labels for main process grid search
+    
     return {
         'kernel_name': f"PowerSigJax_{kernel_type}",
-        'train_gram': train_gram,
-        'test_gram': test_gram,
-        'y_train': y_train,
-        'y_test': y_test,
+        'train_gram': np.array(train_gram, dtype=np.float64),
+        'test_gram': np.array(test_gram, dtype=np.float64),
+        'y_train': np.array(y_train, dtype=np.float64),
+        'y_test': np.array(y_test, dtype=np.float64),
         'error': 'OK'
     }
 
@@ -1036,7 +1125,7 @@ def run_cuml_baseline_process(X_train_tensor: torch.Tensor, X_test_tensor: torch
         return {
             'kernel_name': "cuML_Baseline",
             'mse': np.inf,
-            'mae': np.inf,
+            'mape': np.inf,
             'r2_score': -np.inf,
             'condition_number': np.inf,
             'gram_computation_time': -1.0,
@@ -1091,13 +1180,13 @@ def run_cuml_baseline_process(X_train_tensor: torch.Tensor, X_test_tensor: torch
                     kernel_best_C = C
                     
                     # Calculate all metrics for best result for this kernel
-                    mae = mean_absolute_error(y_test, y_pred)
+                    mape = np.mean(np.abs((y_test - y_pred) / (y_test + 1e-8))) * 100  # MAPE in percentage
                     r2 = r2_score(y_test, y_pred)
                     
                     kernel_best_results = {
                         'kernel_name': f"cuML_Baseline_{kernel}",
                         'mse': mse,
-                        'mae': mae,
+                        'mape': mape,
                         'r2_score': r2,
                         'condition_number': np.inf,  # Not applicable for direct data
                         'gram_computation_time': -1.0,  # Not applicable for direct data
@@ -1126,7 +1215,7 @@ def run_cuml_baseline_process(X_train_tensor: torch.Tensor, X_test_tensor: torch
         return {
             'kernel_name': "cuML_Baseline",
             'mse': np.inf,
-            'mae': np.inf,
+            'mape': np.inf,
             'r2_score': -np.inf,
             'condition_number': np.inf,
             'gram_computation_time': -1.0,
@@ -1190,7 +1279,7 @@ def run_knn_dtw_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tenso
         
         # Calculate metrics
         mse = mean_squared_error(y_test, y_pred)
-        mae = mean_absolute_error(y_test, y_pred)
+        mape = np.mean(np.abs((y_test - y_pred) / (y_test + 1e-8))) * 100  # MAPE in percentage
         r2 = r2_score(y_test, y_pred)
         
         total_time = end_time - start_time
@@ -1200,7 +1289,7 @@ def run_knn_dtw_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tenso
         return {
             'kernel_name': "KNN_DTW",
             'mse': mse,
-            'mae': mae,
+            'mape': mape,
             'r2_score': r2,
             'condition_number': np.inf,  # Not applicable for KNN
             'gram_computation_time': -1.0,  # Not applicable for KNN
@@ -1217,7 +1306,7 @@ def run_knn_dtw_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tenso
         return {
             'kernel_name': "KNN_DTW",
             'mse': np.inf,
-            'mae': np.inf,
+            'mape': np.inf,
             'r2_score': -np.inf,
             'condition_number': np.inf,
             'gram_computation_time': -1.0,
@@ -1232,21 +1321,39 @@ def main():
     """
     Main function to run Eigenworms regression with different kernels using multiprocessing.
     """
+    torch.manual_seed(42)
     logger.info("Starting Eigenworms regression experiment...")
     logger.info(f"Kernels to run: {KERNELS_TO_RUN}")
     logger.info(f"Available kernels: {set(KERNEL_NAMES.keys())}")
     logger.info(f"Skipped kernels: {set(KERNEL_NAMES.keys()) - KERNELS_TO_RUN}")
     
     # Build regression dataset using large_window.build_dataset
-    X_train, y_train = build_regression_dataset(history_length=22, num_samples=50, num_timestamps=1000, dimensions=2)
-    X_test, y_test = build_regression_dataset(history_length=10, num_samples=50, num_timestamps=1000, dimensions=2)
+    X_train, y_train = build_regression_dataset(history_length=20, num_samples=25, num_timestamps=100, dimensions=2)
+    X_test, y_test = build_regression_dataset(history_length=20, num_samples=25, num_timestamps=100, dimensions=2)
     
     # Plot samples and print statistics
     plot_regression_samples(X_train, y_train, num_samples=5)
 
     # Apply subsampling if MAX_TIMESTEPS is less than the actual number of timesteps
-    X_train = subsample_timesteps(X_train, MAX_TIMESTEPS)
-    X_test = subsample_timesteps(X_test, MAX_TIMESTEPS)
+    logger.info(f"SUBSAMPLE_METHOD: {SUBSAMPLE_METHOD}")
+    logger.info(f"MAX_TIMESTEPS: {MAX_TIMESTEPS}")
+    logger.info(f"X_train shape before subsampling: {X_train.shape}")
+    
+    if SUBSAMPLE_METHOD == "sliding_window":
+        # Use sliding window approach
+        logger.info("Using sliding window subsampling approach")
+        X_train, y_train = sliding_window_subsample(X_train, y_train, MAX_TIMESTEPS, stride=1)
+        X_test, y_test = sliding_window_subsample(X_test, y_test, MAX_TIMESTEPS, stride=1)
+        
+        logger.info(f"X_train shape after sliding window: {X_train.shape}")
+        logger.info(f"y_train shape after sliding window: {y_train.shape}")
+    else:
+        # Use equally spaced subsampling
+        logger.info("Using equally spaced subsampling approach")
+        X_train = subsample_timesteps(X_train, MAX_TIMESTEPS)
+        X_test = subsample_timesteps(X_test, MAX_TIMESTEPS)
+        
+        logger.info(f"X_train shape after equally spaced: {X_train.shape}")
     
     # Print statistics for both training and test sets (before normalization)
     logger.info("Dataset statistics BEFORE normalization:")
@@ -1273,17 +1380,17 @@ def main():
     kernel_functions = {
         # "KNN_DTW": (run_knn_dtw_process, (X_train_tensor, X_test_tensor, y_train, y_test)),
         # "cuML_Baseline": (run_cuml_baseline_process, (X_train_tensor, X_test_tensor, y_train, y_test)),
-        # "KSigPDE": (run_ksig_pde_process, (X_train_tensor, X_test_tensor, y_train, y_test, KERNEL_RBF)),
+        "KSigPDE": (run_ksig_pde_process, (X_train_tensor, X_test_tensor, y_train, y_test, KERNEL_RBF)),
         # "KSig RFSF-TRP": (run_ksig_rfsf_trp_process, (X_train_tensor, X_test_tensor, y_train, y_test)),
-        "PowerSigJax": (run_powersig_jax_process, (X_train_tensor, X_test_tensor, y_train, y_test, KERNEL_LINEAR, 9)),
+        "PowerSigJax": (run_powersig_jax_process, (X_train_tensor, X_test_tensor, y_train, y_test, KERNEL_RBF, 9)),
     }
     
     ctx = mp.get_context("spawn")
     with ctx.Pool(processes=2, maxtasksperchild=1) as pool:
         for kernel_name in kernel_functions:
             if kernel_name in KERNELS_TO_RUN:
-                if kernel_name == "PowerSigJax":
-                       os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
+                # if kernel_name == "PowerSigJax":
+                #        os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
                 results = pool.apply(kernel_functions[kernel_name][0], kernel_functions[kernel_name][1])
                 all_results[kernel_name] = results
                 logger.info(f"Completed {kernel_name}")
@@ -1317,7 +1424,7 @@ def main():
             final_results[kernel_name] = {
                 'kernel_name': kernel_name,
                 'mse': np.inf,
-                'mae': np.inf,
+                'mape': np.inf,
                 'r2_score': -np.inf,
                 'condition_number': np.inf,
                 'best_kernel': 'none',
@@ -1330,7 +1437,7 @@ def main():
     logger.info("="*80)
     
     # Print header
-    logger.info(f"{'Kernel':<20} {'MSE':<10} {'MAE':<10} {'R²':<10} {'Grid(s)':<10} {'Cond#':<12}")
+    logger.info(f"{'Kernel':<20} {'MSE':<10} {'MAPE':<10} {'R²':<10} {'Grid(s)':<10} {'Cond#':<12}")
     logger.info("-" * 75)
     
     for kernel_name, results in final_results.items():
@@ -1342,7 +1449,7 @@ def main():
             logger.info(f"{kernel_name:<20} {'OOM':<10} {'OOM':<10} {'OOM':<10} {'OOM':<10} {'OOM':<12}")
         else:
             grid_time = results.get('grid_search_time', 0.0)
-            logger.info(f"{kernel_name:<20} {results['mse']:<10.4f} {results['mae']:<10.4f} "
+            logger.info(f"{kernel_name:<20} {results['mse']:<10.4f} {results['mape']:<10.4f} "
                        f"{results['r2_score']:<10.4f} "
                        f"{grid_time:<10.3f} {cond_str:<12}")
     
@@ -1373,7 +1480,7 @@ def main():
     
     for kernel_name, results in final_results.items():
         if results.get('error', 'OK') == 'OK':
-            logger.info(f"{kernel_name:<20}: MSE: {results['mse']:.4f}, MAE: {results['mae']:.4f}, R²: {results['r2_score']:.4f}")
+            logger.info(f"{kernel_name:<20}: MSE: {results['mse']:.4f}, MAPE: {results['mape']:.4f}, R²: {results['r2_score']:.4f}")
     
     logger.info("="*80)
     
@@ -1383,7 +1490,7 @@ def main():
         successful_results = {k: v for k, v in final_results.items() if v.get('error', 'OK') == 'OK'}
         
         if successful_results:
-            metrics = ['mse', 'mae', 'r2_score']
+            metrics = ['mse', 'mape', 'r2_score']
             logger.info("\nBEST PERFORMING KERNELS BY METRIC:")
             logger.info("="*50)
             
