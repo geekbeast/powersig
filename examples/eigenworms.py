@@ -5,6 +5,8 @@ This script implements Eigenworms classification using Support Vector Classifica
 with custom signature kernels: KSigPDE, KSig RFSF-TRP, and PowerSigJax.
 """
 import os
+
+from examples.large_window import build_dataset
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 import jax
 import numpy as np
@@ -54,7 +56,7 @@ except ImportError:
     CUML_AVAILABLE = False
 
 # Constants for quick experiments
-MAX_TIMESTEPS = 32000  # Limit number of timesteps for faster experiments max is 17984
+MAX_TIMESTEPS = 225  # Limit number of timesteps for faster experiments max is 17984
 # WINDOW_SIZE = 200
 # NUM_WINDOWS = 10
 # Cache directory for gram matrices
@@ -1357,20 +1359,22 @@ def main():
     logger.info(f"Kernels to run: {KERNELS_TO_RUN}")
     logger.info(f"Available kernels: {set(KERNEL_NAMES.keys())}")
     logger.info(f"Skipped kernels: {set(KERNEL_NAMES.keys()) - KERNELS_TO_RUN}")
+    X_train, y_train = build_dataset(history_length=200, num_samples=50, num_timestamps=MAX_TIMESTEPS, dimensions=2)
+    X_test, y_test = build_dataset(history_length=200, num_samples=50, num_timestamps=MAX_TIMESTEPS, dimensions=2)
     
-    # 1. Download and load training dataset
-    try:
-        X_train, y_train = download_aeon_dataset("DucksAndGeese", split="train")
-    except Exception as e:
-        logger.error(f"Failed to load training dataset: {e}")
-        return
+    # # 1. Download and load training dataset
+    # try:
+    #     X_train, y_train = download_aeon_dataset("BinaryHeartbeat", split="train")
+    # except Exception as e:
+    #     logger.error(f"Failed to load training dataset: {e}")
+    #     return
     
-    # 1.5. Download and load test dataset
-    try:
-        X_test, y_test = download_aeon_dataset("DucksAndGeese", split="test")
-    except Exception as e:
-        logger.error(f"Failed to load test dataset: {e}")
-        return
+    # # 1.5. Download and load test dataset
+    # try:
+    #     X_test, y_test = download_aeon_dataset("BinaryHeartbeat", split="test")
+    # except Exception as e:
+    #     logger.error(f"Failed to load test dataset: {e}")
+    #     return
     
     # 1.6. Plot samples and print statistics
     plot_eigenworms_samples(X_train, y_train, num_samples_per_class=3)

@@ -6,7 +6,7 @@ with custom signature kernels: KSigPDE, KSig RFSF-TRP, and PowerSigJax.
 """
 import os
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-from examples.large_window import build_dataset
+from examples.large_window import build_chebychev_dataset, build_dataset
 from powersig.util.normalization import normalize_kernel_matrix
 import jax
 import numpy as np
@@ -53,7 +53,7 @@ except ImportError:
     CUML_AVAILABLE = False
 
 # Constants for quick experiments
-MAX_TIMESTEPS = 80  # Limit number of timesteps for faster experiments max is 17984
+MAX_TIMESTEPS = 1000  # Limit number of timesteps for faster experiments max is 17984
 # Subsample method: "equally_spaced" or "sliding_window"
 SUBSAMPLE_METHOD = "equally_spaced"  # Change to "sliding_window" to use sliding window approach
 # Cache directory for gram matrices
@@ -186,8 +186,9 @@ def build_regression_dataset(history_length: int = 22, num_samples: int = 50,
     
     # Use the existing large_window.build_dataset function which returns both X and y
     from examples.large_window import build_dataset
-    X, y = build_dataset(history_length=history_length, num_samples=num_samples, 
-                        num_timestamps=num_timestamps, dimensions=dimensions)
+    X, y = build_chebychev_dataset(num_samples=num_samples, num_timestamps=num_timestamps, dimensions=dimensions)
+    #build_dataset(history_length=history_length, num_samples=num_samples, 
+    #                num_timestamps=num_timestamps, dimensions=dimensions)
     
     logger.info(f"Dataset built successfully!")
     logger.info(f"X shape: {X.shape}")
@@ -1328,8 +1329,8 @@ def main():
     logger.info(f"Skipped kernels: {set(KERNEL_NAMES.keys()) - KERNELS_TO_RUN}")
     
     # Build regression dataset using large_window.build_dataset
-    X_train, y_train = build_regression_dataset(history_length=20, num_samples=25, num_timestamps=100, dimensions=2)
-    X_test, y_test = build_regression_dataset(history_length=20, num_samples=25, num_timestamps=100, dimensions=2)
+    X_train, y_train = build_regression_dataset(history_length=20, num_samples=25, num_timestamps=1000, dimensions=2)
+    X_test, y_test = build_regression_dataset(history_length=20, num_samples=25, num_timestamps=1000, dimensions=2)
     
     # Plot samples and print statistics
     plot_regression_samples(X_train, y_train, num_samples=5)

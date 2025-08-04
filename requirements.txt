@@ -9,7 +9,9 @@ wheel
 setuptools
 aeon
 numba==0.61.2
-cupy-cuda12x==13.4.1
+cupy-cuda12x==13.5.1
 psutil
 tqdm==4.67.1
 jax[cuda12]
+yfinance
+matplotlib
