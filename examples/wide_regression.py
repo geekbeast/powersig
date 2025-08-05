@@ -53,7 +53,7 @@ except ImportError:
     CUML_AVAILABLE = False
 
 # Constants for quick experiments
-MAX_TIMESTEPS = 2000  # Limit number of timesteps for faster experiments max is 17984
+MAX_TIMESTEPS = 100  # Limit number of timesteps for faster experiments max is 17984
 # Subsample method: "equally_spaced" or "sliding_window"
 SUBSAMPLE_METHOD = "equally_spaced"  # Change to "sliding_window" to use sliding window approach
 # Cache directory for gram matrices
@@ -1081,8 +1081,8 @@ def run_ksig_pde_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tens
     # Return gram matrices and labels for main process grid search
     return {
         'kernel_name': f"KSigPDE_{kernel_type}",
-        'train_gram': np.array(train_gram, dtype=np.float64),
-        'test_gram': np.array(test_gram, dtype=np.float64),
+        'train_gram': ensure_numpy_array(train_gram).astype(np.float64),
+        'test_gram': ensure_numpy_array(test_gram).astype(np.float64),
         'gram_computation_time': gram_computation_time,
         'y_train': np.array(y_train, dtype=np.float64),
         'y_test': np.array(y_test, dtype=np.float64),
@@ -1117,8 +1117,8 @@ def run_ksig_rfsf_trp_process(X_train_tensor: torch.Tensor, X_test_tensor: torch
     # Return gram matrices and labels for main process grid search
     return {
         'kernel_name': "KSig RFSF-TRP",
-        'train_gram': np.array(train_gram, dtype=np.float64),
-        'test_gram': np.array(test_gram, dtype=np.float64),
+        'train_gram': ensure_numpy_array(train_gram).astype(np.float64),
+        'test_gram': ensure_numpy_array(test_gram).astype(np.float64),
         'y_train': np.array(y_train, dtype=np.float64),
         'y_test': np.array(y_test, dtype=np.float64),
         'error': 'OK'
@@ -1140,8 +1140,8 @@ def run_powersig_jax_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.
     
     return {
         'kernel_name': f"PowerSigJax_{kernel_type}",
-        'train_gram': np.array(train_gram, dtype=np.float64),
-        'test_gram': np.array(test_gram, dtype=np.float64),
+        'train_gram': ensure_numpy_array(train_gram).astype(np.float64),
+        'test_gram': ensure_numpy_array(test_gram).astype(np.float64),
         'y_train': np.array(y_train, dtype=np.float64),
         'y_test': np.array(y_test, dtype=np.float64),
         'error': 'OK'
@@ -1162,10 +1162,17 @@ def run_cuml_baseline_process(X_train_tensor: torch.Tensor, X_test_tensor: torch
     X_train_2d = X_train_np.reshape(X_train_np.shape[0], -1)
     X_test_2d = X_test_np.reshape(X_test_np.shape[0], -1)
     
+    # Ensure all data is properly converted to CuPy arrays
     X_train_cp = cp.array(X_train_2d, dtype=cp.float32)
     X_test_cp = cp.array(X_test_2d, dtype=cp.float32)
     y_train_cp = cp.array(y_train, dtype=cp.float32)
     y_test_cp = cp.array(y_test, dtype=cp.float32)
+    
+    # Verify that all arrays are CuPy arrays and not PyTorch tensors
+    assert isinstance(X_train_cp, cp.ndarray), f"X_train_cp is {type(X_train_cp)}, expected cp.ndarray"
+    assert isinstance(X_test_cp, cp.ndarray), f"X_test_cp is {type(X_test_cp)}, expected cp.ndarray"
+    assert isinstance(y_train_cp, cp.ndarray), f"y_train_cp is {type(y_train_cp)}, expected cp.ndarray"
+    assert isinstance(y_test_cp, cp.ndarray), f"y_test_cp is {type(y_test_cp)}, expected cp.ndarray"
         
     if not CUML_AVAILABLE:
         return {
@@ -1204,20 +1211,34 @@ def run_cuml_baseline_process(X_train_tensor: torch.Tensor, X_test_tensor: torch
                     
                     # Train separate SVR model for each dimension
                     for dim in range(num_dimensions):
+                        print(f"      Training SVR for dimension {dim}")
                         svr = cuMLSVR(kernel=kernel, C=C, verbose=0)
-                        svr.fit(X_train_cp, y_train_cp[:, dim])
-                        y_pred_cp[:, dim] = svr.predict(X_test_cp)
+                        # Ensure inputs are CuPy arrays
+                        X_train_dim = cp.asarray(X_train_cp, dtype=cp.float32)
+                        y_train_dim = cp.asarray(y_train_cp[:, dim], dtype=cp.float32)
+                        X_test_dim = cp.asarray(X_test_cp, dtype=cp.float32)
+                        
+                        svr.fit(X_train_dim, y_train_dim)
+                        y_pred_cp[:, dim] = svr.predict(X_test_dim)
                     
                     y_pred = cp.asnumpy(y_pred_cp)
                 else:
                     # Single-dimensional targets
+                    print(f"      Training SVR for single dimension")
                     svr = cuMLSVR(kernel=kernel, C=C, verbose=0)
-                    svr.fit(X_train_cp, y_train_cp)
-                    y_pred_cp = svr.predict(X_test_cp)
+                    # Ensure inputs are CuPy arrays
+                    X_train_single = cp.asarray(X_train_cp, dtype=cp.float32)
+                    y_train_single = cp.asarray(y_train_cp, dtype=cp.float32)
+                    X_test_single = cp.asarray(X_test_cp, dtype=cp.float32)
+                    
+                    svr.fit(X_train_single, y_train_single)
+                    y_pred_cp = svr.predict(X_test_single)
                     y_pred = cp.asnumpy(y_pred_cp)
                 
-                # Calculate MSE
-                mse = mean_squared_error(y_test, y_pred)
+                # Calculate MSE - ensure both arrays are numpy arrays
+                y_test_np = np.array(y_test, dtype=np.float64)
+                y_pred_np = np.array(y_pred, dtype=np.float64)
+                mse = mean_squared_error(y_test_np, y_pred_np)
                 print(f"    C={C} MSE: {mse:.4f}")
                 
                 # Update best for this kernel if this is better
@@ -1226,8 +1247,8 @@ def run_cuml_baseline_process(X_train_tensor: torch.Tensor, X_test_tensor: torch
                     kernel_best_C = C
                     
                     # Calculate all metrics for best result for this kernel
-                    mape = np.mean(np.abs((y_test - y_pred) / (y_test + 1e-8))) * 100  # MAPE in percentage
-                    r2 = r2_score(y_test, y_pred)
+                    mape = np.mean(np.abs((y_test_np - y_pred_np) / (y_test_np + 1e-8))) * 100  # MAPE in percentage
+                    r2 = r2_score(y_test_np, y_pred_np)
                     
                     kernel_best_results = {
                         'kernel_name': f"cuML_Baseline_{kernel}",
@@ -1374,8 +1395,8 @@ def main():
     logger.info(f"Skipped kernels: {set(KERNEL_NAMES.keys()) - KERNELS_TO_RUN}")
     
     # Build regression dataset using large_window.build_dataset
-    X_train, y_train = build_regression_dataset(history_length=20, num_samples=25, num_timestamps=2000, dimensions=2)
-    X_test, y_test = build_regression_dataset(history_length=20, num_samples=25, num_timestamps=2000, dimensions=2)
+    X_train, y_train = build_regression_dataset(history_length=20, num_samples=25, num_timestamps=100, dimensions=2)
+    X_test, y_test = build_regression_dataset(history_length=20, num_samples=25, num_timestamps=100, dimensions=2)
     
     # Plot samples and print statistics
     plot_regression_samples(X_train, y_train, num_samples=5)
