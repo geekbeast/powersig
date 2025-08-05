@@ -36,12 +36,14 @@ def build_chebychev_dataset(
     
     # Calculate total nodes needed for all dimensions
     total_nodes = dimensions * num_timestamps * num_samples
+    total_nodes **= 2
     
     # Generate Chebyshev nodes and their cumulative sums for each dimension with dimension-specific offsets
     for i in range(num_samples):
         for d in range(dimensions):
             # Add both sample and dimension offsets to the Chebyshev index
             offset_indices = indices + i * dimensions * num_timestamps + d * num_timestamps 
+            offset_indices **= 2
             chebychev_nodes = torch.cos(torch.pi * (2 * offset_indices + 1) / (2 * total_nodes))
             
             # Calculate cumulative sum for this dimension
@@ -57,7 +59,8 @@ def build_chebychev_dataset(
         for i in range(num_samples):
             # Calculate the next index after the last timestamp for this sample and dimension
             next_index = num_timestamps + i * dimensions * num_timestamps + d * num_timestamps
-            next_chebychev_node = torch.cos(torch.pi * (2 * next_index + 1) / (2 * total_nodes))
+            next_index **= 2
+            next_chebychev_node = cmath.cos(torch.pi * (2 * next_index + 1) / (2 * total_nodes))
             
             # Get the last cumulative sum for this sample and dimension
             last_cumulative_sum = data[i, -1, d]

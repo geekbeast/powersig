@@ -53,7 +53,7 @@ except ImportError:
     CUML_AVAILABLE = False
 
 # Constants for quick experiments
-MAX_TIMESTEPS = 1000  # Limit number of timesteps for faster experiments max is 17984
+MAX_TIMESTEPS = 2000  # Limit number of timesteps for faster experiments max is 17984
 # Subsample method: "equally_spaced" or "sliding_window"
 SUBSAMPLE_METHOD = "equally_spaced"  # Change to "sliding_window" to use sliding window approach
 # Cache directory for gram matrices
@@ -186,9 +186,8 @@ def build_regression_dataset(history_length: int = 22, num_samples: int = 50,
     
     # Use the existing large_window.build_dataset function which returns both X and y
     from examples.large_window import build_dataset
+    # X, y = build_dataset(history_length=history_length, num_samples=num_samples, num_timestamps=num_timestamps, dimensions=dimensions)
     X, y = build_chebychev_dataset(num_samples=num_samples, num_timestamps=num_timestamps, dimensions=dimensions)
-    #build_dataset(history_length=history_length, num_samples=num_samples, 
-    #                num_timestamps=num_timestamps, dimensions=dimensions)
     
     logger.info(f"Dataset built successfully!")
     logger.info(f"X shape: {X.shape}")
@@ -245,52 +244,98 @@ def plot_regression_samples(X: np.ndarray, y: np.ndarray = None, num_samples: in
         logger.info(f"Saved plot for sample {sample_idx + 1}")
 
 
-def normalize_training_data(X_train: np.ndarray, X_test: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def normalize_training_data(X_train: torch.Tensor, X_test: torch.Tensor, y_train: torch.Tensor, y_test: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Normalize training data by subtracting mean and dividing by std dev for each dimension.
-    Normalize test data using training statistics.
+    Normalize each sample individually by computing its own mean and std dev.
+    For each sample: subtract its mean and divide by its std dev.
+    Also normalize target variables y_train and y_test using the same per-sample approach.
     
     Args:
         X_train: Training dataset with shape (samples, timesteps, dimensions)
         X_test: Test dataset with shape (samples, timesteps, dimensions)
+        y_train: Training target variables
+        y_test: Test target variables
         
     Returns:
-        Tuple of (normalized_X_train, normalized_X_test)
+        Tuple of (normalized_X_train, normalized_X_test, normalized_y_train, normalized_y_test)
     """
-    logger.info("Normalizing training and test data...")
+    logger.info("Normalizing each sample individually...")
     
     num_train_samples, num_timesteps, num_dimensions = X_train.shape
     num_test_samples = X_test.shape[0]
     
-    # Calculate mean and std for each dimension across all training samples and timesteps using broadcasting
-    # Reshape to (num_dimensions,) for broadcasting
-    train_means = np.mean(X_train, axis=(0, 1))  # Shape: (num_dimensions,)
-    train_stds = 2 * np.std(X_train, axis=(0, 1))  # Shape: (num_dimensions,)
+    # Normalize X_train: for each sample, compute its mean and std across all timesteps and dimensions
+    # Compute mean and std for each sample: shape (num_samples,)
+    X_train_means = torch.mean(X_train, dim=(1, 2))  # Shape: (num_samples,)
+    X_train_stds = torch.std(X_train, dim=(1, 2))    # Shape: (num_samples,)
     
     # Avoid division by zero
-    train_stds = np.where(train_stds == 0, 1.0, train_stds)
-    zero_std_dims = np.where(train_stds == 1.0)[0]
-    for dim_idx in zero_std_dims:
-        logger.warning(f"Training dimension {dim_idx + 1} has zero standard deviation, setting to 1.0")
+    X_train_stds = torch.where(X_train_stds == 0, torch.tensor(1.0, device=X_train.device), X_train_stds)
+    zero_std_samples = torch.where(X_train_stds == 1.0)[0]
+    for sample_idx in zero_std_samples:
+        logger.warning(f"Training sample {sample_idx} has zero standard deviation, setting to 1.0")
     
-    logger.info("Training set normalization statistics (used for both train and test):")
-    for dim_idx in range(num_dimensions):
-        logger.info(f"  Dimension {dim_idx + 1}: mean={train_means[dim_idx]:.6f}, std={train_stds[dim_idx]:.6f}")
+    # Reshape for broadcasting: (num_samples, 1, 1) for broadcasting with (num_samples, num_timesteps, num_dimensions)
+    X_train_means_broadcast = X_train_means.reshape(-1, 1, 1)  # Shape: (num_samples, 1, 1)
+    X_train_stds_broadcast = X_train_stds.reshape(-1, 1, 1)    # Shape: (num_samples, 1, 1)
     
-    # Normalize training data using training statistics with broadcasting
-    # Reshape means and stds to (1, 1, num_dimensions) for broadcasting with (num_samples, num_timesteps, num_dimensions)
-    train_means_broadcast = train_means.reshape(1, 1, -1)  # Shape: (1, 1, num_dimensions)
-    train_stds_broadcast = train_stds.reshape(1, 1, -1)    # Shape: (1, 1, num_dimensions)
-    normalized_X_train = (X_train - train_means_broadcast) / train_stds_broadcast
+    normalized_X_train = (X_train - X_train_means_broadcast) / X_train_stds_broadcast
     
-    # Normalize test data using training statistics with broadcasting (standard practice to avoid data leakage)
-    normalized_X_test = (X_test - train_means_broadcast) / train_stds_broadcast
+    # Normalize X_test: for each sample, compute its mean and std across all timesteps and dimensions
+    X_test_means = torch.mean(X_test, dim=(1, 2))  # Shape: (num_test_samples,)
+    X_test_stds = torch.std(X_test, dim=(1, 2))    # Shape: (num_test_samples,)
     
-    logger.info("Normalization completed!")
+    # Avoid division by zero
+    X_test_stds = torch.where(X_test_stds == 0, torch.tensor(1.0, device=X_test.device), X_test_stds)
+    zero_std_samples_test = torch.where(X_test_stds == 1.0)[0]
+    for sample_idx in zero_std_samples_test:
+        logger.warning(f"Test sample {sample_idx} has zero standard deviation, setting to 1.0")
+    
+    # Reshape for broadcasting: (num_test_samples, 1, 1) for broadcasting with (num_test_samples, num_timesteps, num_dimensions)
+    X_test_means_broadcast = X_test_means.reshape(-1, 1, 1)  # Shape: (num_test_samples, 1, 1)
+    X_test_stds_broadcast = X_test_stds.reshape(-1, 1, 1)    # Shape: (num_test_samples, 1, 1)
+    
+    normalized_X_test = (X_test - X_test_means_broadcast) / X_test_stds_broadcast
+    
+    # Normalize y_train and y_test using the corresponding sample statistics
+    # Each y_train entry corresponds to each X_train sample's mean
+    # Each y_test entry corresponds to each X_test sample's mean
+    
+    # Handle multi-dimensional y tensors by broadcasting
+    # Reshape X means and stds to broadcast with y dimensions
+    if len(y_train.shape) > 1:
+        # y_train is multi-dimensional, reshape X_train_means to broadcast
+        X_train_means_y = X_train_means.reshape(-1, 1)  # Shape: (num_samples, 1)
+        X_train_stds_y = X_train_stds.reshape(-1, 1)    # Shape: (num_samples, 1)
+    else:
+        # y_train is 1D, use as is
+        X_train_means_y = X_train_means
+        X_train_stds_y = X_train_stds
+    
+    if len(y_test.shape) > 1:
+        # y_test is multi-dimensional, reshape X_test_means to broadcast
+        X_test_means_y = X_test_means.reshape(-1, 1)  # Shape: (num_test_samples, 1)
+        X_test_stds_y = X_test_stds.reshape(-1, 1)    # Shape: (num_test_samples, 1)
+    else:
+        # y_test is 1D, use as is
+        X_test_means_y = X_test_means
+        X_test_stds_y = X_test_stds
+    
+    # For y_train: use the corresponding X_train sample means and stds
+    normalized_y_train = (y_train - X_train_means_y) / X_train_stds_y
+    
+    # For y_test: use the corresponding X_test sample means and stds
+    normalized_y_test = (y_test - X_test_means_y) / X_test_stds_y
+    
+    logger.info("y_train and y_test normalized using corresponding sample statistics")
+    
+    logger.info("Per-sample normalization completed!")
     logger.info(f"Normalized training set shape: {normalized_X_train.shape}")
     logger.info(f"Normalized test set shape: {normalized_X_test.shape}")
+    logger.info(f"Normalized y_train shape: {normalized_y_train.shape}")
+    logger.info(f"Normalized y_test shape: {normalized_y_test.shape}")
     
-    return normalized_X_train, normalized_X_test
+    return normalized_X_train, normalized_X_test, normalized_y_train, normalized_y_test
 
 
 def time_augment(X):
@@ -1329,8 +1374,8 @@ def main():
     logger.info(f"Skipped kernels: {set(KERNEL_NAMES.keys()) - KERNELS_TO_RUN}")
     
     # Build regression dataset using large_window.build_dataset
-    X_train, y_train = build_regression_dataset(history_length=20, num_samples=25, num_timestamps=1000, dimensions=2)
-    X_test, y_test = build_regression_dataset(history_length=20, num_samples=25, num_timestamps=1000, dimensions=2)
+    X_train, y_train = build_regression_dataset(history_length=20, num_samples=25, num_timestamps=2000, dimensions=2)
+    X_test, y_test = build_regression_dataset(history_length=20, num_samples=25, num_timestamps=2000, dimensions=2)
     
     # Plot samples and print statistics
     plot_regression_samples(X_train, y_train, num_samples=5)
@@ -1363,8 +1408,8 @@ def main():
     logger.info(f"Training set size: {X_train.shape[0]}")
     logger.info(f"Test set size: {X_test.shape[0]}")
     
-    # Use normalized data directly for now
-    X_train_normalized, X_test_normalized = X_train, X_test
+    # Apply z-score normalization per dimension
+    X_train_normalized, X_test_normalized, y_train_normalized, y_test_normalized = normalize_training_data(X_train, X_test, y_train, y_test)
     
     # Print statistics for both training and test sets (after normalization)
     logger.info("Dataset statistics AFTER normalization:")
@@ -1379,11 +1424,11 @@ def main():
     
     # Define kernel functions mapping
     kernel_functions = {
-        "KNN_DTW": (run_knn_dtw_process, (X_train_tensor, X_test_tensor, y_train, y_test)),
-        "cuML_Baseline": (run_cuml_baseline_process, (X_train_tensor, X_test_tensor, y_train, y_test)),
-        "KSigPDE": (run_ksig_pde_process, (X_train_tensor, X_test_tensor, y_train, y_test, KERNEL_RBF)),
-        "KSig RFSF-TRP": (run_ksig_rfsf_trp_process, (X_train_tensor, X_test_tensor, y_train, y_test)),
-        "PowerSigJax": (run_powersig_jax_process, (X_train_tensor, X_test_tensor, y_train, y_test, KERNEL_LINEAR, 9)),
+        "KNN_DTW": (run_knn_dtw_process, (X_train_tensor, X_test_tensor, y_train_normalized, y_test_normalized)),
+        "cuML_Baseline": (run_cuml_baseline_process, (X_train_tensor, X_test_tensor, y_train_normalized, y_test_normalized)),
+        "KSigPDE": (run_ksig_pde_process, (X_train_tensor, X_test_tensor, y_train_normalized, y_test_normalized, KERNEL_LINEAR)),
+        "KSig RFSF-TRP": (run_ksig_rfsf_trp_process, (X_train_tensor, X_test_tensor, y_train_normalized, y_test_normalized)),
+        "PowerSigJax": (run_powersig_jax_process, (X_train_tensor, X_test_tensor, y_train_normalized, y_test_normalized, KERNEL_LINEAR, 9)),
     }
     
     ctx = mp.get_context("spawn")
