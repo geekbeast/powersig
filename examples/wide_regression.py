@@ -6,7 +6,7 @@ with custom signature kernels: KSigPDE, KSig RFSF-TRP, and PowerSigJax.
 """
 import os
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-from examples.large_window import build_chebychev_dataset, build_dataset
+from examples.large_window import build_chebychev_dataset, build_chebychev_from_integer_recurrence, build_dataset, build_integer_recurrence
 from powersig.util.normalization import normalize_kernel_matrix
 import jax
 import numpy as np
@@ -187,15 +187,20 @@ def build_regression_dataset(history_length: int = 22, num_samples: int = 50,
     # Use the existing large_window.build_dataset function which returns both X and y
     from examples.large_window import build_dataset
     # X, y = build_dataset(history_length=history_length, num_samples=num_samples, num_timestamps=num_timestamps, dimensions=dimensions)
-    X, y = build_chebychev_dataset(num_samples=num_samples, num_timestamps=num_timestamps, dimensions=dimensions)
+    # X, y = build_chebychev_dataset(num_samples=num_samples, num_timestamps=num_timestamps, dimensions=dimensions)
+    # X, y = build_integer_recurrence(p=17, num_samples=num_samples, num_timestamps=num_timestamps, dimensions=dimensions)
+    X, y = build_chebychev_from_integer_recurrence(p=17, num_samples=num_samples, num_timestamps=num_timestamps, dimensions=dimensions)
     
     logger.info(f"Dataset built successfully!")
     logger.info(f"X shape: {X.shape}")
     logger.info(f"y shape: {y.shape}")
-    logger.info(f"Target range: [{y.min():.4f}, {y.max():.4f}]")
-    logger.info(f"Target mean: {y.mean():.4f}, std: {y.std():.4f}")
     
-    return X, y
+    # Defensively convert to float64 for min, mean, and std computations
+    y_fp64 = y.to(torch.float64)
+    logger.info(f"Target range: [{y_fp64.min():.4f}, {y_fp64.max():.4f}]")
+    logger.info(f"Target mean: {y_fp64.mean():.4f}, std: {y_fp64.std():.4f}")
+    
+    return X.to(torch.float64), y.to(torch.float64)
 
 
 def plot_regression_samples(X: np.ndarray, y: np.ndarray = None, num_samples: int = 5):
@@ -264,10 +269,10 @@ def normalize_training_data(X_train: torch.Tensor, X_test: torch.Tensor, y_train
     num_train_samples, num_timesteps, num_dimensions = X_train.shape
     num_test_samples = X_test.shape[0]
     
-    # Normalize X_train: for each sample, compute its mean and std across all timesteps and dimensions
-    # Compute mean and std for each sample: shape (num_samples,)
-    X_train_means = torch.mean(X_train, dim=(1, 2))  # Shape: (num_samples,)
-    X_train_stds = torch.std(X_train, dim=(1, 2))    # Shape: (num_samples,)
+    # Normalize X_train: for each sample and dimension, compute mean and std across timesteps only
+    # Compute mean and std for each sample and dimension: shape (num_samples, num_dimensions)
+    X_train_means = torch.mean(X_train, dim=1)  # Shape: (num_samples, num_dimensions)
+    X_train_stds = torch.std(X_train, dim=1)    # Shape: (num_samples, num_dimensions)
     
     # Avoid division by zero
     X_train_stds = torch.where(X_train_stds == 0, torch.tensor(1.0, device=X_train.device), X_train_stds)
@@ -275,15 +280,15 @@ def normalize_training_data(X_train: torch.Tensor, X_test: torch.Tensor, y_train
     for sample_idx in zero_std_samples:
         logger.warning(f"Training sample {sample_idx} has zero standard deviation, setting to 1.0")
     
-    # Reshape for broadcasting: (num_samples, 1, 1) for broadcasting with (num_samples, num_timesteps, num_dimensions)
-    X_train_means_broadcast = X_train_means.reshape(-1, 1, 1)  # Shape: (num_samples, 1, 1)
-    X_train_stds_broadcast = X_train_stds.reshape(-1, 1, 1)    # Shape: (num_samples, 1, 1)
+    # Reshape for broadcasting: (num_samples, 1, num_dimensions) for broadcasting with (num_samples, num_timesteps, num_dimensions)
+    X_train_means_broadcast = X_train_means.reshape(-1, 1, num_dimensions)  # Shape: (num_samples, 1, num_dimensions)
+    X_train_stds_broadcast = X_train_stds.reshape(-1, 1, num_dimensions)    # Shape: (num_samples, 1, num_dimensions)
     
     normalized_X_train = (X_train - X_train_means_broadcast) / X_train_stds_broadcast
     
-    # Normalize X_test: for each sample, compute its mean and std across all timesteps and dimensions
-    X_test_means = torch.mean(X_test, dim=(1, 2))  # Shape: (num_test_samples,)
-    X_test_stds = torch.std(X_test, dim=(1, 2))    # Shape: (num_test_samples,)
+    # Normalize X_test: for each sample and dimension, compute mean and std across timesteps only
+    X_test_means = torch.mean(X_test, dim=1)  # Shape: (num_test_samples, num_dimensions)
+    X_test_stds = torch.std(X_test, dim=1)    # Shape: (num_test_samples, num_dimensions)
     
     # Avoid division by zero
     X_test_stds = torch.where(X_test_stds == 0, torch.tensor(1.0, device=X_test.device), X_test_stds)
@@ -291,41 +296,21 @@ def normalize_training_data(X_train: torch.Tensor, X_test: torch.Tensor, y_train
     for sample_idx in zero_std_samples_test:
         logger.warning(f"Test sample {sample_idx} has zero standard deviation, setting to 1.0")
     
-    # Reshape for broadcasting: (num_test_samples, 1, 1) for broadcasting with (num_test_samples, num_timesteps, num_dimensions)
-    X_test_means_broadcast = X_test_means.reshape(-1, 1, 1)  # Shape: (num_test_samples, 1, 1)
-    X_test_stds_broadcast = X_test_stds.reshape(-1, 1, 1)    # Shape: (num_test_samples, 1, 1)
+    # Reshape for broadcasting: (num_test_samples, 1, num_dimensions) for broadcasting with (num_test_samples, num_timesteps, num_dimensions)
+    X_test_means_broadcast = X_test_means.reshape(-1, 1, num_dimensions)  # Shape: (num_test_samples, 1, num_dimensions)
+    X_test_stds_broadcast = X_test_stds.reshape(-1, 1, num_dimensions)    # Shape: (num_test_samples, 1, num_dimensions)
     
     normalized_X_test = (X_test - X_test_means_broadcast) / X_test_stds_broadcast
     
     # Normalize y_train and y_test using the corresponding sample statistics
-    # Each y_train entry corresponds to each X_train sample's mean
-    # Each y_test entry corresponds to each X_test sample's mean
-    
-    # Handle multi-dimensional y tensors by broadcasting
-    # Reshape X means and stds to broadcast with y dimensions
-    if len(y_train.shape) > 1:
-        # y_train is multi-dimensional, reshape X_train_means to broadcast
-        X_train_means_y = X_train_means.reshape(-1, 1)  # Shape: (num_samples, 1)
-        X_train_stds_y = X_train_stds.reshape(-1, 1)    # Shape: (num_samples, 1)
-    else:
-        # y_train is 1D, use as is
-        X_train_means_y = X_train_means
-        X_train_stds_y = X_train_stds
-    
-    if len(y_test.shape) > 1:
-        # y_test is multi-dimensional, reshape X_test_means to broadcast
-        X_test_means_y = X_test_means.reshape(-1, 1)  # Shape: (num_test_samples, 1)
-        X_test_stds_y = X_test_stds.reshape(-1, 1)    # Shape: (num_test_samples, 1)
-    else:
-        # y_test is 1D, use as is
-        X_test_means_y = X_test_means
-        X_test_stds_y = X_test_stds
+    # y should have shape (num_samples, dimensions) which matches X_train_means and X_train_stds
+    # No need to reshape or take means across dimensions
     
     # For y_train: use the corresponding X_train sample means and stds
-    normalized_y_train = (y_train - X_train_means_y) / X_train_stds_y
+    normalized_y_train = (y_train - X_train_means) / X_train_stds
     
     # For y_test: use the corresponding X_test sample means and stds
-    normalized_y_test = (y_test - X_test_means_y) / X_test_stds_y
+    normalized_y_test = (y_test - X_test_means) / X_test_stds
     
     logger.info("y_train and y_test normalized using corresponding sample statistics")
     
@@ -335,7 +320,7 @@ def normalize_training_data(X_train: torch.Tensor, X_test: torch.Tensor, y_train
     logger.info(f"Normalized y_train shape: {normalized_y_train.shape}")
     logger.info(f"Normalized y_test shape: {normalized_y_test.shape}")
     
-    return normalized_X_train, normalized_X_test, normalized_y_train, normalized_y_test
+    return normalized_X_train, normalized_X_test, normalized_y_train, normalized_y_test, X_train_means, X_train_stds, X_test_means, X_test_stds
 
 
 def time_augment(X):
@@ -943,7 +928,7 @@ def compute_gram_matrix_powersig_jax(X_train: np.ndarray, X_test: np.ndarray, ke
 
 def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.ndarray, 
                                      y_train: np.ndarray, y_test: np.ndarray, 
-                                     kernel_name: str, gram_computation_time: float = -1.0) -> Dict[str, Any]:
+                                     kernel_name: str, X_test: np.ndarray, X_train_means: np.ndarray, X_train_stds: np.ndarray, X_test_means: np.ndarray, X_test_stds: np.ndarray, gram_computation_time: float = -1.0) -> Dict[str, Any]:
     """
     Shared function to run grid search with precomputed gram matrices for regression.
     Trains separate SVR models for each output dimension.
@@ -1028,6 +1013,32 @@ def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.nda
     svr_mape = np.mean(np.abs((y_test - y_pred_svr) / (y_test + 1e-8))) * 100  # MAPE in percentage
     svr_r2 = r2_score(y_test, y_pred_svr)
     
+    total_nodes = 19
+    test = (X_test_stds*y_test) + X_test_means - X_test[:, -1, :]
+    test = np.arccos(test)
+    test = (test * (2*total_nodes/torch.pi)-1)/2
+    logging.info(f"Test A: {test[:5]}") 
+    # Compute the inverse chebychev transform of y_test and y_pred_svr 
+    y_test_inv = (np.arccos((X_test_stds*y_test) + X_test_means - X_test[:, -1,:])*(2*total_nodes/np.pi)-1)/2
+    y_pred_svr_inv = (np.arccos((X_test_stds*y_pred_svr) + X_test_means - X_test[:, -1,:])*(2*total_nodes/np.pi)-1)/2
+    # Print out the inverse Chebyshev transform values
+    logger.info("Inverse Chebyshev transform values:")
+    logger.info(f"Raw preimage: {y_test - (X_test[:, -1, :] * X_test_stds + X_test_means)}")
+    logger.info(f"y_test_inv shape: {y_test_inv.shape}")
+    logger.info(f"y_test_inv sample: {y_test_inv[:5]}")
+    logger.info(f"y_pred_svr_inv shape: {y_pred_svr_inv.shape}")
+    logger.info(f"y_pred_svr_inv sample: {y_pred_svr_inv[:5]}")
+    
+    # Calculate metrics on the inverse transformed values
+    inv_mse = mean_squared_error(y_test_inv, y_pred_svr_inv)
+    inv_mape = np.mean(np.abs((y_test_inv - y_pred_svr_inv) / (y_test_inv + 1e-8))) * 100  # MAPE in percentage
+    inv_r2 = r2_score(y_test_inv, y_pred_svr_inv)
+    
+    # Print metrics for inverse transformed values
+    logger.info("Metrics on inverse Chebyshev transform:")
+    logger.info(f"Inverse MSE: {inv_mse:.6f}")
+    logger.info(f"Inverse MAPE: {inv_mape:.6f}%")
+    logger.info(f"Inverse R²: {inv_r2:.6f}")
     # Calculate condition number for the training gram matrix
     try:
         condition_number = np.linalg.cond(train_gram_np)
@@ -1383,7 +1394,7 @@ def run_knn_dtw_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tenso
             'error': str(e)
         }
 
-
+NUM_TIMESTEPS = 100
 def main():
     """
     Main function to run Eigenworms regression with different kernels using multiprocessing.
@@ -1395,12 +1406,17 @@ def main():
     logger.info(f"Skipped kernels: {set(KERNEL_NAMES.keys()) - KERNELS_TO_RUN}")
     
     # Build regression dataset using large_window.build_dataset
-    X_train, y_train = build_regression_dataset(history_length=20, num_samples=25, num_timestamps=100, dimensions=2)
-    X_test, y_test = build_regression_dataset(history_length=20, num_samples=25, num_timestamps=100, dimensions=2)
+    X_train, y_train = build_regression_dataset(history_length=20, num_samples=25, num_timestamps=NUM_TIMESTEPS, dimensions=2)
+    X_test, y_test = build_regression_dataset(history_length=20, num_samples=25, num_timestamps=NUM_TIMESTEPS, dimensions=2)
     
+    total_nodes = 19
     # Plot samples and print statistics
     plot_regression_samples(X_train, y_train, num_samples=5)
-
+    test = y_test - X_test[:, -1, :]
+    test = torch.arccos(test)
+    test = (test * (2*total_nodes/torch.pi)-1)/2
+    
+    logging.info(f"Test: {test[:5]}")
     # Apply subsampling if MAX_TIMESTEPS is less than the actual number of timesteps
     logger.info(f"SUBSAMPLE_METHOD: {SUBSAMPLE_METHOD}")
     logger.info(f"MAX_TIMESTEPS: {MAX_TIMESTEPS}")
@@ -1414,7 +1430,7 @@ def main():
         
         logger.info(f"X_train shape after sliding window: {X_train.shape}")
         logger.info(f"y_train shape after sliding window: {y_train.shape}")
-    else:
+    elif SUBSAMPLE_METHOD == "equally_spaced" and MAX_TIMESTEPS < NUM_TIMESTEPS:
         # Use equally spaced subsampling
         logger.info("Using equally spaced subsampling approach")
         X_train = subsample_timesteps(X_train, MAX_TIMESTEPS)
@@ -1422,20 +1438,35 @@ def main():
         
         logger.info(f"X_train shape after equally spaced: {X_train.shape}")
     
+    test = y_test - X_test[:, -1, :]
+    test = torch.arccos(test)
+    test = (test * (2*total_nodes/torch.pi)-1)/2
+    logging.info(f"Test: {test[:5]}")
     # Print statistics for both training and test sets (before normalization)
     logger.info("Dataset statistics BEFORE normalization:")
     print_dataset_statistics(X_train, X_test)
     
     logger.info(f"Training set size: {X_train.shape[0]}")
     logger.info(f"Test set size: {X_test.shape[0]}")
-    
     # Apply z-score normalization per dimension
-    X_train_normalized, X_test_normalized, y_train_normalized, y_test_normalized = normalize_training_data(X_train, X_test, y_train, y_test)
+    X_train_normalized, X_test_normalized, y_train_normalized, y_test_normalized, X_train_means, X_train_stds, X_test_means, X_test_stds = normalize_training_data(X_train, X_test, y_train, y_test)
+
+    test = (y_test_normalized* X_test_stds)+X_test_means - X_test[:, -1, :] 
+    test = torch.arccos(test)
+    test = (test * (2*total_nodes/torch.pi)-1)/2
+    logging.info(f"Test: {test[:5]}")
+    # X_train_normalized = X_train
+    # X_test_normalized = X_test
+    # y_train_normalized = y_train
+    # y_test_normalized = y_test
     
     # Print statistics for both training and test sets (after normalization)
     logger.info("Dataset statistics AFTER normalization:")
     print_dataset_statistics(X_train_normalized, X_test_normalized)
-    
+    test = (y_test_normalized* X_test_stds)+X_test_means - X_test[:, -1, :] 
+    test = torch.arccos(test)
+    test = (test * (2*total_nodes/torch.pi)-1)/2
+    logging.info(f"Test: {test[:5]}")
     # Wrap normalized data in torch tensors for multiprocessing
     X_train_tensor = X_train_normalized.share_memory_()
     X_test_tensor = X_test_normalized.share_memory_()
@@ -1445,13 +1476,16 @@ def main():
     
     # Define kernel functions mapping
     kernel_functions = {
-        "KNN_DTW": (run_knn_dtw_process, (X_train_tensor, X_test_tensor, y_train_normalized, y_test_normalized)),
-        "cuML_Baseline": (run_cuml_baseline_process, (X_train_tensor, X_test_tensor, y_train_normalized, y_test_normalized)),
-        "KSigPDE": (run_ksig_pde_process, (X_train_tensor, X_test_tensor, y_train_normalized, y_test_normalized, KERNEL_LINEAR)),
-        "KSig RFSF-TRP": (run_ksig_rfsf_trp_process, (X_train_tensor, X_test_tensor, y_train_normalized, y_test_normalized)),
+        # "KNN_DTW": (run_knn_dtw_process, (X_train_tensor, X_test_tensor, y_train_normalized, y_test_normalized)),
+        # "cuML_Baseline": (run_cuml_baseline_process, (X_train_tensor, X_test_tensor, y_train_normalized, y_test_normalized)),
+        # "KSigPDE": (run_ksig_pde_process, (X_train_tensor, X_test_tensor, y_train_normalized, y_test_normalized, KERNEL_LINEAR)),
+        # "KSig RFSF-TRP": (run_ksig_rfsf_trp_process, (X_train_tensor, X_test_tensor, y_train_normalized, y_test_normalized)),
         "PowerSigJax": (run_powersig_jax_process, (X_train_tensor, X_test_tensor, y_train_normalized, y_test_normalized, KERNEL_LINEAR, 9)),
     }
-    
+    test = (y_test_normalized* X_test_stds)+X_test_means - X_test[:, -1, :] 
+    test = torch.arccos(test)
+    test = (test * (2*total_nodes/torch.pi)-1)/2
+    logging.info(f"Test: {test[:5]}")
     ctx = mp.get_context("spawn")
     with ctx.Pool(processes=2, maxtasksperchild=1) as pool:
         for kernel_name in kernel_functions:
@@ -1477,12 +1511,21 @@ def main():
             final_results[kernel_name] = kernel_data
         elif kernel_data.get('error', 'OK') == 'OK' and uses_gram_matrices:
             logger.info(f"Running grid search for {kernel_name}...")
+            test = (y_test_normalized - X_test_normalized[:, -1, :]) * X_test_stds + X_test_means
+            test = torch.arccos(test)
+            test = (test * (2*total_nodes/torch.pi)-1)/2
+            logging.info(f"Test: {test[:5]}")
             grid_results = run_grid_search_with_gram_matrices(
                 kernel_data['train_gram'], 
                 kernel_data['test_gram'], 
                 kernel_data['y_train'], 
                 kernel_data['y_test'], 
                 kernel_name,
+                X_test.cpu().numpy(),
+                X_train_means.numpy(),
+                X_train_stds.numpy(),
+                X_test_means.numpy(),
+                X_test_stds.numpy(),
                 kernel_data.get('gram_computation_time', -1.0)
             )
             final_results[kernel_name] = grid_results

@@ -1,4 +1,5 @@
 import cmath
+import logging
 from typing import Tuple
 import torch
 
@@ -114,3 +115,55 @@ def build_dataset(
     # y = base_weights @ data[:, -history_length:, :]
 
     return data, y
+
+def build_integer_recurrence(p: int, num_samples: int,
+    num_timestamps: int,
+    dimensions: int,
+    dtype=torch.int64,
+    device=None): 
+    """
+    p must be prime otherwise simplified formula for cyclotomic polynomial is not valid
+    num_timestamps > p - 1 so that entire period is covered. ideally > 2p 
+    """
+    data = torch.zeros(
+        num_samples, num_timestamps, dimensions, dtype=dtype, device=device
+    )
+    data[:, :(p-1), :] = torch.randint(1, 10,
+        [num_samples, p-1, dimensions], dtype=dtype, device=device
+    )
+    indices = 1+torch.arange(p-1, device=device, dtype=dtype)
+    coefficients = (-1)**indices
+
+    for t in range(p-1, num_timestamps):
+        data[:, t, :] = coefficients @ data[:, t - (p-1) : t, :]
+    
+    y = coefficients @ data[:, t - (p-1) : t, :]
+
+    return data, y
+
+def build_chebychev_from_integer_recurrence(p: int, num_samples: int,
+    num_timestamps: int,
+    dimensions: int,
+    dtype=torch.float64,
+    device=None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    data, y = build_integer_recurrence(p, num_samples, num_timestamps, dimensions, dtype, device)
+    
+    # This will be the num of chebychev nodes used.
+    total_nodes = data.max()
+
+    logging.info(f"Total nodes: {total_nodes}")
+    
+    chebychev_nodes_data = torch.cos(torch.pi * (2 * data + 1) / (2 * total_nodes))
+
+    # Take cumulative sum along timesteps (dim=1) for each feature dimension
+    chebychev_nodes_data = torch.cumsum(chebychev_nodes_data, dim=1)
+
+    # Generate the next step in chebychev space.
+    chebychev_nodes_y = chebychev_nodes_data[:, -1, :] + torch.cos(torch.pi * (2 * y + 1) / (2 * total_nodes))
+    test = chebychev_nodes_y - chebychev_nodes_data[:, -1, :]
+    test = torch.arccos(test)
+    test = (test * (2*total_nodes/torch.pi)-1)/2
+    logging.info(f"Test: {test[:5]}")
+    
+    return chebychev_nodes_data, chebychev_nodes_y
