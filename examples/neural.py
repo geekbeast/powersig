@@ -138,6 +138,70 @@ def create_k_layer_mlp_classification(n, k, num_classes):
     return KLayerMLPClassification(n, k, num_classes)
 
 # Example usage and training function
+def train_mlp_model_regression(model, kernel, y_train, epochs=100, lr=0.001, optimizer_type='adam'):
+    """
+    Train the MLP model for regression using PyTorch.
+    Uses MSE loss for regression tasks.
+    
+    Args:
+        model: PyTorch model
+        kernel: Kernel matrix (torch.Tensor) - shape (batch_size, input_size)
+        y_train: Training targets (torch.Tensor) - shape (batch_size,) or (batch_size, 1) for regression
+        epochs: Number of training epochs
+        lr: Learning rate
+        optimizer_type: Type of optimizer ('adam' or 'lbfgs')
+    
+    Returns:
+        tuple: (trained_model, training_losses)
+    """
+    # Ensure y_train is 2D for regression (batch_size, 1)
+    if y_train.dim() == 1:
+        y_train = y_train.unsqueeze(1)
+    
+    # Use MSE loss for regression
+    criterion = nn.MSELoss()
+    
+    if optimizer_type.lower() == 'lbfgs':
+        optimizer = torch.optim.LBFGS(model.parameters(), max_iter=100000, tolerance_grad=np.finfo(float).eps, tolerance_change=np.finfo(float).eps, lr=lr, line_search_fn='strong_wolfe')
+    else:
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    
+    losses = []
+    
+    if optimizer_type.lower() == 'lbfgs':
+        # L-BFGS training loop
+        def closure():
+            optimizer.zero_grad()
+            # Process entire batch at once
+            outputs = model(kernel)
+            loss = criterion(outputs, y_train)
+            loss.backward()
+            return loss
+        
+        loss = optimizer.step(closure)
+        losses.append(loss.item())
+        
+        print(f'LBFGS Loss: {loss.item():.4f}')
+    else:
+        # Adam training loop
+        for epoch in range(epochs):
+            # Forward pass - process entire batch
+            outputs = model(kernel)
+            loss = criterion(outputs, y_train)
+            
+            # Backward pass and optimization
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            
+            losses.append(loss.item())
+            
+            if epoch % 10 == 0:
+                print(f'Epoch [{epoch}/{epochs}], Loss: {loss.item():.4f}')
+    
+    return model, losses
+
+
 def train_mlp_model_classification(model, kernel, y_train, epochs=100, lr=0.001, optimizer_type='adam'):
     """
     Train the MLP model for classification using PyTorch with batch processing.

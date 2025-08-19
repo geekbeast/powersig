@@ -53,7 +53,7 @@ except ImportError:
     CUML_AVAILABLE = False
 
 # Constants for quick experiments
-MAX_TIMESTEPS = 100  # Limit number of timesteps for faster experiments max is 17984
+MAX_TIMESTEPS = 2600  # Limit number of timesteps for faster experiments max is 17984
 # Subsample method: "equally_spaced" or "sliding_window"
 SUBSAMPLE_METHOD = "equally_spaced"  # Change to "sliding_window" to use sliding window approach
 # Cache directory for gram matrices
@@ -87,15 +87,16 @@ C_GRID = [10 ** (i-1) for i in range(6)]  # [0.1, 1, 10, 100, 1000, 10000]
 
 
 def generate_cache_filename(kernel_name: str, X_train_shape: Tuple[int, ...], X_test_shape: Tuple[int, ...], 
-                          kernel_type: Optional[KernelType] = None, **kwargs) -> str:
+                          kernel_type: Optional[KernelType] = None, seed: Optional[int] = None, **kwargs) -> str:
     """
-    Generate a cache filename based on kernel name, data shapes, and parameters.
+    Generate a cache filename based on kernel name, data shapes, parameters, and seed.
     
     Args:
         kernel_name: Name of the kernel
         X_train_shape: Shape of training data
         X_test_shape: Shape of test data
         kernel_type: Type of kernel (linear or rbf), optional
+        seed: Random seed for reproducibility, optional
         **kwargs: Additional parameters for the kernel
         
     Returns:
@@ -114,6 +115,10 @@ def generate_cache_filename(kernel_name: str, X_train_shape: Tuple[int, ...], X_
     
     # Add MAX_TIMESTEPS
     filename_parts.append(f"t{MAX_TIMESTEPS}")
+    
+    # Add seed if provided
+    if seed is not None:
+        filename_parts.append(f"seed{seed}")
     
     # Add additional parameters
     for key, value in sorted(kwargs.items()):
@@ -169,7 +174,7 @@ def validate_gram_matrices(train_gram: np.ndarray, test_gram: np.ndarray,
 
 
 def build_regression_dataset(history_length: int = 22, num_samples: int = 50, 
-                           num_timestamps: int = MAX_TIMESTEPS, dimensions: int = 2) -> Tuple[torch.Tensor, torch.Tensor]:
+                           num_timesteps: int = MAX_TIMESTEPS, dimensions: int = 2) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Build a regression dataset using large_window.build_dataset.
     
@@ -188,8 +193,8 @@ def build_regression_dataset(history_length: int = 22, num_samples: int = 50,
     from examples.large_window import build_dataset
     # X, y = build_dataset(history_length=history_length, num_samples=num_samples, num_timestamps=num_timestamps, dimensions=dimensions)
     # X, y = build_chebychev_dataset(num_samples=num_samples, num_timestamps=num_timestamps, dimensions=dimensions)
-    # X, y = build_integer_recurrence(p=17, num_samples=num_samples, num_timestamps=num_timestamps, dimensions=dimensions)
-    X, y = build_chebychev_from_integer_recurrence(p=17, num_samples=num_samples, num_timestamps=num_timestamps, dimensions=dimensions)
+    X, y = build_integer_recurrence(p=history_length, num_samples=num_samples, num_timesteps=num_timesteps, dimensions=dimensions)
+    # X, y = build_chebychev_from_integer_recurrence(p=history_length, num_samples=num_samples, num_timesteps=num_timesteps, dimensions=dimensions)
     
     logger.info(f"Dataset built successfully!")
     logger.info(f"X shape: {X.shape}")
@@ -203,7 +208,7 @@ def build_regression_dataset(history_length: int = 22, num_samples: int = 50,
     return X.to(torch.float64), y.to(torch.float64)
 
 
-def plot_regression_samples(X: np.ndarray, y: np.ndarray = None, num_samples: int = 5):
+def plot_regression_samples(X: np.ndarray, y: np.ndarray = None, num_samples: int = 5, seed: Optional[int] = None):
     """
     Plot regression samples.
     
@@ -211,6 +216,7 @@ def plot_regression_samples(X: np.ndarray, y: np.ndarray = None, num_samples: in
         X: Dataset with shape (samples, timesteps, dimensions)
         y: Regression targets with shape (samples, dimensions) - optional
         num_samples: Number of samples to plot
+        seed: Random seed for filename identification
     """
     logger.info(f"Plotting regression samples...")
     
@@ -218,6 +224,17 @@ def plot_regression_samples(X: np.ndarray, y: np.ndarray = None, num_samples: in
     timesteps = X.shape[1]
     time_axis = np.linspace(0, timesteps - 1, timesteps)
     num_dimensions = X.shape[2]
+    
+    # TEMPORARY: Limit timesteps to 1290-2000 range
+    start_idx = 1290
+    end_idx = min(2000, timesteps)
+    if timesteps > end_idx:
+        logger.info(f"Temporarily limiting plot to timesteps {start_idx}-{end_idx} (original: 0-{timesteps-1})")
+        time_axis = time_axis[start_idx:end_idx]
+        X = X[:, start_idx:end_idx, :]
+    
+    # Create seed suffix for filenames
+    seed_suffix = f"_seed_{seed}" if seed is not None else ""
     
     # Plot first few samples
     for sample_idx in range(min(num_samples, X.shape[0])):
@@ -244,9 +261,37 @@ def plot_regression_samples(X: np.ndarray, y: np.ndarray = None, num_samples: in
             axes[dim_idx].grid(True, alpha=0.3)
         
         plt.tight_layout()
-        plt.savefig(f'regression_sample_{sample_idx + 1}.png', dpi=300, bbox_inches='tight')
+        plt.savefig(f'regression_sample_{sample_idx + 1}{seed_suffix}.png', dpi=300, bbox_inches='tight')
         plt.close()
         logger.info(f"Saved plot for sample {sample_idx + 1}")
+        
+        # Create difference plot for this sample
+        fig, axes = plt.subplots(num_dimensions, 1, figsize=(12, 3*num_dimensions))
+        if num_dimensions == 1:
+            axes = [axes]
+        
+        # Plot differences for each dimension
+        for dim_idx in range(num_dimensions):
+            dimension_data = sample_data[:, dim_idx]
+            # Calculate differences: i+1 - i for each timestep
+            differences = np.diff(dimension_data)
+            # Time axis for differences (one less point)
+            diff_time_axis = time_axis[1:]
+            
+            axes[dim_idx].plot(diff_time_axis, differences, linewidth=1.5, color='red')
+            title = f'Sample {sample_idx + 1}, Dimension {dim_idx + 1} - Differences'
+            if y is not None:
+                title += f' (Target: {y[sample_idx, dim_idx]:.4f})'
+            axes[dim_idx].set_title(title)
+            axes[dim_idx].set_xlabel('Time Step')
+            axes[dim_idx].set_ylabel('Difference (t+1 - t)')
+            axes[dim_idx].grid(True, alpha=0.3)
+            axes[dim_idx].axhline(y=0, color='black', linestyle='--', alpha=0.5)
+        
+        plt.tight_layout()
+        plt.savefig(f'recurrence_diff_{sample_idx + 1}{seed_suffix}.png', dpi=300, bbox_inches='tight')
+        plt.close()
+        logger.info(f"Saved difference plot for sample {sample_idx + 1}")
 
 
 def normalize_training_data(X_train: torch.Tensor, X_test: torch.Tensor, y_train: torch.Tensor, y_test: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -490,7 +535,7 @@ def print_dataset_statistics(X_train: np.ndarray, X_test: np.ndarray):
         logger.info("-" * 30)
 
 
-def compute_gram_matrix_ksig_pde(X_train: np.ndarray, X_test: np.ndarray, kernel_type: KernelType = KERNEL_LINEAR) -> Tuple[np.ndarray, np.ndarray, float]:
+def compute_gram_matrix_ksig_pde(X_train: np.ndarray, X_test: np.ndarray, kernel_type: KernelType = KERNEL_LINEAR, seed: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray, float]:
     """
     Compute gram matrices using KSigPDE kernel with local caching.
     
@@ -503,7 +548,7 @@ def compute_gram_matrix_ksig_pde(X_train: np.ndarray, X_test: np.ndarray, kernel
         Tuple of (train_gram, test_gram, computation_time) where computation_time is -1.0 if loaded from cache
     """
     # Generate cache filename
-    cache_filename = generate_cache_filename("KSigPDE", kernel_type, X_train.shape, X_test.shape)
+    cache_filename = generate_cache_filename("KSigPDE", kernel_type, X_train.shape, X_test.shape, seed=seed)
     
     # Check if cache exists and try to load
     logger.info(f"Checking for KSigPDE cache file: {cache_filename}")
@@ -634,8 +679,8 @@ def compute_gram_matrix_ksig_pde(X_train: np.ndarray, X_test: np.ndarray, kernel
         raise
 
 
-def compute_gram_matrix_ksig_rfsf_trp(X_train: np.ndarray, X_test: np.ndarray, 
-                                      n_levels: int = 21, n_features: int = 1000) -> Tuple[np.ndarray, np.ndarray]:
+def compute_gram_matrix_ksig_rfsf_trp(X_train: torch.Tensor, X_test: torch.Tensor, 
+                                      n_levels: int = 21, n_features: int = 1000, seed: Optional[int] = None) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Compute the train–train and test–train kernel matrices using
     Random Fourier Signature Features with Tensorized Random Projection (RFSF‑TRP) with local caching.
@@ -658,9 +703,9 @@ def compute_gram_matrix_ksig_rfsf_trp(X_train: np.ndarray, X_test: np.ndarray,
     K_test : np.ndarray
         Cross‐Gram matrix between test and train, shape (n_test, n_train).
     """
-    # Generate cache filename
-    cache_filename = generate_cache_filename("KSigRFSFTRP", X_train.shape, X_test.shape, 
-                                          n_levels=n_levels, n_features=n_features)
+        # Generate cache filename
+    cache_filename = generate_cache_filename("KSigRFSFTRP", X_train.shape, X_test.shape,
+                                          seed=seed, n_levels=n_levels, n_features=n_features)
     
     # Check if cache exists and try to load
     logger.info(f"Checking for KSig RFSF-TRP cache file: {cache_filename}")
@@ -773,7 +818,7 @@ def compute_gram_matrix_ksig_rfsf_trp(X_train: np.ndarray, X_test: np.ndarray,
         raise
 
 
-def compute_gram_matrix_powersig_jax(X_train: np.ndarray, X_test: np.ndarray, kernel_type: KernelType = KERNEL_LINEAR, order: int = 8, normalize: bool = False) -> Tuple[np.ndarray, np.ndarray]:
+def compute_gram_matrix_powersig_jax(X_train: np.ndarray, X_test: np.ndarray, kernel_type: KernelType = KERNEL_LINEAR, order: int = 8, normalize: bool = False, seed: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute gram matrices using PowerSigJax with local caching.
     
@@ -787,7 +832,7 @@ def compute_gram_matrix_powersig_jax(X_train: np.ndarray, X_test: np.ndarray, ke
         Tuple of (train_gram, test_gram) matrices
     """
     # Generate cache filename
-    cache_filename = generate_cache_filename("PowerSigJax", kernel_type, X_train.shape, X_test.shape, order=order)
+    cache_filename = generate_cache_filename("PowerSigJax", kernel_type, X_train.shape, X_test.shape, seed=seed, order=order)
     
     # Check if cache exists and try to load
     logger.info(f"Checking for PowerSigJax cache file: {cache_filename}")
@@ -804,6 +849,14 @@ def compute_gram_matrix_powersig_jax(X_train: np.ndarray, X_test: np.ndarray, ke
                 logger.info("Successfully loaded cached PowerSigJax gram matrices")
                 logger.info(f"Train gram shape: {train_gram.shape}")
                 logger.info(f"Test gram shape: {test_gram.shape}")
+                
+                # Compute and log condition number
+                try:
+                    condition_number = np.linalg.cond(train_gram)
+                    logger.info(f"PowerSigJax Training gram condition number (cached): {condition_number:.2e}")
+                except Exception as e:
+                    logger.warning(f"Failed to compute condition number: {e}")
+                    condition_number = np.inf
                 
                 # Print a small portion of the training gram matrix (from cache)
                 print(f"PowerSigJax Training gram shape (cached): {train_gram.shape}")
@@ -984,7 +1037,7 @@ def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.nda
             full_idx = np.arange(len(y_train))  # All samples in same fold
             cv = [(full_idx, full_idx)]
             
-            grid_search = GridSearchCV(svr, param_grid, cv=cv, scoring='neg_mean_squared_error', n_jobs=len(C_GRID))
+            grid_search = GridSearchCV(svr, param_grid, cv=cv, scoring='neg_max_error', n_jobs=len(C_GRID))
             grid_search.fit(train_gram_np, y_train[:, dim])
             
             # Get best model and predict for this dimension
@@ -999,7 +1052,7 @@ def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.nda
         full_idx = np.arange(len(y_train))  # All samples in same fold
         cv = [(full_idx, full_idx)]
         
-        grid_search = GridSearchCV(svr, param_grid, cv=cv, scoring='neg_mean_squared_error', n_jobs=len(C_GRID))
+        grid_search = GridSearchCV(svr, param_grid, cv=cv, scoring='neg_max_error', n_jobs=len(C_GRID))
         grid_search.fit(train_gram_np, y_train)
         
         # Get best model and predict
@@ -1009,18 +1062,30 @@ def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.nda
     svr_time = time.time() - start_time
     
     # Calculate SVR metrics
+    print(f"y_test: {y_test[:5]}")
+    print(f"y_pred_svr: {y_pred_svr[:5]}")
+    print(f"X_test[:, -1, :]: {X_test[:, -1, :][:5]}")
+    print(f"y_test-X_test[:, -1, :]: {(y_test-X_test[:, -1, :])[:5]}")
+    print(f"y_pred_svr-X_test[:, -1, :]: {(y_pred_svr-X_test[:, -1, :])[:5]}")
     svr_mse = mean_squared_error(y_test, y_pred_svr)
     svr_mape = np.mean(np.abs((y_test - y_pred_svr) / (y_test + 1e-8))) * 100  # MAPE in percentage
     svr_r2 = r2_score(y_test, y_pred_svr)
     
     total_nodes = 19
-    test = (X_test_stds*y_test) + X_test_means - X_test[:, -1, :]
-    test = np.arccos(test)
+    # test = (X_test_stds*y_test) + X_test_means - X_test[:, -1, :]
+    test = np.arccos(y_pred_svr)
     test = (test * (2*total_nodes/torch.pi)-1)/2
     logging.info(f"Test A: {test[:5]}") 
+    test = np.arccos(y_test)
+    test = (test * (2*total_nodes/torch.pi)-1)/2
+    logging.info(f"Test B: {test[:5]}") 
     # Compute the inverse chebychev transform of y_test and y_pred_svr 
-    y_test_inv = (np.arccos((X_test_stds*y_test) + X_test_means - X_test[:, -1,:])*(2*total_nodes/np.pi)-1)/2
-    y_pred_svr_inv = (np.arccos((X_test_stds*y_pred_svr) + X_test_means - X_test[:, -1,:])*(2*total_nodes/np.pi)-1)/2
+    # Clip inputs to valid domain for arccos [-1, 1]
+    y_test_input = np.clip((y_test) + X_test_means - X_test[:, -1,:], -1.0, 1.0)
+    y_pred_svr_input = np.clip((y_pred_svr) + X_test_means - X_test[:, -1,:], -1.0, 1.0)
+    
+    y_test_inv = (np.arccos(y_test_input)*(2*total_nodes/np.pi)-1)/2
+    y_pred_svr_inv = (np.arccos(y_pred_svr_input)*(2*total_nodes/np.pi)-1)/2
     # Print out the inverse Chebyshev transform values
     logger.info("Inverse Chebyshev transform values:")
     logger.info(f"Raw preimage: {y_test - (X_test[:, -1, :] * X_test_stds + X_test_means)}")
@@ -1042,7 +1107,13 @@ def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.nda
     # Calculate condition number for the training gram matrix
     try:
         condition_number = np.linalg.cond(train_gram_np)
+        logger.info(f"{kernel_name} Training gram condition number: {condition_number:.2e}")
+        if condition_number > 1e12:
+            logger.warning(f"High condition number ({condition_number:.2e}) may cause training issues!")
+        elif condition_number > 1e8:
+            logger.warning(f"Moderately high condition number ({condition_number:.2e})")
     except Exception as e:
+        logger.warning(f"Could not compute condition number: {e}")
         condition_number = np.inf
     
     # Return SVR results
@@ -1065,7 +1136,7 @@ def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.nda
 
 
 def run_ksig_pde_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tensor, 
-                         y_train: np.ndarray, y_test: np.ndarray, kernel_type: KernelType) -> Dict[str, Any]:
+                         y_train: np.ndarray, y_test: np.ndarray, kernel_type: KernelType, seed: Optional[int] = None) -> Dict[str, Any]:
     """
     Run KSigPDE computation in separate process.
     """
@@ -1074,7 +1145,7 @@ def run_ksig_pde_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tens
     X_test = X_test_tensor.numpy()
     
     # Compute gram matrices
-    train_gram, test_gram, gram_computation_time = compute_gram_matrix_ksig_pde(X_train, X_test, kernel_type)
+    train_gram, test_gram, gram_computation_time = compute_gram_matrix_ksig_pde(X_train, X_test, kernel_type, seed=seed)
     
     # Check if OOM occurred
     if train_gram is None or test_gram is None:
@@ -1084,8 +1155,8 @@ def run_ksig_pde_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tens
             'train_gram': None,
             'test_gram': None,
             'gram_computation_time': -1.0,
-            'y_train': y_train,
-            'y_test': y_test,
+            'y_train': np.array(y_train, dtype=np.float64),
+            'y_test': np.array(y_test, dtype=np.float64),
             'error': 'OOM - computation skipped'
         }
     
@@ -1102,7 +1173,7 @@ def run_ksig_pde_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tens
 
 
 def run_ksig_rfsf_trp_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tensor,
-                              y_train: np.ndarray, y_test: np.ndarray) -> Dict[str, Any]:
+                              y_train: np.ndarray, y_test: np.ndarray, seed: Optional[int] = None) -> Dict[str, Any]:
     """
     Run KSig RFSF-TRP computation in separate process.
     """
@@ -1111,7 +1182,7 @@ def run_ksig_rfsf_trp_process(X_train_tensor: torch.Tensor, X_test_tensor: torch
     X_test = X_test_tensor.numpy()
     
     # Compute gram matrices
-    train_gram, test_gram = compute_gram_matrix_ksig_rfsf_trp(X_train, X_test, n_levels=21, n_features=1000)
+    train_gram, test_gram = compute_gram_matrix_ksig_rfsf_trp(X_train, X_test, n_levels=21, n_features=1000, seed=seed)
     
     # Check if OOM occurred
     if train_gram is None or test_gram is None:
@@ -1120,8 +1191,8 @@ def run_ksig_rfsf_trp_process(X_train_tensor: torch.Tensor, X_test_tensor: torch
             'kernel_name': "KSig RFSF-TRP",
             'train_gram': None,
             'test_gram': None,
-            'y_train': y_train,
-            'y_test': y_test,
+            'y_train': np.array(y_train, dtype=np.float64),
+            'y_test': np.array(y_test, dtype=np.float64),
             'error': 'OOM - computation skipped'
         }
     
@@ -1137,7 +1208,7 @@ def run_ksig_rfsf_trp_process(X_train_tensor: torch.Tensor, X_test_tensor: torch
 
 
 def run_powersig_jax_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tensor,
-                            y_train: np.ndarray, y_test: np.ndarray, kernel_type: KernelType, order: int) -> Dict[str, Any]:
+                            y_train: torch.Tensor, y_test: torch.Tensor, kernel_type: KernelType, order: int, seed: Optional[int] = None) -> Dict[str, Any]:
     """
     Run PowerSigJax computation in separate process.
     """
@@ -1146,7 +1217,7 @@ def run_powersig_jax_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.
     X_test = X_test_tensor.numpy()
     
     # Compute gram matrices
-    train_gram, test_gram = compute_gram_matrix_powersig_jax(X_train, X_test, kernel_type, order)
+    train_gram, test_gram = compute_gram_matrix_powersig_jax(X_train, X_test, kernel_type, order, seed=seed)
     
     
     return {
@@ -1160,7 +1231,7 @@ def run_powersig_jax_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.
 
 
 def run_cuml_baseline_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tensor,
-                             y_train: np.ndarray, y_test: np.ndarray) -> Dict[str, Any]:
+                             y_train: torch.Tensor, y_test: torch.Tensor) -> Dict[str, Any]:
     """
     Run cuML SVR baseline with RBF and linear kernels in separate process.
     """
@@ -1273,7 +1344,7 @@ def run_cuml_baseline_process(X_train_tensor: torch.Tensor, X_test_tensor: torch
                         'best_kernel': kernel,
                         'best_C': C,
                         'y_pred': y_pred,
-                        'y_true': y_test
+                        'y_true': y_test.cpu().numpy()
                     }
                     
             except Exception as e:
@@ -1309,7 +1380,7 @@ def run_cuml_baseline_process(X_train_tensor: torch.Tensor, X_test_tensor: torch
 
 
 def run_knn_dtw_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tensor,
-                        y_train: np.ndarray, y_test: np.ndarray) -> Dict[str, Any]:
+                        y_train: torch.Tensor, y_test: torch.Tensor) -> Dict[str, Any]:
     """
     Run cuML KNeighborsRegressor in separate process.
     """
@@ -1353,6 +1424,7 @@ def run_knn_dtw_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tenso
         # Predict
         y_pred_cp = knn.predict(X_test_cp)
         y_pred = cp.asnumpy(y_pred_cp)
+        y_test = y_test.cpu().numpy()
         end_time = time.time()
         
         # Calculate metrics
@@ -1394,47 +1466,54 @@ def run_knn_dtw_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tenso
             'error': str(e)
         }
 
-NUM_TIMESTEPS = 100
-def main():
+def main(num_timesteps, max_timesteps=None, seed=69420):
     """
     Main function to run Eigenworms regression with different kernels using multiprocessing.
+    
+    Args:
+        num_timesteps: Number of timesteps to use for the dataset
+        max_timesteps: Maximum timesteps for subsampling. If None, uses num_timesteps
+        seed: Random seed for reproducibility
     """
-    torch.manual_seed(42)
-    logger.info("Starting Eigenworms regression experiment...")
+    if max_timesteps is None:
+        max_timesteps = num_timesteps
+        
+    torch.manual_seed(seed)
+    logger.info(f"Starting Eigenworms regression experiment with {num_timesteps} timesteps...")
     logger.info(f"Kernels to run: {KERNELS_TO_RUN}")
     logger.info(f"Available kernels: {set(KERNEL_NAMES.keys())}")
     logger.info(f"Skipped kernels: {set(KERNEL_NAMES.keys()) - KERNELS_TO_RUN}")
     
     # Build regression dataset using large_window.build_dataset
-    X_train, y_train = build_regression_dataset(history_length=20, num_samples=25, num_timestamps=NUM_TIMESTEPS, dimensions=2)
-    X_test, y_test = build_regression_dataset(history_length=20, num_samples=25, num_timestamps=NUM_TIMESTEPS, dimensions=2)
+    X_train, y_train = build_regression_dataset(history_length=1289, num_samples=25, num_timesteps=num_timesteps, dimensions=2)
+    X_test, y_test = build_regression_dataset(history_length=1289, num_samples=25, num_timesteps=num_timesteps, dimensions=2)
     
     total_nodes = 19
     # Plot samples and print statistics
-    plot_regression_samples(X_train, y_train, num_samples=5)
+    plot_regression_samples(X_train, y_train, num_samples=5, seed=seed)
     test = y_test - X_test[:, -1, :]
     test = torch.arccos(test)
     test = (test * (2*total_nodes/torch.pi)-1)/2
     
     logging.info(f"Test: {test[:5]}")
-    # Apply subsampling if MAX_TIMESTEPS is less than the actual number of timesteps
+    # Apply subsampling if max_timesteps is less than the actual number of timesteps
     logger.info(f"SUBSAMPLE_METHOD: {SUBSAMPLE_METHOD}")
-    logger.info(f"MAX_TIMESTEPS: {MAX_TIMESTEPS}")
+    logger.info(f"max_timesteps: {max_timesteps}")
     logger.info(f"X_train shape before subsampling: {X_train.shape}")
     
     if SUBSAMPLE_METHOD == "sliding_window":
         # Use sliding window approach
         logger.info("Using sliding window subsampling approach")
-        X_train, y_train = sliding_window_subsample(X_train, y_train, MAX_TIMESTEPS, stride=1)
-        X_test, y_test = sliding_window_subsample(X_test, y_test, MAX_TIMESTEPS, stride=1)
+        X_train, y_train = sliding_window_subsample(X_train, y_train, max_timesteps, stride=1)
+        X_test, y_test = sliding_window_subsample(X_test, y_test, max_timesteps, stride=1)
         
         logger.info(f"X_train shape after sliding window: {X_train.shape}")
         logger.info(f"y_train shape after sliding window: {y_train.shape}")
-    elif SUBSAMPLE_METHOD == "equally_spaced" and MAX_TIMESTEPS < NUM_TIMESTEPS:
+    elif SUBSAMPLE_METHOD == "equally_spaced" and max_timesteps < num_timesteps:
         # Use equally spaced subsampling
         logger.info("Using equally spaced subsampling approach")
-        X_train = subsample_timesteps(X_train, MAX_TIMESTEPS)
-        X_test = subsample_timesteps(X_test, MAX_TIMESTEPS)
+        X_train = subsample_timesteps(X_train, max_timesteps)
+        X_test = subsample_timesteps(X_test, max_timesteps)
         
         logger.info(f"X_train shape after equally spaced: {X_train.shape}")
     
@@ -1449,12 +1528,21 @@ def main():
     logger.info(f"Training set size: {X_train.shape[0]}")
     logger.info(f"Test set size: {X_test.shape[0]}")
     # Apply z-score normalization per dimension
-    X_train_normalized, X_test_normalized, y_train_normalized, y_test_normalized, X_train_means, X_train_stds, X_test_means, X_test_stds = normalize_training_data(X_train, X_test, y_train, y_test)
+    # X_train_normalized, X_test_normalized, y_train_normalized, y_test_normalized, X_train_means, X_train_stds, X_test_means, X_test_stds = normalize_training_data(X_train, X_test, y_train, y_test)
+    sigma = X_train.std()
+    X_train_normalized = X_train / sigma
+    X_test_normalized = X_test / sigma
+    y_train_normalized = y_train
+    y_test_normalized = y_test 
+    X_train_means = torch.zeros((X_train.shape[0], X_train.shape[2]),dtype=torch.float64, device = X_train.device)
+    X_test_means = torch.zeros((X_test.shape[0], X_test.shape[2]),dtype=torch.float64, device = X_test.device)
+    X_train_stds = torch.ones((X_train.shape[0], X_train.shape[2]),dtype=torch.float64, device = X_train.device) * sigma
+    X_test_stds = torch.ones((X_test.shape[0], X_test.shape[2]),dtype=torch.float64, device = X_test.device) * sigma
 
-    test = (y_test_normalized* X_test_stds)+X_test_means - X_test[:, -1, :] 
-    test = torch.arccos(test)
-    test = (test * (2*total_nodes/torch.pi)-1)/2
-    logging.info(f"Test: {test[:5]}")
+    # test = (y_test_normalized* X_test_stds)+X_test_means - X_test[:, -1, :] 
+    # test = torch.arccos(test)
+    # test = (test * (2*total_nodes/torch.pi)-1)/2
+    # logging.info(f"Test: {test[:5]}")
     # X_train_normalized = X_train
     # X_test_normalized = X_test
     # y_train_normalized = y_train
@@ -1463,7 +1551,7 @@ def main():
     # Print statistics for both training and test sets (after normalization)
     logger.info("Dataset statistics AFTER normalization:")
     print_dataset_statistics(X_train_normalized, X_test_normalized)
-    test = (y_test_normalized* X_test_stds)+X_test_means - X_test[:, -1, :] 
+    test = (y_test_normalized*X_test_stds)+X_test_means - X_test[:, -1, :] 
     test = torch.arccos(test)
     test = (test * (2*total_nodes/torch.pi)-1)/2
     logging.info(f"Test: {test[:5]}")
@@ -1478,9 +1566,9 @@ def main():
     kernel_functions = {
         # "KNN_DTW": (run_knn_dtw_process, (X_train_tensor, X_test_tensor, y_train_normalized, y_test_normalized)),
         # "cuML_Baseline": (run_cuml_baseline_process, (X_train_tensor, X_test_tensor, y_train_normalized, y_test_normalized)),
-        # "KSigPDE": (run_ksig_pde_process, (X_train_tensor, X_test_tensor, y_train_normalized, y_test_normalized, KERNEL_LINEAR)),
-        # "KSig RFSF-TRP": (run_ksig_rfsf_trp_process, (X_train_tensor, X_test_tensor, y_train_normalized, y_test_normalized)),
-        "PowerSigJax": (run_powersig_jax_process, (X_train_tensor, X_test_tensor, y_train_normalized, y_test_normalized, KERNEL_LINEAR, 9)),
+        "KSigPDE": (run_ksig_pde_process, (X_train_tensor, X_test_tensor, y_train_normalized, y_test_normalized, KERNEL_LINEAR, seed)),
+        "KSig RFSF-TRP": (run_ksig_rfsf_trp_process, (X_train_tensor, X_test_tensor, y_train_normalized, y_test_normalized, seed)),
+        "PowerSigJax": (run_powersig_jax_process, (X_train_tensor, X_test_tensor, y_train_normalized, y_test_normalized, KERNEL_LINEAR, 9, seed)),
     }
     test = (y_test_normalized* X_test_stds)+X_test_means - X_test[:, -1, :] 
     test = torch.arccos(test)
@@ -1632,7 +1720,108 @@ def main():
                 logger.info(f"- {kernel}")
     
     logger.info("\nExperiment completed!")
+    
+    # Return final results for CSV generation
+    return final_results
+
+
+def run_timestep_experiments():
+    """
+    Run experiments with different timestep values and generate CSV results.
+    """
+    import csv
+    import os
+    
+    # Define timestep ranges
+    timestep_ranges = [3000]
+    
+    # # Range 1: 989 to 1289 in steps of 100
+    # for timesteps in range(989, 1290, 100):
+    #     timestep_ranges.append(timesteps)
+    
+    # # Range 2: 1290 to 2600 in steps of 200
+    # for timesteps in range(1290, 2691, 200):
+    #     timestep_ranges.append(timesteps)
+    
+    # # Range 3: 4000 to 5000 in steps of 200
+    # for timesteps in range(5000, 5401, 200):
+    #     timestep_ranges.append(timesteps)
+    
+    # CSV file setup
+    csv_filename = "recurrence_reg.csv"
+    csv_exists = os.path.exists(csv_filename)
+    
+    with open(csv_filename, 'a', newline='') as csvfile:
+        fieldnames = ['kernel_name', 'num_timesteps', 'seed', 'mse', 'mape', 'condition_number']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        
+        # Write header only if file doesn't exist
+        if not csv_exists:
+            writer.writeheader()
+        
+        # Define seeds to test
+        seeds = [42, 123, 456, 789, 1776, 1863, 1903, 1947, 1969, 2015]
+        
+                # Run experiments for each timestep value and seed
+        for num_timesteps in timestep_ranges:
+            for seed in seeds:
+                logger.info(f"\n{'='*80}")
+                logger.info(f"RUNNING EXPERIMENT WITH {num_timesteps} TIMESTEPS, SEED {seed}")
+                logger.info(f"{'='*80}")
+                
+                try:
+                    # Run main experiment
+                    results = main(num_timesteps=num_timesteps, seed=seed)
+                    
+                    # Write results to CSV
+                    for kernel_name, kernel_results in results.items():
+                        if kernel_results.get('error', 'OK') == 'OK':
+                            row = {
+                                'kernel_name': kernel_name,
+                                'num_timesteps': num_timesteps,
+                                'seed': seed,
+                                'mse': kernel_results.get('mse', np.inf),
+                                'mape': kernel_results.get('mape', np.inf),
+                                'condition_number': kernel_results.get('condition_number', np.inf)
+                            }
+                            writer.writerow(row)
+                            logger.info(f"Added {kernel_name} results to CSV: MSE={row['mse']:.6f}, MAPE={row['mape']:.6f}, Cond={row['condition_number']:.2e}")
+                        else:
+                            # Write failed experiments with inf values
+                            row = {
+                                'kernel_name': kernel_name,
+                                'num_timesteps': num_timesteps,
+                                'seed': seed,
+                                'mse': np.inf,
+                                'mape': np.inf,
+                                'condition_number': np.inf
+                            }
+                            writer.writerow(row)
+                            logger.warning(f"Added failed {kernel_name} results to CSV")
+                    
+                    # Flush the file to ensure data is written
+                    csvfile.flush()
+                    
+                except Exception as e:
+                    logger.error(f"Experiment failed for {num_timesteps} timesteps, seed {seed}: {e}")
+                    # Write error entries for each kernel that was supposed to run
+                    for kernel_name in KERNELS_TO_RUN:
+                        row = {
+                            'kernel_name': kernel_name,
+                            'num_timesteps': num_timesteps,
+                            'seed': seed,
+                            'mse': np.inf,
+                            'mape': np.inf,
+                            'condition_number': np.inf
+                        }
+                        writer.writerow(row)
+    
+    logger.info(f"\nAll experiments completed! Results saved to {csv_filename}")
+
+
+
 
 
 if __name__ == "__main__":
-    main()
+    
+    run_timestep_experiments()

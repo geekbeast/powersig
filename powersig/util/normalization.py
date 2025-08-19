@@ -36,16 +36,15 @@ def normalize_kernel_matrix(K: jnp.ndarray) -> jnp.ndarray:
         K: JAX array of shape (n, n) representing a kernel matrix
         
     Returns:
-        K_normalized: JAX array of shape (n, n) with normalized kernel matrix
-        
-    Raises:
-        ValueError: If K is not square or has NaN values
+        K_normalized: JAX array of shape (n, n) with normalized kernel matrix,
+                     or NaN if input contains NaN/inf values
     """
     if K.ndim != 2 or K.shape[0] != K.shape[1]:
         raise ValueError("K must be a square matrix")
     
-    # Check for NaN values in input
-    if jnp.any(jnp.isnan(K)):
-        raise ValueError("Input matrix K contains NaN values")
+    # Check for NaN or inf values in input
+    if jnp.any(jnp.isnan(K)) or jnp.any(jnp.isinf(K)):
+        # Return a matrix filled with NaN
+        return jnp.full_like(K, jnp.nan)
     
     return _normalize_kernel_matrix_jitted(K)

@@ -117,7 +117,7 @@ def build_dataset(
     return data, y
 
 def build_integer_recurrence(p: int, num_samples: int,
-    num_timestamps: int,
+    num_timesteps: int,
     dimensions: int,
     dtype=torch.int64,
     device=None): 
@@ -126,15 +126,20 @@ def build_integer_recurrence(p: int, num_samples: int,
     num_timestamps > p - 1 so that entire period is covered. ideally > 2p 
     """
     data = torch.zeros(
-        num_samples, num_timestamps, dimensions, dtype=dtype, device=device
+        num_samples, num_timesteps, dimensions, dtype=dtype, device=device
     )
-    data[:, :(p-1), :] = torch.randint(1, 10,
+
+    # If the number of timesteps is less than p, than we just need to return random data as all we see is seed. If num_timesteps = p then we can at least generate one.
+    if num_timesteps < p:
+        return torch.randint(1, 10, [num_samples, num_timesteps, dimensions], dtype=dtype, device=device), torch.randint(1, 10, (num_samples, dimensions), dtype=dtype, device=device)
+    
+    data[:, :(p-1), :] = torch.randint(-20, 20,
         [num_samples, p-1, dimensions], dtype=dtype, device=device
     )
     indices = 1+torch.arange(p-1, device=device, dtype=dtype)
     coefficients = (-1)**indices
 
-    for t in range(p-1, num_timestamps):
+    for t in range(p-1, num_timesteps):
         data[:, t, :] = coefficients @ data[:, t - (p-1) : t, :]
     
     y = coefficients @ data[:, t - (p-1) : t, :]
@@ -142,15 +147,15 @@ def build_integer_recurrence(p: int, num_samples: int,
     return data, y
 
 def build_chebychev_from_integer_recurrence(p: int, num_samples: int,
-    num_timestamps: int,
+    num_timesteps: int,
     dimensions: int,
     dtype=torch.float64,
     device=None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    data, y = build_integer_recurrence(p, num_samples, num_timestamps, dimensions, dtype, device)
+    data, y = build_integer_recurrence(p, num_samples, num_timesteps, dimensions, dtype, device)
     
     # This will be the num of chebychev nodes used.
-    total_nodes = data.max()
+    total_nodes = max(data.max(), y.max())
 
     logging.info(f"Total nodes: {total_nodes}")
     
@@ -160,7 +165,8 @@ def build_chebychev_from_integer_recurrence(p: int, num_samples: int,
     chebychev_nodes_data = torch.cumsum(chebychev_nodes_data, dim=1)
 
     # Generate the next step in chebychev space.
-    chebychev_nodes_y = chebychev_nodes_data[:, -1, :] + torch.cos(torch.pi * (2 * y + 1) / (2 * total_nodes))
+    # chebychev_nodes_y = chebychev_nodes_data[:, -1, :] + torch.cos(torch.pi * (2 * y + 1) / (2 * total_nodes))
+    chebychev_nodes_y = torch.cos(torch.pi * (2 * y + 1) / (2 * total_nodes))
     test = chebychev_nodes_y - chebychev_nodes_data[:, -1, :]
     test = torch.arccos(test)
     test = (test * (2*total_nodes/torch.pi)-1)/2

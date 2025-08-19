@@ -307,8 +307,8 @@ def compute_gram_matrix_powersig(X_train, X_test, powersig):
         Tuple of (train_gram, test_gram)
     """
 
-    # static_kernel = ksig.static.kernels.RBFKernel()
-    static_kernel = ksig.static.kernels.LinearKernel()
+    static_kernel = ksig.static.kernels.RBFKernel()
+    # static_kernel = ksig.static.kernels.LinearKernel()
     ksig_pde_kernel = SignaturePDEKernel(normalize=False, static_kernel=static_kernel)
     
     print("Computing training gram matrix...")
@@ -409,8 +409,8 @@ def validate_gram_matrix_powersig_vs_ksigpde(X_train, powersig):
     # 2. KSigPDE computation
     print("Computing KSigPDE gram matrix...")
     start_time = time.time()
-    # static_kernel = RBFKernel()
-    static_kernel = LinearKernel()
+    static_kernel = RBFKernel()
+    # static_kernel = LinearKernel()
     ksig_pde_kernel = SignaturePDEKernel(normalize=False, static_kernel=static_kernel)
     ksig_gram = ksig_pde_kernel(cupy.array(X_validate,dtype=cupy.float64), cupy.array(X_validate,dtype=cupy.float64))
     ksig_time = time.time() - start_time
@@ -665,7 +665,7 @@ def main():
     if btc_data is None:
         # Download Bitcoin data if not cached or too old
         # Start from 2017-06-02 to ensure we have the training period
-        btc_data = download_bitcoin_data(start_date="2017-06-02")
+        btc_data = download_bitcoin_data(start_date="2024-06-07")
         # Save for future use
         save_bitcoin_data(btc_data)
     print(f"Bitcoin data: {btc_data}")
@@ -703,7 +703,7 @@ def main():
     
     # Initialize PowerSigJax
     print("\nInitializing PowerSigJax...")
-    powersig = PowerSigJax(order=8,static_kernel=static_kernels.linear_kernel, device=device)  # Using order 8 for validation
+    powersig = PowerSigJax(order=9,static_kernel=static_kernels.rbf_kernel, device=device)  # Using order 8 for validation
 
     
     # Validate PowerSigJax against KSigPDE
@@ -727,7 +727,7 @@ def main():
     print(f"Test gram matrix - min: {np.min(test_gram_np):.6f}, max: {np.max(test_gram_np):.6f}, mean: {np.mean(test_gram_np):.6f}")
     
     # Train SVR model with reasonable C value and regularization
-    C = .10  # Much smaller C for better regularization
+    C = .010  # Much smaller C for better regularization
     epsilon = 0.1  # Larger epsilon for more tolerance
     
     # Debug: Check gram matrix and target ranges before training
