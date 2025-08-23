@@ -7,6 +7,7 @@ using both JAX and CuPy for GPU acceleration.
 
 # Import submodules first
 from . import jax
+from . import torch
 from . import util
 from . import cupy_backend
 
@@ -22,6 +23,7 @@ __all__ = [
     'fractional_brownian_motion',
     'fbm',
     'jax',
+    'torch',
     'util',
     'cupy_backend'
 ]

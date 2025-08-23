@@ -1,3 +1,4 @@
+from math import ceil
 from typing import Optional, Tuple, Union
 import jax
 import jax.numpy as jnp
@@ -52,7 +53,7 @@ def normalize_kernel_matrix(K: jnp.ndarray) -> jnp.ndarray:
     return _normalize_kernel_matrix_jitted(K)
 
 def unity_transform(
-    scaled_dataset: jnp.array, delta_y: Optional[jnp.array] = None, epsilon=0.001
+    delta_X: jnp.array, delta_y: Optional[jnp.array] = None, n_roots:Optional[int]=None, epsilon=0.001
 ) -> Union[tuple[jnp.array, int], tuple[jnp.array, jnp.array, int]]:
     """
     Transform scaled data to roots of unity using arccos transformation.
@@ -68,13 +69,14 @@ def unity_transform(
             - transformed_y: Complex-valued tensor with roots of unity for delta_y
             - n_roots: Number of roots of unity used (2 * ceil(pi/(2*epsilon)))
     """
-    # Calculate number of roots of unity
-    n_roots = 2 * int(jnp.ceil(jnp.pi / (2 * epsilon)))
+    # Calculate number of roots of unity, if not provided
+    if n_roots is None:
+        n_roots = 2 * int(ceil(jnp.pi / (2 * epsilon)))
     
     if delta_y is None:
-        return unity_clamp_and_map(scaled_dataset, n_roots), n_roots
+        return unity_clamp_and_map(delta_X, n_roots), n_roots
     else:
-        return unity_clamp_and_map(scaled_dataset, n_roots), unity_clamp_and_map(delta_y, n_roots), n_roots
+        return unity_clamp_and_map(delta_X, n_roots), unity_clamp_and_map(delta_y, n_roots), n_roots
 
 def unity_clamp_and_map(input: jnp.array, n_roots: int) -> jnp.array:
     # Clamp values to [-1, 1] to avoid NaN from acos
@@ -146,13 +148,7 @@ def scale_and_shift(delta_X: jnp.array, delta_y: Optional[jnp.array] = None, sca
 
     if scaling_type in ["global"]:
         lower_bounds = jnp.min(lower_bounds)
-        upper_bounds = jnp.max(upper_bounds)
-    
-    # Calculate shift and scale
-    shifts = (lower_bounds + upper_bounds) / 2.0
-    scales = (upper_bounds - lower_bounds) / 2.0
-    
-    # Use scale parameter if provided. It must be a float or tensor that is greater than or equal tothe computed global scale or all computed channel scales    
+    # Compute roots of unity: exp(2πi * k / n_roots) for k = 0, 1, ..., n_roots/2t is greater than or equal tothe computed global scale or all computed channel scales    
     if scale is not None and jnp.all(scales <= scale):
         if isinstance(scale, jnp.ndarray):
             if scales.shape == scale.shape:
@@ -180,7 +176,7 @@ def scale_and_shift(delta_X: jnp.array, delta_y: Optional[jnp.array] = None, sca
 
 
 def chebychev_transformation(
-    delta_X: jnp.array, delta_y: Optional[jnp.array] = None, epsilon=0.00001
+    delta_X: jnp.array, delta_y: Optional[jnp.array] = None, n:Optional[int]=None, epsilon=0.00001
 ) -> Union[tuple[jnp.array, int], tuple[jnp.array, jnp.array, int]]:
     """
     Maps a dataset onto the minimum number of Chebychev nodes that can be used to approximate the dataset.  
@@ -198,7 +194,8 @@ def chebychev_transformation(
     """
 
     # Starting number of chebychev nodes
-    n = jnp.ceil(jnp.pi / (2*epsilon))
+    if n is None:
+        n = ceil(jnp.pi / (2*epsilon))
     
     if delta_y is None:
         return chebychev_clamp_and_map(delta_X, n), n
@@ -220,3 +217,87 @@ def chebychev_clamp_and_map(input: jnp.array, n: int) -> jnp.array:
     print(f"Min error: {jnp.min(diff)}")
 
     return nodes
+
+
+def jax_compute_differences(
+    X: jnp.ndarray, y: jnp.ndarray = None
+) -> Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]]:
+    """
+    Compute differences between consecutive elements in a JAX array along the second dimension.
+
+    This function calculates the first-order differences (deltas) between adjacent elements
+    in the input array X along the second dimension (axis=1). Optionally, it can also
+    compute the difference between a target array y and the last element of X.
+
+    Args:
+        X (jnp.ndarray): Input array of shape (batch_size, sequence_length, features).
+                          Must have at least 2 elements along the second dimension.
+        y (jnp.ndarray, optional): Target array of shape (batch_size, features).
+                                   If provided, the function returns both deltaX and deltaY.
+                                   If None, only deltaX is returned.
+
+    Returns:
+        jnp.ndarray or tuple:
+            - If y is None: Returns deltaX array of shape (batch_size, sequence_length-1, features)
+            - If y is provided: Returns tuple (deltaX, deltaY) where:
+                * deltaX: array of shape (batch_size, sequence_length-1, features)
+                * deltaY: array of shape (batch_size, features)
+
+    Note:
+        The function requires X to have at least 2 elements along the second dimension
+        to compute differences. The output deltaX will have one fewer element along
+        the second dimension compared to the input X.
+
+    Example:
+        >>> X = jnp.array([[[1, 2], [3, 4], [5, 6]]])  # shape: (1, 3, 2)
+        >>> deltaX = jax_compute_differences(X)
+        >>> print(deltaX)  # array([[[2, 2], [2, 2]]])  # shape: (1, 2, 2)
+        >>>
+        >>> y = jnp.array([[7, 8]])  # shape: (1, 2)
+        >>> deltaX, deltaY = jax_compute_differences(X, y)
+        >>> print(deltaY)  # array([[2, 2]])  # shape: (1, 2)
+    """
+    deltaX = X[:, 1:, :] - X[:, :-1, :]
+    if y is not None:
+        deltaY = y - X[:, -1, :]
+        return deltaX, deltaY
+    else:
+        return deltaX
+
+
+def variation_normalizer(
+    X_train: jnp.ndarray, 
+    y: jnp.ndarray, 
+    scaling_type: str = "global"
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Normalize variations in the data by computing differences and scaling them.
+    
+    Args:
+        X_train (jnp.ndarray): Input array of shape (num_samples, num_timesteps, dimensions)
+        y (jnp.ndarray): Target array of shape (num_samples, dimensions)
+        scaling_type (str): Type of scaling to apply. Options:
+            - "global": Use global maximum across all samples and dimensions (default)
+            - "channel": Use channel-wise maximum for each sample
+            
+    Returns:
+        tuple: (X_train / scales, y / scales) - Normalized input and target arrays
+    """
+    # Compute differences using the JAX function
+    delta_X, delta_y = jax_compute_differences(X_train, y)
+    
+    # Take absolute values of all differences
+    abs_diffs_X = jnp.abs(delta_X)
+    abs_diffs_Y = jnp.abs(delta_y)
+    
+    if scaling_type == "global":
+        # Global normalization: use maximum across all samples and dimensions
+        scales = max(jnp.max(abs_diffs_X), jnp.max(abs_diffs_Y))
+    elif scaling_type == "channel":
+        # Channel normalization: use maximum for each sample and dimension
+        scales = jnp.maximum(jnp.max(abs_diffs_X, axis=1), abs_diffs_Y)
+    else:
+        raise ValueError(f"Unknown scaling_type: {scaling_type}. Must be 'global' or 'channel'")
+    
+    # Return normalized arrays
+    return X_train / scales, y / scales

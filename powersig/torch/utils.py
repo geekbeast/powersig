@@ -1,3 +1,4 @@
+from math import ceil
 from typing import Optional, Tuple, Union
 
 import torch
@@ -82,8 +83,8 @@ def torch_compute_differences(
 
 
 def unity_transform(
-    delta_x: torch.Tensor, delta_y: Optional[torch.Tensor] = None, epsilon=0.001
-) -> tuple[torch.Tensor, int]:
+    delta_X: torch.Tensor, delta_y: Optional[torch.Tensor] = None, n_roots:Optional[int]=None,epsilon=0.001
+) -> Union[tuple[torch.Tensor, int],tuple[torch.Tensor, torch.Tensor, int]]:
     """
     Transform scaled data to roots of unity using arccos transformation.
 
@@ -96,14 +97,15 @@ def unity_transform(
             - transformed_dataset: Complex-valued tensor with roots of unity
             - n_roots: Number of roots of unity used (2 * ceil(pi/(2*epsilon)))
     """
-    # Calculate number of roots of unity
-    n_roots = 2 * int(torch.ceil(torch.pi / (2 * epsilon)))
+    # Calculate number of roots of unity, if not provided
+    if n_roots is None:
+        n_roots = 2 * int(ceil(torch.pi / (2 * epsilon)))
 
     if delta_y is None:
-        return unity_clamp_and_map(delta_x, n_roots), n_roots
+        return unity_clamp_and_map(delta_X, n_roots), n_roots
     else:
         return (
-            unity_clamp_and_map(delta_x, n_roots),
+            unity_clamp_and_map(delta_X, n_roots),
             unity_clamp_and_map(delta_y, n_roots),
             n_roots,
         )
@@ -149,7 +151,7 @@ def unity_clamp_and_map(input: torch.Tensor, n_roots: int) -> torch.Tensor:
     imag_part = torch.sin(angles_64)
     transformed_dataset = torch.complex(real_part, imag_part)
 
-    return transformed_dataset, n_roots
+    return transformed_dataset
 
 
 def scale_and_shift(
@@ -211,7 +213,7 @@ def scale_and_shift(
             raise ValueError("scale parameter must be a tensor or a float")
 
     # Reshape for broadcasting: (num_samples, 1, dimensions)
-    shifts_expanded = shifts.unsqueeze(1)
+    shifts_expanded = shifts.unsqueeze(1) if len(shifts.shape) >= 1 else shifts
     scales_expanded = scales.unsqueeze(1) if len(scales.shape) >= 1 else scales
 
     # Apply transformation: (x - shift) / scale
@@ -226,7 +228,7 @@ def scale_and_shift(
 
 
 def chebychev_transformation(
-    delta_X: torch.Tensor, delta_y: Optional[torch.Tensor] = None, epsilon=0.00001
+    delta_X: torch.Tensor, delta_y: Optional[torch.Tensor] = None, n:Optional[int]=None, epsilon=0.00001
 ) -> Union[tuple[torch.Tensor, int], tuple[torch.Tensor, torch.Tensor, int]]:
     """
     Maps a dataset onto the minimum number of Chebychev nodes that can be used to approximate the dataset.
@@ -243,7 +245,8 @@ def chebychev_transformation(
     """
 
     # Starting number of chebychev nodes
-    n = np.ceil(np.pi / (2 * epsilon))
+    if n is None:
+        n = ceil(torch.pi / (2 * epsilon))
 
     if delta_y is None:
         return chebychev_clamp_and_map(delta_X, n), n
@@ -272,3 +275,41 @@ def chebychev_clamp_and_map(input: torch.Tensor, n: int) -> torch.Tensor:
     print(f"Min error: {torch.min(diff)}")
 
     return nodes
+
+
+def variation_normalizer(
+    X_train: torch.Tensor, 
+    y: torch.Tensor, 
+    scaling_type: str = "global"
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Normalize variations in the data by computing differences and scaling them.
+    
+    Args:
+        X_train (torch.Tensor): Input tensor of shape (num_samples, num_timesteps, dimensions)
+        y (torch.Tensor): Target tensor of shape (num_samples, dimensions)
+        scaling_type (str): Type of scaling to apply. Options:
+            - "global": Use global maximum across all samples and dimensions (default)
+            - "channel": Use channel-wise maximum for each sample
+            
+    Returns:
+        tuple: (X_train / scales, y / scales) - Normalized input and target tensors
+    """
+    # Compute differences using the existing function
+    delta_X, delta_y = torch_compute_differences(X_train, y)
+    
+    # Take absolute values of all differences
+    abs_diffs_X = torch.abs(delta_X)
+    abs_diffs_Y = torch.abs(delta_y)
+    
+    if scaling_type == "global":
+        # Global normalization: use maximum across all samples and dimensions
+        scales = max(abs_diffs_X.max(), abs_diffs_Y.max())
+    elif scaling_type == "channel":
+        # Channel normalization: use maximum for each sample and dimension
+        scales = torch.maximum(abs_diffs_X.max(dim=1)[0], abs_diffs_Y)
+    else:
+        raise ValueError(f"Unknown scaling_type: {scaling_type}. Must be 'global' or 'channel'")
+    
+    # Return normalized tensors
+    return X_train / scales, y / scales

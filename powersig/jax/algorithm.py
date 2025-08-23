@@ -177,13 +177,15 @@ class PowerSigJax:
         total_entries = int(X.shape[0] * Y.shape[0])
         pbar = tqdm(total=total_entries, desc="Computing Gram Matrix")
         for i in range(X.shape[0]):
-            for j in range(Y.shape[0]):
+            for j in range(i if symmetric else 0,Y.shape[0]):
                 if longest_diagonal <= JIT_BOUNDARY_THRESHOLD:
                     gram_matrix = gram_matrix.at[i,j].set(self.compute_gram_entry(X[i], Y[j], v_s, v_t, diagonal_count,longest_diagonal, indices, order=self.order, device=X.device))
                     pbar.update(1)
                 else:
                     gram_matrix = gram_matrix.at[i,j].set(self.chunked_compute_gram_entry(X[i], Y[j], v_s, v_t, diagonal_count, diagonal_batch_size, longest_diagonal, indices, order=self.order, device=X.device))
                     pbar.update(1)
+                if symmetric and i != j:
+                    gram_matrix = gram_matrix.at[j,i].set(gram_matrix[i,j])
 
         pbar.close()
         return gram_matrix
