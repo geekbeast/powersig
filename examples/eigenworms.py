@@ -7,6 +7,7 @@ with custom signature kernels: KSigPDE, KSig RFSF-TRP, and PowerSigJax.
 import os
 
 from examples.large_window import build_dataset
+import powersig
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 import jax
 import numpy as np
@@ -28,6 +29,7 @@ from typing import Tuple, Dict, Any, Optional, Literal
 import os
 import pickle
 from enum import Enum
+import csv
 
 # Import PowerSig modules
 from powersig.jax.algorithm import PowerSigJax
@@ -56,8 +58,8 @@ except ImportError:
     CUML_AVAILABLE = False
 
 # Constants for quick experiments
-MAX_TIMESTEPS = 225  # Limit number of timesteps for faster experiments max is 17984
-# WINDOW_SIZE = 200
+WINDOW_SIZE = 200  # Window size for subsampling
+SUBSAMPLING_STRATEGY = "equally_spaced"  # Options: "sliding" or "equally_spaced"
 # NUM_WINDOWS = 10
 # Cache directory for gram matrices
 CACHE_DIR = "gram_matrix_cache"
@@ -86,7 +88,7 @@ KERNELS_TO_RUN = {
 }
 
 # C parameter grid for GridSearchCV
-C_GRID = [10 ** (i-1) for i in range(6)]  # [0.1, 1, 10, 100, 1000, 10000]
+C_GRID = [10 ** (i-3) for i in range(9)]  # [0.001, 0.01, 0.1, 1, 10, 100, 1000, 10000]
 
 
 def generate_cache_filename(kernel_name: str, X_train_shape: Tuple[int, ...], X_test_shape: Tuple[int, ...], 
@@ -114,9 +116,6 @@ def generate_cache_filename(kernel_name: str, X_train_shape: Tuple[int, ...], X_
     train_shape_str = f"{X_train_shape[0]}x{X_train_shape[1]}x{X_train_shape[2]}" if len(X_train_shape) == 3 else f"{X_train_shape[0]}x{X_train_shape[1]}"
     test_shape_str = f"{X_test_shape[0]}x{X_test_shape[1]}x{X_test_shape[2]}" if len(X_test_shape) == 3 else f"{X_test_shape[0]}x{X_test_shape[1]}"
     filename_parts.extend([train_shape_str, test_shape_str])
-    
-    # Add MAX_TIMESTEPS
-    filename_parts.append(f"t{MAX_TIMESTEPS}")
     
     # Add additional parameters
     for key, value in sorted(kwargs.items()):
@@ -192,14 +191,6 @@ def download_aeon_dataset(dataset_name: str = "EigenWorms", split: str = "train"
         X = X.transpose(0, 2, 1)
         logger.info("Transposed dataset to (samples, timesteps, channels) format.")
 
-    # Downsample timesteps for faster experiments
-    if X.shape[1] > MAX_TIMESTEPS:
-        # Take MAX_TIMESTEPS evenly spaced points from the full sequence
-        original_length = X.shape[1]
-        indices = np.linspace(0, original_length - 1, MAX_TIMESTEPS, dtype=int)
-        X = X[:, indices, :]
-        logger.info(f"Downsampled from {original_length} to {MAX_TIMESTEPS} timesteps for faster experiments. New shape: {X.shape}")
-
     # Ensure labels are integers
     if y.dtype.kind not in {'i', 'u'}:
         le = LabelEncoder()
@@ -221,7 +212,7 @@ def download_aeon_dataset(dataset_name: str = "EigenWorms", split: str = "train"
     return X, y
 
 
-def plot_eigenworms_samples(X: np.ndarray, y: np.ndarray = None, num_samples_per_class: int = 3):
+def plot_eigenworms_samples(X: np.ndarray, y: np.ndarray = None, num_samples_per_class: int = 3, file_suffix: str = ""):
     """
     Plot Eigenworms samples grouped by class.
     
@@ -229,40 +220,100 @@ def plot_eigenworms_samples(X: np.ndarray, y: np.ndarray = None, num_samples_per
         X: Dataset with shape (samples, timesteps, dimensions)
         y: Labels with shape (samples,) - optional
         num_samples_per_class: Number of samples to plot per class
+        file_suffix: Suffix to add to file names to distinguish different plots
+    
+    Note:
+        This function automatically detects complex data and creates side-by-side plots
+        with real parts on the left and imaginary parts on the right for complex data.
+        For real data, it uses the original single-column plotting format.
     """
     logger.info(f"Plotting Eigenworms samples grouped by class...")
+    
+    # Validate input data
+    if X is None or X.size == 0:
+        logger.error("Input data X is None or empty!")
+        return
+    
+    if np.any(np.isnan(X)) or np.any(np.isinf(X)):
+        logger.warning("Input data contains NaN or Inf values!")
+    
+    # Create plots directory if it doesn't exist
+    plots_dir = "plots"
+    os.makedirs(plots_dir, exist_ok=True)
     
     # Create time axis
     timesteps = X.shape[1]
     time_axis = np.linspace(0, timesteps - 1, timesteps)
     num_dimensions = X.shape[2]
     
+    # Check if data is complex
+    is_complex = np.iscomplexobj(X)
+    logger.info(f"Data type: {'Complex' if is_complex else 'Real'}")
+    
     if y is None:
         # Fallback to original behavior if no labels provided
         logger.info("No labels provided, plotting first few samples...")
         for sample_idx in range(min(3, X.shape[0])):
-            plt.figure(figsize=(12, 8))
-            
             # Get the sample data
-            sample_data = X[sample_idx]  # Shape: (timesteps, dimensions)
+            sample_data = X[sample_idx]  # Shape: (timesteps, dimensions)    
             
-            
-            # Create subplots for each dimension
-            fig, axes = plt.subplots(num_dimensions, 1, figsize=(12, 3*num_dimensions))
-            if num_dimensions == 1:
-                axes = [axes]
-            
-            # Plot each dimension
-            for dim_idx in range(num_dimensions):
-                dimension_data = sample_data[:, dim_idx]
-                axes[dim_idx].plot(time_axis, dimension_data, linewidth=1.5)
-                axes[dim_idx].set_title(f'Sample {sample_idx + 1}, Dimension {dim_idx + 1}')
-                axes[dim_idx].set_xlabel('Time Step')
-                axes[dim_idx].set_ylabel('Value')
-                axes[dim_idx].grid(True, alpha=0.3)
+            if is_complex:
+                # For complex data, create side-by-side plots (real on left, imaginary on right)
+                fig, axes = plt.subplots(num_dimensions, 2, figsize=(20, 3*num_dimensions))
+                if num_dimensions == 1:
+                    axes = axes.reshape(1, -1)
+                
+                # Plot each dimension
+                for dim_idx in range(num_dimensions):
+                    dimension_data = sample_data[:, dim_idx]
+                    real_data = np.real(dimension_data)
+                    imag_data = np.imag(dimension_data)
+                    
+                    logger.info(f"Sample {sample_idx + 1}, Dimension {dim_idx + 1}: shape={dimension_data.shape}")
+                    logger.info(f"  Real part range: [{np.min(real_data):.6f}, {np.max(real_data):.6f}]")
+                    logger.info(f"  Imaginary part range: [{np.min(imag_data):.6f}, {np.max(imag_data):.6f}]")
+                    
+                    # Check if data is valid
+                    if np.any(np.isfinite(real_data)) and np.any(np.isfinite(imag_data)):
+                        # Plot real part (left)
+                        axes[dim_idx, 0].plot(time_axis, real_data, linewidth=1.5, color='blue')
+                        axes[dim_idx, 0].set_title(f'Sample {sample_idx + 1}, Dimension {dim_idx + 1} - Real Part')
+                        axes[dim_idx, 0].set_xlabel('Time Step')
+                        axes[dim_idx, 0].set_ylabel('Real Value')
+                        axes[dim_idx, 0].grid(True, alpha=0.3)
+                        
+                        # Plot imaginary part (right)
+                        axes[dim_idx, 1].plot(time_axis, imag_data, linewidth=1.5, color='red')
+                        axes[dim_idx, 1].set_title(f'Sample {sample_idx + 1}, Dimension {dim_idx + 1} - Imaginary Part')
+                        axes[dim_idx, 1].set_xlabel('Time Step')
+                        axes[dim_idx, 1].set_ylabel('Imaginary Value')
+                        axes[dim_idx, 1].grid(True, alpha=0.3)
+                    else:
+                        logger.warning(f"Sample {sample_idx + 1}, Dimension {dim_idx + 1} contains invalid data (NaN/Inf)")
+            else:
+                # For real data, use original plotting logic
+                fig, axes = plt.subplots(num_dimensions, 1, figsize=(12, 3*num_dimensions))
+                if num_dimensions == 1:
+                    axes = [axes]
+                
+                # Plot each dimension
+                for dim_idx in range(num_dimensions):
+                    dimension_data = sample_data[:, dim_idx]
+                    logger.info(f"Sample {sample_idx + 1}, Dimension {dim_idx + 1}: shape={dimension_data.shape}, range=[{np.min(dimension_data):.6f}, {np.max(dimension_data):.6f}]")
+                    
+                    # Check if data is valid
+                    if np.any(np.isfinite(dimension_data)):
+                        axes[dim_idx].plot(time_axis, dimension_data, linewidth=1.5)
+                        axes[dim_idx].set_title(f'Sample {sample_idx + 1}, Dimension {dim_idx + 1}')
+                        axes[dim_idx].set_xlabel('Time Step')
+                        axes[dim_idx].set_ylabel('Value')
+                        axes[dim_idx].grid(True, alpha=0.3)
+                    else:
+                        logger.warning(f"Sample {sample_idx + 1}, Dimension {dim_idx + 1} contains invalid data (NaN/Inf)")
             
             plt.tight_layout()
-            plt.savefig(f'eigenworms_sample_{sample_idx + 1}.png', dpi=300, bbox_inches='tight')
+            suffix_part = f"_{file_suffix}" if file_suffix else ""
+            plt.savefig(os.path.join(plots_dir, f'eigenworms_sample_{sample_idx + 1}{suffix_part}.png'), dpi=300, bbox_inches='tight')
             plt.close()
             logger.info(f"Saved plot for sample {sample_idx + 1}")
         return
@@ -276,16 +327,20 @@ def plot_eigenworms_samples(X: np.ndarray, y: np.ndarray = None, num_samples_per
     # Create 5 plots, each corresponding to a specific class
     for plot_idx in range(min(5, num_classes)):
         class_label = unique_classes[plot_idx]
-        plt.figure(figsize=(15, 10))
         
-        # Create subplots for each dimension
-        fig, axes = plt.subplots(num_dimensions, 1, figsize=(15, 3*num_dimensions))
-        if num_dimensions == 1:
-            axes = [axes]
+        if is_complex:
+            # For complex data, create side-by-side plots (real on left, imaginary on right)
+            fig, axes = plt.subplots(num_dimensions, 2, figsize=(25, 3*num_dimensions))
+            if num_dimensions == 1:
+                axes = axes.reshape(1, -1)
+        else:
+            # For real data, use original plotting logic
+            fig, axes = plt.subplots(num_dimensions, 1, figsize=(15, 3*num_dimensions))
+            if num_dimensions == 1:
+                axes = [axes]
         
         # Get samples for this specific class
         class_indices = np.where(y == class_label)[0]
-        
         # Sample a few examples from this class
         num_samples_to_plot = min(num_samples_per_class, len(class_indices))
         selected_indices = np.random.choice(class_indices, num_samples_to_plot, replace=False)
@@ -296,18 +351,61 @@ def plot_eigenworms_samples(X: np.ndarray, y: np.ndarray = None, num_samples_per
         for dim_idx in range(num_dimensions):
             for sample_idx, color in zip(selected_indices, colors):
                 dimension_data = X[sample_idx, :, dim_idx]
-                axes[dim_idx].plot(time_axis, dimension_data, 
-                                 color=color, alpha=0.8, linewidth=1.5,
-                                 label=f'Sample {sample_idx + 1}')
+                
+                if is_complex:
+                    real_data = np.real(dimension_data)
+                    imag_data = np.imag(dimension_data)
+                    logger.info(f"Class {class_label}, Sample {sample_idx + 1}, Dimension {dim_idx + 1}: shape={dimension_data.shape}")
+                    logger.info(f"  Real part range: [{np.min(real_data):.6f}, {np.max(real_data):.6f}]")
+                    logger.info(f"  Imaginary part range: [{np.min(imag_data):.6f}, {np.max(imag_data):.6f}]")
+                    
+                    # Check if data is valid
+                    if np.any(np.isfinite(real_data)) and np.any(np.isfinite(imag_data)):
+                        # Plot real part (left)
+                        axes[dim_idx, 0].plot(time_axis, real_data, 
+                                             color=color, alpha=0.8, linewidth=1.5,
+                                             label=f'Sample {sample_idx + 1}')
+                        # Plot imaginary part (right)
+                        axes[dim_idx, 1].plot(time_axis, imag_data, 
+                                             color=color, alpha=0.8, linewidth=1.5,
+                                             label=f'Sample {sample_idx + 1}')
+                    else:
+                        logger.warning(f"Sample {sample_idx + 1}, Dimension {dim_idx + 1} contains invalid data (NaN/Inf)")
+                else:
+                    logger.info(f"Class {class_label}, Sample {sample_idx + 1}, Dimension {dim_idx + 1}: shape={dimension_data.shape}, range=[{np.min(dimension_data):.6f}, {np.max(dimension_data):.6f}]")
+                    
+                    # Check if data is valid
+                    if np.any(np.isfinite(dimension_data)):
+                        axes[dim_idx].plot(time_axis, dimension_data, 
+                                         color=color, alpha=0.8, linewidth=1.5,
+                                         label=f'Sample {sample_idx + 1}')
+                    else:
+                        logger.warning(f"Sample {sample_idx + 1}, Dimension {dim_idx + 1} contains invalid data (NaN/Inf)")
             
-            axes[dim_idx].set_title(f'Class {class_label} - Dimension {dim_idx + 1}')
-            axes[dim_idx].set_xlabel('Time Step')
-            axes[dim_idx].set_ylabel('Value')
-            axes[dim_idx].grid(True, alpha=0.3)
-            axes[dim_idx].legend()
+            if is_complex:
+                # Set titles and labels for complex data (side-by-side)
+                axes[dim_idx, 0].set_title(f'Class {class_label} - Dimension {dim_idx + 1} - Real Part')
+                axes[dim_idx, 0].set_xlabel('Time Step')
+                axes[dim_idx, 0].set_ylabel('Real Value')
+                axes[dim_idx, 0].grid(True, alpha=0.3)
+                axes[dim_idx, 0].legend()
+                
+                axes[dim_idx, 1].set_title(f'Class {class_label} - Dimension {dim_idx + 1} - Imaginary Part')
+                axes[dim_idx, 1].set_xlabel('Time Step')
+                axes[dim_idx, 1].set_ylabel('Imaginary Value')
+                axes[dim_idx, 1].grid(True, alpha=0.3)
+                axes[dim_idx, 1].legend()
+            else:
+                # Set titles and labels for real data (original format)
+                axes[dim_idx].set_title(f'Class {class_label} - Dimension {dim_idx + 1}')
+                axes[dim_idx].set_xlabel('Time Step')
+                axes[dim_idx].set_ylabel('Value')
+                axes[dim_idx].grid(True, alpha=0.3)
+                axes[dim_idx].legend()
         
         plt.tight_layout()
-        plt.savefig(f'eigenworms_plot_class_{class_label}.png', dpi=300, bbox_inches='tight')
+        suffix_part = f"_{file_suffix}" if file_suffix else ""
+        plt.savefig(os.path.join(plots_dir, f'eigenworms_plot_class_{class_label}{suffix_part}.png'), dpi=300, bbox_inches='tight')
         plt.close()
         logger.info(f"Saved plot for class {class_label}")
 
@@ -332,7 +430,7 @@ def normalize_training_data(X_train: np.ndarray, X_test: np.ndarray) -> Tuple[np
     # Calculate mean and std for each dimension across all training samples and timesteps using broadcasting
     # Reshape to (num_dimensions,) for broadcasting
     train_means = np.mean(X_train, axis=(0, 1))  # Shape: (num_dimensions,)
-    train_stds = 2 * np.std(X_train, axis=(0, 1))  # Shape: (num_dimensions,)
+    train_stds = 100 * np.std(X_train, axis=(0, 1))  # Shape: (num_dimensions,)
     
     # Avoid division by zero
     train_stds = np.where(train_stds == 0, 1.0, train_stds)
@@ -360,7 +458,90 @@ def normalize_training_data(X_train: np.ndarray, X_test: np.ndarray) -> Tuple[np
     return normalized_X_train, normalized_X_test
 
 
-def time_augment(X):
+def sliding_window_subsample(X: np.ndarray, y: np.ndarray, window_size: int) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Apply sliding window subsampling to create multiple samples from each original sample.
+    
+    Args:
+        X: Input data of shape (n_samples, n_timesteps, n_features)
+        y: Labels of shape (n_samples,)
+        window_size: Size of the sliding window
+        
+    Returns:
+        Tuple of (X_subsampled, y_subsampled) where X_subsampled has more samples
+        but each sample has window_size timesteps
+    """
+    logger.info(f"Applying sliding window subsampling with window_size={window_size}")
+    
+    n_samples, n_timesteps, n_features = X.shape
+    
+    if n_timesteps <= window_size:
+        logger.warning(f"Timesteps ({n_timesteps}) <= window_size ({window_size}), returning original data")
+        return X, y
+    
+    # Calculate number of windows per sample
+    n_windows_per_sample = n_timesteps - window_size + 1
+    total_new_samples = n_samples * n_windows_per_sample
+    
+    logger.info(f"Creating {n_windows_per_sample} windows per sample, total new samples: {total_new_samples}")
+    
+    # Initialize output arrays
+    X_subsampled = np.zeros((total_new_samples, window_size, n_features), dtype=X.dtype)
+    y_subsampled = np.zeros(total_new_samples, dtype=y.dtype)
+    
+    # Apply sliding window to each sample
+    new_sample_idx = 0
+    for sample_idx in range(n_samples):
+        for window_start in range(n_windows_per_sample):
+            window_end = window_start + window_size
+            
+            # Extract window
+            X_subsampled[new_sample_idx] = X[sample_idx, window_start:window_end, :]
+            y_subsampled[new_sample_idx] = y[sample_idx]
+            
+            new_sample_idx += 1
+    
+    logger.info(f"Sliding window subsampling completed: {X.shape} -> {X_subsampled.shape}")
+    logger.info(f"Labels shape: {y.shape} -> {y_subsampled.shape}")
+    
+    return X_subsampled, y_subsampled
+
+
+def equally_spaced_subsample(X: np.ndarray, y: np.ndarray, window_size: int) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Apply equally spaced subsampling to reduce timesteps to window_size.
+    
+    Args:
+        X: Input data of shape (n_samples, n_timesteps, n_features)
+        y: Labels of shape (n_samples,)
+        window_size: Target number of timesteps
+        
+    Returns:
+        Tuple of (X_subsampled, y_subsampled) where X_subsampled has window_size timesteps
+    """
+    logger.info(f"Applying equally spaced subsampling with window_size={window_size}")
+    
+    n_samples, n_timesteps, n_features = X.shape
+    
+    if n_timesteps <= window_size:
+        logger.warning(f"Timesteps ({n_timesteps}) <= window_size ({window_size}), returning original data")
+        return X, y
+    
+    # Create equally spaced indices
+    indices = np.linspace(0, n_timesteps - 1, window_size, dtype=int)
+    
+    logger.info(f"Selecting timesteps: {indices}")
+    
+    # Subsample using the indices
+    X_subsampled = X[:, indices, :]
+    
+    logger.info(f"Equally spaced subsampling completed: {X.shape} -> {X_subsampled.shape}")
+    logger.info(f"Labels shape unchanged: {y.shape}")
+    
+    return X_subsampled, y
+
+
+def time_augment(X, scale: float = 1.0):
     """
     Augment the input array by adding a time feature as the last dimension.
     
@@ -373,7 +554,7 @@ def time_augment(X):
     if len(X.shape) == 2:
         # If X is 2D (samples, timesteps), add time feature
         n_samples, length = X.shape
-        time_feature = np.linspace(0, 1, length)
+        time_feature = np.linspace(0, 1, length)*scale
         time_feature = np.broadcast_to(time_feature, (n_samples, length))
         time_feature = time_feature[..., None]  # shape (n_samples, length, 1)
         X_expanded = X[..., None]  # shape (n_samples, length, 1)
@@ -417,6 +598,9 @@ def print_dataset_statistics(X_train: np.ndarray, X_test: np.ndarray):
         train_dimension_data = X_train[:, :, dim_idx].flatten()
         test_dimension_data = X_test[:, :, dim_idx].flatten()
         
+        test_dimension_data = test_dimension_data.numpy() if isinstance(test_dimension_data, torch.Tensor) else test_dimension_data
+        train_dimension_data = train_dimension_data.numpy() if isinstance(train_dimension_data, torch.Tensor) else train_dimension_data
+
         # Training set statistics
         train_min_val = np.min(train_dimension_data)
         train_max_val = np.max(train_dimension_data)
@@ -693,7 +877,7 @@ def compute_gram_matrix_ksig_rfsf_trp(X_train: np.ndarray, X_test: np.ndarray,
         
         # Calculate and log condition number early
         try:
-            condition_number = np.linalg.cond(K_train)
+            condition_number = np.linalg.cond(ensure_numpy_array(K_train))
             logger.info(f"KSig RFSF-TRP train gram condition number: {condition_number:.2e}")
             if condition_number > 1e12:
                 logger.warning(f"High condition number ({condition_number:.2e}) may cause training issues!")
@@ -950,10 +1134,11 @@ def run_mlp_with_gram_matrices(train_gram: np.ndarray, test_gram: np.ndarray,
 
 def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.ndarray, 
                                      y_train: np.ndarray, y_test: np.ndarray, 
-                                     kernel_name: str, gram_computation_time: float = -1.0) -> Dict[str, Any]:
+                                     kernel_name: str, gram_computation_time: float = -1.0,
+                                     run_mlp: bool = False) -> Dict[str, Any]:
     """
     Shared function to run grid search with precomputed gram matrices.
-    Runs MLP first, then SVC, returns the better performing one.
+    Runs MLP first (if enabled), then SVC, returns the better performing one.
     
     Args:
         train_gram: Training gram matrix
@@ -962,19 +1147,23 @@ def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.nda
         y_test: Test labels
         kernel_name: Name of the kernel
         gram_computation_time: Time taken to compute gram matrices (-1.0 if loaded from cache)
+        run_mlp: Whether to run MLP training (default: False)
         
     Returns:
         Dictionary containing results
     """
     start_time = time.time()
     
-    # Run MLP first
-    mlp_start_time = time.time()
-    mlp_results = run_mlp_with_gram_matrices(train_gram, test_gram, y_train, y_test)
-    mlp_time = time.time() - mlp_start_time
+    # Run MLP first (if enabled)
+    mlp_results = None
+    mlp_time = 0.0
+    if run_mlp:
+        mlp_start_time = time.time()
+        mlp_results = run_mlp_with_gram_matrices(train_gram, test_gram, y_train, y_test)
+        mlp_time = time.time() - mlp_start_time
     
     # Run SVC grid search
-    param_grid = {'C': C_GRID}
+    param_grid = {'C': C_GRID, 'gamma': [10**(i-3) for i in range(0, 5)]}
     svc = SVC(kernel='precomputed', random_state=42)
     
     # Convert cupy arrays to numpy arrays if needed
@@ -999,7 +1188,7 @@ def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.nda
     best_svc = grid_search.best_estimator_
     y_pred_svc = best_svc.predict(test_gram_np)
     
-    svc_time = time.time() - mlp_start_time
+    svc_time = time.time() - start_time
     
     # Calculate SVC metrics
     svc_accuracy = accuracy_score(y_test, y_pred_svc)
@@ -1013,8 +1202,8 @@ def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.nda
     except Exception as e:
         condition_number = np.inf
     
-    # Compare performances and return the better one
-    if mlp_results['accuracy'] > svc_accuracy:
+    # Compare performances and return the better one (if MLP was run)
+    if run_mlp and mlp_results['accuracy'] > svc_accuracy:
         # MLP performed better, return MLP results with updated timing
         mlp_results['grid_search_time'] = mlp_time + svc_time
         mlp_results['total_time'] = gram_computation_time + mlp_time + svc_time if gram_computation_time >= 0 else mlp_time + svc_time
@@ -1023,7 +1212,7 @@ def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.nda
         mlp_results['condition_number'] = condition_number  # Always include condition number
         return mlp_results
     else:
-        # SVC performed better, return SVC results
+        # SVC performed better (or MLP was disabled), return SVC results
         results = {
             'kernel_name': kernel_name,
             'accuracy': svc_accuracy,
@@ -1035,12 +1224,16 @@ def run_grid_search_with_gram_matrices(train_gram: np.ndarray, test_gram: np.nda
             'total_time': gram_computation_time + mlp_time + svc_time if gram_computation_time >= 0 else mlp_time + svc_time,
             'condition_number': condition_number,
             'best_C': grid_search.best_params_['C'],
+            'best_gamma': grid_search.best_params_['gamma'],
             'cv_scores': grid_search.cv_results_,
             'y_pred': y_pred_svc,
             'y_true': y_test,
-            'mlp_accuracy': mlp_results['accuracy'],  # Store MLP results for comparison
-            'mlp_vs_svc': 'SVC_WIN'
+            'mlp_vs_svc': 'SVC_WIN' if run_mlp else 'SVC_ONLY'
         }
+        
+        # Store MLP results for comparison if MLP was run
+        if run_mlp:
+            results['mlp_accuracy'] = mlp_results['accuracy']
         
         return results
 
@@ -1153,8 +1346,12 @@ def run_cuml_baseline_process(X_train_tensor: torch.Tensor, X_test_tensor: torch
     X_train_2d = X_train_np.reshape(X_train_np.shape[0], -1)
     X_test_2d = X_test_np.reshape(X_test_np.shape[0], -1)
     
-    X_train_cp = cp.array(X_train_2d, dtype=cp.float32)
-    X_test_cp = cp.array(X_test_2d, dtype=cp.float32)
+    data_dtype = cp.float64
+    if X_train_tensor.dtype == torch.complex128:
+       data_dtype = cp.complex128
+
+    X_train_cp = cp.array(X_train_2d, dtype=data_dtype)
+    X_test_cp = cp.array(X_test_2d, dtype=data_dtype)
     y_train_cp = cp.array(y_train, dtype=cp.int32)
     y_test_cp = cp.array(y_test, dtype=cp.int32)
         
@@ -1173,72 +1370,81 @@ def run_cuml_baseline_process(X_train_tensor: torch.Tensor, X_test_tensor: torch
             'error': 'cuML not available'
         }
     
-    # Test both RBF and linear kernels with grid search over C values
+    # Test both RBF and linear kernels with grid search over C and gamma values
     kernels = ['rbf', 'linear']
     best_score = -1
     best_results = None
     best_kernel = None
     best_C = None
+    best_gamma = None
     
     for kernel in kernels:
         print(f"Running cuML grid search with {kernel} kernel")
         kernel_best_score = -1
         kernel_best_C = None
+        kernel_best_gamma = None
         kernel_best_results = None
         
+        # Define gamma grid (only for RBF kernel)
+        gamma_grid = [10**(i-3) for i in range(0, 5)] if kernel == 'rbf' else ['scale']
+        
         for C in C_GRID:
-            print(f"  Testing C={C}")
-            try:
-                # Create cuML SVC with current kernel and C value
-                svc = cuMLSVC(kernel=kernel, C=C, random_state=42, verbose=0)
-                svc.fit(X_train_cp, y_train_cp)
-                
-                # Predict
-                y_pred_cp = svc.predict(X_test_cp)
-                y_pred = cp.asnumpy(y_pred_cp)
-                
-                # Calculate accuracy
-                accuracy = accuracy_score(y_test, y_pred)
-                print(f"    C={C} accuracy: {accuracy:.4f}")
-                
-                # Update best for this kernel if this is better
-                if accuracy > kernel_best_score:
-                    kernel_best_score = accuracy
-                    kernel_best_C = C
+            for gamma in gamma_grid:
+                print(f"  Testing C={C}, gamma={gamma}")
+                try:
+                    # Create cuML SVC with current kernel, C, and gamma values
+                    svc = cuMLSVC(kernel=kernel, C=C, gamma=gamma, random_state=42, verbose=0)
+                    svc.fit(X_train_cp, y_train_cp)
                     
-                    # Calculate all metrics for best result for this kernel
-                    precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
-                    recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
-                    f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0)
+                    # Predict
+                    y_pred_cp = svc.predict(X_test_cp)
+                    y_pred = cp.asnumpy(y_pred_cp)
                     
-                    kernel_best_results = {
-                        'kernel_name': f"cuML_Baseline_{kernel}",
-                        'accuracy': accuracy,
-                        'precision': precision,
-                        'recall': recall,
-                        'f1_score': f1,
-                        'condition_number': np.inf,  # Not applicable for direct data
-                        'gram_computation_time': -1.0,  # Not applicable for direct data
-                        'grid_search_time': 0.0,  # Not applicable for direct data
-                        'total_time': 0.0,  # Not applicable for direct data
-                        'best_kernel': kernel,
-                        'best_C': C,
-                        'y_pred': y_pred,
-                        'y_true': y_test
-                    }
+                    # Calculate accuracy
+                    accuracy = accuracy_score(y_test, y_pred)
+                    print(f"    C={C}, gamma={gamma} accuracy: {accuracy:.4f}")
                     
-            except Exception as e:
-                print(f"    cuML SVC failed with {kernel} kernel, C={C}: {e}")
-                continue
+                    # Update best for this kernel if this is better
+                    if accuracy > kernel_best_score:
+                        kernel_best_score = accuracy
+                        kernel_best_C = C
+                        kernel_best_gamma = gamma
+                        
+                        # Calculate all metrics for best result for this kernel
+                        precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
+                        recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
+                        f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0)
+                        
+                        kernel_best_results = {
+                            'kernel_name': f"cuML_Baseline_{kernel}",
+                            'accuracy': accuracy,
+                            'precision': precision,
+                            'recall': recall,
+                            'f1_score': f1,
+                            'condition_number': np.inf,  # Not applicable for direct data
+                            'gram_computation_time': -1.0,  # Not applicable for direct data
+                            'grid_search_time': 0.0,  # Not applicable for direct data
+                            'total_time': 0.0,  # Not applicable for direct data
+                            'best_kernel': kernel,
+                            'best_C': C,
+                            'best_gamma': gamma,
+                            'y_pred': y_pred,
+                            'y_true': y_test
+                        }
+                        
+                except Exception as e:
+                    print(f"    cuML SVC failed with {kernel} kernel, C={C}, gamma={gamma}: {e}")
+                    continue
         
         # Update overall best if this kernel's best is better
         if kernel_best_score > best_score:
             best_score = kernel_best_score
             best_kernel = kernel
             best_C = kernel_best_C
+            best_gamma = kernel_best_gamma
             best_results = kernel_best_results
         
-        print(f"  Best for {kernel} kernel: C={kernel_best_C}, accuracy={kernel_best_score:.4f}")
+        print(f"  Best for {kernel} kernel: C={kernel_best_C}, gamma={kernel_best_gamma}, accuracy={kernel_best_score:.4f}")
     
     if best_results is None:
         return {
@@ -1255,7 +1461,7 @@ def run_cuml_baseline_process(X_train_tensor: torch.Tensor, X_test_tensor: torch
         }
     
     # Log which kernel was selected
-    logger.info(f"cuML_Baseline selected {best_kernel} kernel with C={best_C} and accuracy: {best_results['accuracy']:.4f}")
+    logger.info(f"cuML_Baseline selected {best_kernel} kernel with C={best_C}, gamma={best_gamma} and accuracy: {best_results['accuracy']:.4f}")
     
     return best_results
 
@@ -1293,9 +1499,14 @@ def run_knn_dtw_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tenso
         X_train_2d = X_train_np.reshape(X_train_np.shape[0], -1)
         X_test_2d = X_test_np.reshape(X_test_np.shape[0], -1)
         
+        data_dtype = cp.float64
+        
+        if X_train_tensor.dtype == torch.complex128:
+            data_dtype = cp.complex128
+
         # Convert to cuPy arrays
-        X_train_cp = cp.array(X_train_2d, dtype=cp.float64)
-        X_test_cp = cp.array(X_test_2d, dtype=cp.float64)
+        X_train_cp = cp.array(X_train_2d, dtype=data_dtype)
+        X_test_cp = cp.array(X_test_2d, dtype=data_dtype)
         y_train_cp = cp.array(y_train, dtype=cp.int32)
         
         # Create and fit KNN classifier
@@ -1351,70 +1562,97 @@ def run_knn_dtw_process(X_train_tensor: torch.Tensor, X_test_tensor: torch.Tenso
         }
 
 
-def main():
+def prepare_eigenworms_data():
     """
-    Main function to run Eigenworms classification with different kernels using multiprocessing.
+    Download, normalize, and prepare Eigenworms dataset for experiments.
+    
+    Returns:
+        Tuple of (X_train, X_test, y_train, y_test) - raw data ready for processing
     """
-    logger.info("Starting Eigenworms classification experiment...")
-    logger.info(f"Kernels to run: {KERNELS_TO_RUN}")
-    logger.info(f"Available kernels: {set(KERNEL_NAMES.keys())}")
-    logger.info(f"Skipped kernels: {set(KERNEL_NAMES.keys()) - KERNELS_TO_RUN}")
-    X_train, y_train = build_dataset(history_length=200, num_samples=50, num_timestamps=MAX_TIMESTEPS, dimensions=2)
-    X_test, y_test = build_dataset(history_length=200, num_samples=50, num_timestamps=MAX_TIMESTEPS, dimensions=2)
+    logger.info("Preparing Eigenworms dataset...")
     
-    # # 1. Download and load training dataset
-    # try:
-    #     X_train, y_train = download_aeon_dataset("BinaryHeartbeat", split="train")
-    # except Exception as e:
-    #     logger.error(f"Failed to load training dataset: {e}")
-    #     return
+    # 1. Download and load training dataset
+    try:
+        X_train, y_train = download_aeon_dataset("EigenWorms", split="train")
+    except Exception as e:
+        logger.error(f"Failed to load training dataset: {e}")
+        raise
     
-    # # 1.5. Download and load test dataset
-    # try:
-    #     X_test, y_test = download_aeon_dataset("BinaryHeartbeat", split="test")
-    # except Exception as e:
-    #     logger.error(f"Failed to load test dataset: {e}")
-    #     return
+    # 2. Download and load test dataset
+    try:
+        X_test, y_test = download_aeon_dataset("EigenWorms", split="test")
+    except Exception as e:
+        logger.error(f"Failed to load test dataset: {e}")
+        raise
     
-    # 1.6. Plot samples and print statistics
-    plot_eigenworms_samples(X_train, y_train, num_samples_per_class=3)
+    # 3. Plot original samples and print statistics
+    plot_eigenworms_samples(X_train, y_train, num_samples_per_class=3, file_suffix="original")
     
-    # 2. Print statistics for both training and test sets (before normalization)
+    # 4. Print statistics for both training and test sets (before normalization)
     logger.info("Dataset statistics BEFORE normalization:")
     print_dataset_statistics(X_train, X_test)
     
     logger.info(f"Training set size: {X_train.shape[0]}")
     logger.info(f"Test set size: {X_test.shape[0]}")
     
-        # Subtract the first timestep value from all timesteps for each sample and dimension
-    logger.info("Subtracting first timestep value from all timesteps...")
-    
-    # # Use broadcasting to subtract first timestep values
-    # X_train = X_train - X_train[:, 0:1, :]  # Shape: (samples, 1, dimensions) broadcasts to (samples, timesteps, dimensions)
-    # X_test = X_test - X_test[:, 0:1, :]
-    
-    # logger.info("First timestep subtraction completed!")
+    logger.info("Eigenworms dataset preparation completed!")
+    return X_train, X_test, y_train, y_test
 
-    # # 3. Normalize training data
-    # X_train_normalized, X_test_normalized = normalize_training_data(X_train, X_test)
-    # X_train_normalized, X_test_normalized = time_augment(X_train_normalized), time_augment(X_test_normalized)
-    
-    X_train_normalized, X_test_normalized = X_train, X_test
 
-    # 4. Print statistics for both training and test sets (after normalization)
-    logger.info("Dataset statistics AFTER normalization:")
-    print_dataset_statistics(X_train_normalized, X_test_normalized)
+def run_experiment(X_train: np.ndarray, X_test: np.ndarray, y_train: np.ndarray, y_test: np.ndarray,
+                   subsampling_strategy: str, window_size: int) -> Dict[str, Any]:
+    """
+    Run a single experiment with given parameters.
+    
+    Args:
+        X_train: Training data
+        X_test: Test data
+        y_train: Training labels
+        y_test: Test labels
+        subsampling_strategy: "sliding" or "equally_spaced"
+        window_size: Window size for subsampling
+        
+    Returns:
+        Dictionary containing results for all kernels
+    """
+    logger.info(f"Running experiment: strategy={subsampling_strategy}, window_size={window_size}")
+    
+    # 1. Normalize training data
+    X_train_normalized, X_test_normalized = normalize_training_data(X_train, X_test)
+    
+    # 2. Apply subsampling based on strategy
+    logger.info(f"Applying subsampling strategy: {subsampling_strategy}")
+    if subsampling_strategy == "sliding":
+        # Sliding window applied before time augmentation
+        logger.info("Applying sliding window subsampling before time augmentation...")
+        X_train_normalized, y_train = sliding_window_subsample(X_train_normalized, y_train, window_size)
+        X_test_normalized, y_test = sliding_window_subsample(X_test_normalized, y_test, window_size)
+        logger.info(f"After sliding window - Train: {X_train_normalized.shape}, Test: {X_test_normalized.shape}")
+        logger.info(f"Labels - Train: {y_train.shape}, Test: {y_test.shape}")
+    elif subsampling_strategy == "equally_spaced":
+        logger.info("Equally spaced subsampling will be applied after time augmentation")
+    else:
+        raise ValueError(f"Unknown subsampling strategy: {subsampling_strategy}")
+    
+    # 3. Apply time augmentation
+    X_train_normalized, X_test_normalized = time_augment(X_train_normalized), time_augment(X_test_normalized)
+    
+    # 4. Apply equally spaced subsampling after time augmentation (if strategy is equally_spaced)
+    if subsampling_strategy == "equally_spaced":
+        logger.info("Applying equally spaced subsampling after time augmentation...")
+        X_train_normalized, y_train = equally_spaced_subsample(X_train_normalized, y_train, window_size)
+        X_test_normalized, y_test = equally_spaced_subsample(X_test_normalized, y_test, window_size)
+        logger.info(f"After equally spaced subsampling - Train: {X_train_normalized.shape}, Test: {X_test_normalized.shape}")
+        logger.info(f"Labels - Train: {y_train.shape}, Test: {y_test.shape}")
     
     # 5. Wrap normalized data in torch tensors for multiprocessing
     X_train_tensor = torch.from_numpy(X_train_normalized).share_memory_()
     X_test_tensor = torch.from_numpy(X_test_normalized).share_memory_()
     
-    # 4. Initialize results storage
+    # 6. Initialize results storage
     all_results = {}
     
- 
-    
-    # Define kernel functions mapping
+    # 7. Define kernel functions mapping
     kernel_functions = {
         "KNN_DTW": (run_knn_dtw_process, (X_train_tensor, X_test_tensor, y_train, y_test)),
         "cuML_Baseline": (run_cuml_baseline_process, (X_train_tensor, X_test_tensor, y_train, y_test)),
@@ -1423,20 +1661,19 @@ def main():
         "PowerSigJax": (run_powersig_jax_process, (X_train_tensor, X_test_tensor, y_train, y_test, KERNEL_RBF, 9)),
     }
     
+    # 8. Run kernels using multiprocessing
     ctx = mp.get_context("spawn")
     with ctx.Pool(processes=2, maxtasksperchild=1) as pool:
         for kernel_name in kernel_functions:
             if kernel_name in KERNELS_TO_RUN:
                 if kernel_name == "PowerSigJax":
-                       os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
+                    os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
                 results = pool.apply(kernel_functions[kernel_name][0], kernel_functions[kernel_name][1])
                 all_results[kernel_name] = results
                 logger.info(f"Completed {kernel_name}")
     
-    # 6.5. Run grid search for all successful kernels
-    logger.info("\n" + "="*80)
-    logger.info("RUNNING GRID SEARCH FOR ALL KERNELS")
-    logger.info("="*80)
+    # 9. Run grid search for all successful kernels
+    logger.info(f"\nRunning grid search for window_size={window_size}, strategy={subsampling_strategy}")
     
     final_results = {}
     for kernel_name, kernel_data in all_results.items():
@@ -1469,100 +1706,186 @@ def main():
                 'best_kernel': 'none',
                 'error': kernel_data.get('error', 'Unknown error')
             }
-   
-    # 7. Print summary
-    logger.info("\n" + "="*80)
-    logger.info("FINAL RESULTS SUMMARY")
-    logger.info("="*80)
     
-    # Print header
-    logger.info(f"{'Kernel':<20} {'Accuracy':<10} {'Precision':<10} {'Recall':<10} {'F1-Score':<10} {'Grid(s)':<10} {'Cond#':<12} {'MLP/SVC':<10}")
-    logger.info("-" * 85)
+    return final_results
+
+
+def write_results_to_csv(results: Dict[str, Any], window_size: int, subsampling_strategy: str, 
+                         csv_filename: str = "eigenworms_results.csv"):
+    """
+    Write experiment results to CSV file.
     
-    for kernel_name, results in final_results.items():
-        condition_number = results.get('condition_number', np.inf)
-        cond_str = f"{condition_number:.2e}" if condition_number != np.inf else "inf"
-        status = results.get('error', 'OK')
-        mlp_vs_svc = results.get('mlp_vs_svc', 'N/A')
+    Args:
+        results: Dictionary containing results for all kernels
+        window_size: Window size used in the experiment
+        subsampling_strategy: Subsampling strategy used
+        csv_filename: Name of the CSV file to write to
+    """
+    # Check if file exists to determine if we need headers
+    file_exists = os.path.exists(csv_filename)
+    
+    with open(csv_filename, 'a', newline='') as csvfile:
+        fieldnames = [
+            'kernel_name', 'static_kernel', 'window_size', 'subsampling_strategy',
+            'accuracy', 'precision', 'recall', 'f1_score', 'condition_number',
+            'gram_computation_time', 'grid_search_time', 'total_time', 'best_C', 'best_gamma', 'error'
+        ]
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         
-        if status != 'OK':
-            logger.info(f"{kernel_name:<20} {'OOM':<10} {'OOM':<10} {'OOM':<10} {'OOM':<10} {'OOM':<10} {'OOM':<12} {'OOM':<10}")
-        else:
-            grid_time = results.get('grid_search_time', 0.0)
-            logger.info(f"{kernel_name:<20} {results['accuracy']:<10.4f} {results['precision']:<10.4f} "
-                       f"{results['recall']:<10.4f} {results['f1_score']:<10.4f} "
-                       f"{grid_time:<10.3f} {cond_str:<12} {mlp_vs_svc:<10}")
-    
-    logger.info("-" * 85)
-    
-    # 7.5. Print detailed timing information
-    logger.info("\n" + "="*80)
-    logger.info("DETAILED TIMING INFORMATION")
-    logger.info("="*80)
-    
-    for kernel_name, results in final_results.items():
-        if results.get('error', 'OK') == 'OK':
-            gram_time = results.get('gram_computation_time', -1.0)
-            grid_time = results.get('grid_search_time', 0.0)
-            total_time = results.get('total_time', 0.0)
-            
-            if gram_time >= 0:
-                logger.info(f"{kernel_name:<20}: Gram computation: {gram_time:.3f}s, Grid search: {grid_time:.3f}s, Total: {total_time:.3f}s")
-            else:
-                logger.info(f"{kernel_name:<20}: Gram computation: CACHED, Grid search: {grid_time:.3f}s, Total: {total_time:.3f}s")
-    
-    logger.info("="*80)
-    
-    # 7.7. Print MLP vs SVC comparison
-    logger.info("\n" + "="*80)
-    logger.info("MLP vs SVC COMPARISON")
-    logger.info("="*80)
-    
-    for kernel_name, results in final_results.items():
-        if results.get('error', 'OK') == 'OK' and 'mlp_vs_svc' in results:
-            mlp_vs_svc = results['mlp_vs_svc']
-            if mlp_vs_svc == 'MLP_WIN':
-                svc_acc = results.get('svc_accuracy', 'N/A')
-                logger.info(f"{kernel_name:<20}: MLP won (MLP: {results['accuracy']:.4f}, SVC: {svc_acc:.4f})")
-            elif mlp_vs_svc == 'SVC_WIN':
-                mlp_acc = results.get('mlp_accuracy', 'N/A')
-                logger.info(f"{kernel_name:<20}: SVC won (SVC: {results['accuracy']:.4f}, MLP: {mlp_acc:.4f})")
-    
-    logger.info("="*80)
-    
-    # 8. Find best performing kernels for each metric
-    if final_results:
-        # Filter out kernels that failed due to OOM
-        successful_results = {k: v for k, v in final_results.items() if v.get('error', 'OK') == 'OK'}
+        # Write header if file doesn't exist
+        if not file_exists:
+            writer.writeheader()
         
-        if successful_results:
-            metrics = ['accuracy', 'precision', 'recall', 'f1_score']
-            logger.info("\nBEST PERFORMING KERNELS BY METRIC:")
-            logger.info("="*50)
+        # Write results for each kernel
+        for kernel_name, kernel_results in results.items():
+            # Determine static kernel type
+            static_kernel = 'none'
+            if 'KSigPDE' in kernel_name:
+                static_kernel = 'rbf'  # Default for KSigPDE
+            elif 'PowerSigJax' in kernel_name:
+                static_kernel = 'rbf'  # Default for PowerSigJax
+            elif kernel_name == 'cuML_Baseline':
+                static_kernel = kernel_results.get('best_kernel', 'none')
             
-            for metric in metrics:
-                best_kernel = max(successful_results.keys(), key=lambda k: successful_results[k][metric])
-                best_value = successful_results[best_kernel][metric]
-                logger.info(f"{metric.upper():<12}: {best_kernel:<20} ({best_value:.4f})")
-            
-            # Find kernel with best condition number (lowest)
-            best_cond_kernel = min(successful_results.keys(), key=lambda k: successful_results[k]['condition_number'])
-            best_cond = successful_results[best_cond_kernel]['condition_number']
-            cond_str = f"{best_cond:.2e}" if best_cond != np.inf else "inf"
-            logger.info(f"{'CONDITION':<12}: {best_cond_kernel:<20} ({cond_str})")
-        else:
-            logger.warning("No kernels completed successfully due to OOM errors")
-        
-        # Report OOM failures
-        oom_kernels = [k for k, v in all_results.items() if v.get('error', 'OK') != 'OK']
-        if oom_kernels:
-            logger.info(f"\nKERNELS THAT FAILED DUE TO OOM:")
-            logger.info("="*40)
-            for kernel in oom_kernels:
-                logger.info(f"- {kernel}")
+            row = {
+                'kernel_name': kernel_name,
+                'static_kernel': static_kernel,
+                'window_size': window_size,
+                'subsampling_strategy': subsampling_strategy,
+                'accuracy': kernel_results.get('accuracy', 0.0),
+                'precision': kernel_results.get('precision', 0.0),
+                'recall': kernel_results.get('recall', 0.0),
+                'f1_score': kernel_results.get('f1_score', 0.0),
+                'condition_number': kernel_results.get('condition_number', np.inf),
+                'gram_computation_time': kernel_results.get('gram_computation_time', -1.0),
+                'grid_search_time': kernel_results.get('grid_search_time', 0.0),
+                'total_time': kernel_results.get('total_time', 0.0),
+                'best_C': kernel_results.get('best_C', 'N/A'),
+                'best_gamma': kernel_results.get('best_gamma', 'N/A'),
+                'error': kernel_results.get('error', 'OK')
+            }
+            writer.writerow(row)
     
-    logger.info("\nExperiment completed!")
+    logger.info(f"Results written to {csv_filename}")
+
+
+def main():
+    """
+    Main function to run Eigenworms classification experiments with window size sweep.
+    """
+    logger.info("Starting Eigenworms classification experiment with window size sweep...")
+    logger.info(f"Kernels to run: {KERNELS_TO_RUN}")
+    
+    # 1. Prepare dataset once
+    X_train, X_test, y_train, y_test = prepare_eigenworms_data()
+    
+    # 2. Define window sizes (powers of 2 from 16 to 4096)
+    window_sizes = [2**i for i in range(13, 15)]  # 16, 32, 64, ..., 4096
+    logger.info(f"Window sizes to test: {window_sizes}")
+    
+    # 3. Run experiments for each window size
+    csv_filename = "eigenworms_results.csv"
+    
+    # Clear existing CSV file
+    if os.path.exists(csv_filename):
+        os.remove(csv_filename)
+        logger.info(f"Removed existing {csv_filename}")
+    
+    for window_size in window_sizes:
+        logger.info(f"\n{'='*80}")
+        logger.info(f"RUNNING EXPERIMENT: window_size={window_size}")
+        logger.info(f"{'='*80}")
+        
+        try:
+            # Run experiment with equally_spaced strategy
+            results = run_experiment(X_train, X_test, y_train, y_test, 
+                                   subsampling_strategy="equally_spaced", 
+                                   window_size=window_size)
+            
+            # Write results to CSV
+            write_results_to_csv(results, window_size, "equally_spaced", csv_filename)
+            
+            # Print summary for this window size
+            logger.info(f"\nResults for window_size={window_size}:")
+            for kernel_name, kernel_results in results.items():
+                if kernel_results.get('error', 'OK') == 'OK':
+                    logger.info(f"  {kernel_name}: accuracy={kernel_results['accuracy']:.4f}")
+                else:
+                    logger.info(f"  {kernel_name}: ERROR - {kernel_results.get('error', 'Unknown')}")
+                    
+        except Exception as e:
+            logger.error(f"Experiment failed for window_size={window_size}: {e}")
+            # Write error results to CSV
+            error_results = {
+                'ERROR': {
+                    'kernel_name': 'ERROR',
+                    'accuracy': 0.0,
+                    'precision': 0.0,
+                    'recall': 0.0,
+                    'f1_score': 0.0,
+                    'condition_number': np.inf,
+                    'gram_computation_time': -1.0,
+                    'grid_search_time': 0.0,
+                    'total_time': 0.0,
+                    'error': str(e)
+                }
+            }
+            write_results_to_csv(error_results, window_size, "equally_spaced", csv_filename)
+    
+    logger.info(f"\n{'='*80}")
+    logger.info("EXPERIMENT COMPLETED!")
+    logger.info(f"Results saved to: {csv_filename}")
+    logger.info("You can now plot accuracy, precision, recall, F1 vs window_size")
+    logger.info("with curves for different kernel, static kernel, and subsampling strategy combinations")
+    logger.info(f"{'='*80}")
 
 
 if __name__ == "__main__":
     main()
+
+# Example plotting code for the CSV results:
+"""
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# Load results
+df = pd.read_csv('eigenworms_results.csv')
+
+# Plot accuracy vs window_size for different kernels
+plt.figure(figsize=(12, 8))
+for kernel in df['kernel_name'].unique():
+    kernel_data = df[df['kernel_name'] == kernel]
+    plt.plot(kernel_data['window_size'], kernel_data['accuracy'], 
+             marker='o', label=kernel, linewidth=2)
+
+plt.xlabel('Window Size')
+plt.ylabel('Accuracy')
+plt.title('Accuracy vs Window Size for Different Kernels')
+plt.xscale('log', base=2)
+plt.legend()
+plt.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig('accuracy_vs_window_size.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# Plot precision, recall, F1 vs window_size
+metrics = ['precision', 'recall', 'f1_score']
+fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+
+for i, metric in enumerate(metrics):
+    for kernel in df['kernel_name'].unique():
+        kernel_data = df[df['kernel_name'] == kernel]
+        axes[i].plot(kernel_data['window_size'], kernel_data[metric], 
+                     marker='o', label=kernel, linewidth=2)
+    
+    axes[i].set_xlabel('Window Size')
+    axes[i].set_ylabel(metric.title())
+    axes[i].set_title(f'{metric.title()} vs Window Size')
+    axes[i].set_xscale('log', base=2)
+    axes[i].legend()
+    axes[i].grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('metrics_vs_window_size.png', dpi=300, bbox_inches='tight')
+plt.show()
+"""

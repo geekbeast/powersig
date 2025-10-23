@@ -131,7 +131,7 @@ def build_integer_recurrence(p: int, num_samples: int,
 
     # If the number of timesteps is less than p, than we just need to return random data as all we see is seed. If num_timesteps = p then we can at least generate one.
     if num_timesteps < p:
-        return torch.randint(1, 10, [num_samples, num_timesteps, dimensions], dtype=dtype, device=device), torch.randint(1, 10, (num_samples, dimensions), dtype=dtype, device=device)
+        return torch.randint(-20, 20, [num_samples, num_timesteps, dimensions], dtype=dtype, device=device), torch.randint(-20, 20, (num_samples, dimensions), dtype=dtype, device=device)
     
     data[:, :(p-1), :] = torch.randint(-20, 20,
         [num_samples, p-1, dimensions], dtype=dtype, device=device
@@ -146,6 +146,39 @@ def build_integer_recurrence(p: int, num_samples: int,
 
     return data, y
 
+def build_unity_from_integer_recurrence(p: int, num_samples: int,
+    num_timesteps: int,
+    dimensions: int,
+    dtype=torch.float64,
+    device=None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    data, y = build_integer_recurrence(p, num_samples, num_timesteps, dimensions, dtype, device)
+    total_nodes = max(data.max(), y.max())
+    logging.info(f"Total nodes: {total_nodes}")
+    
+    angles = ( 2 * torch.pi * data / total_nodes ).to(dtype)
+
+    # Should be a no-op as we'll be on the same device as the data (unless the user requests a different device)
+    if device is not None:
+        angles = angles.to(device)
+    
+    unity_real = torch.cos(angles)
+    unity_imag = torch.sin(angles)
+    unity_nodes_data = torch.complex(unity_real, unity_imag)
+    
+    # Take cumulative sum along timesteps (dim=1) for each feature dimension
+    unity_nodes_data = torch.cumsum(unity_nodes_data, dim=1)
+    
+    y_angles = (2 * torch.pi * y / total_nodes).to(dtype)
+    y_real = torch.cos(y_angles)
+    y_imag = torch.sin(y_angles)
+    y_unity = torch.complex(y_real, y_imag)
+
+    # Take cumulative sum along timesteps (dim=1) for each feature dimension
+    y_unity = torch.cumsum(y_unity, dim=1)
+
+    return unity_nodes_data, y_unity
+
 def build_chebychev_from_integer_recurrence(p: int, num_samples: int,
     num_timesteps: int,
     dimensions: int,
@@ -159,17 +192,17 @@ def build_chebychev_from_integer_recurrence(p: int, num_samples: int,
 
     logging.info(f"Total nodes: {total_nodes}")
     
-    chebychev_nodes_data = torch.cos(torch.pi * (2 * data + 1) / (2 * total_nodes))
+    chebychev_nodes_data = torch.cos(torch.pi * data / total_nodes)
 
     # Take cumulative sum along timesteps (dim=1) for each feature dimension
     chebychev_nodes_data = torch.cumsum(chebychev_nodes_data, dim=1)
 
     # Generate the next step in chebychev space.
-    # chebychev_nodes_y = chebychev_nodes_data[:, -1, :] + torch.cos(torch.pi * (2 * y + 1) / (2 * total_nodes))
-    chebychev_nodes_y = torch.cos(torch.pi * (2 * y + 1) / (2 * total_nodes))
+    chebychev_nodes_y = chebychev_nodes_data[:, -1, :] + torch.cos(torch.pi * ( y / total_nodes))
+    # chebychev_nodes_y = torch.cos(torch.pi * (y  / total_nodes))
     test = chebychev_nodes_y - chebychev_nodes_data[:, -1, :]
     test = torch.arccos(test)
-    test = (test * (2*total_nodes/torch.pi)-1)/2
+    test = (test * (total_nodes/torch.pi))/2
     logging.info(f"Test: {test[:5]}")
     
     return chebychev_nodes_data, chebychev_nodes_y

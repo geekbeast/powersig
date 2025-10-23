@@ -36,6 +36,9 @@ def generate_plots():
     # Add PowerSig vs PolySig dimension comparison plots
     plot_powersig_vs_polysig_dimension_comparison()
     
+    # Add PowerSig vs PolySig accuracy and duration comparison plots
+    plot_powersig_vs_polysig_comparison()
+    
     # rough_data = load_rough_csvs()
     # Add rough time series plots
     # plot_rough_mape_vs_hurst(rough_data)
@@ -412,14 +415,14 @@ def plot_powersig_vs_polysig_dimension_comparison():
         polysig_stats[DIMENSION], 
         polysig_stats[DURATION]['mean'],
         yerr=polysig_stats[DURATION]['std'],
-        fmt='g-o', label='PolySig', capsize=5, markersize=6
+        fmt='g-o', label='PolySigKernel', capsize=5, markersize=6
     )
     
     ax1.set_xscale('log', base=2)
     ax1.set_yscale('log')
     ax1.set_xlabel('Dimension')
-    ax1.set_ylabel('Duration (seconds)')
-    ax1.set_title('Computation Time vs Dimension')
+    ax1.set_ylabel('Runtime (seconds)')
+    ax1.set_title('Runtime vs Dimension (L = 4096)')
     ax1.grid(True, which="both", ls="-", alpha=0.2)
     ax1.legend()
     
@@ -435,14 +438,14 @@ def plot_powersig_vs_polysig_dimension_comparison():
         polysig_stats[DIMENSION], 
         polysig_stats[GPU_MEMORY]['mean'],
         yerr=polysig_stats[GPU_MEMORY]['std'],
-        fmt='g-o', label='PolySig', capsize=5, markersize=6
+        fmt='g-o', label='PolySigKernel', capsize=5, markersize=6
     )
     
     ax2.set_xscale('log', base=2)
     ax2.set_yscale('log')
     ax2.set_xlabel('Dimension')
     ax2.set_ylabel('Memory Usage (MB)')
-    ax2.set_title('Memory Usage vs Dimension')
+    ax2.set_title('GPU Memory Usage vs Dimension (L = 4096)')
     ax2.grid(True, which="both", ls="-", alpha=0.2)
     ax2.legend()
     
@@ -603,6 +606,90 @@ def plot_rough_mape_heatmap(data):
     plt.tight_layout()
     plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'rough_mape_heatmaps.png'))
     plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'rough_mape_heatmaps.svg'))
+    plt.close()
+
+def plot_powersig_vs_polysig_comparison():
+    """Create side-by-side plots comparing PowerSig vs PolySig for accuracy and duration."""
+    
+    # Load accuracy data
+    accuracy_data = load_accuracy_csvs()
+    accuracy_results = get_accuracy(accuracy_data)
+    
+    # Create a figure with two subplots side by side
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    
+    # Plot 1: Accuracy MAPE (PowerSig vs PolySig only)
+    truncated_lengths = accuracy_results['lengths'][:len(accuracy_results['mape_data']['ksig'])]
+    unique_lengths = np.unique(truncated_lengths)
+    
+    powersig_mapes = []
+    polysig_mapes = []
+    
+    # Calculate MAPE for each length
+    for length in unique_lengths:
+        length_mask = truncated_lengths == length
+        
+        # Get all values for this length
+        ksig_vals = accuracy_results['mape_data']['ksig'][length_mask]
+        powersig_vals = accuracy_results['mape_data']['powersig'][length_mask]
+        polysig_vals = accuracy_results['mape_data']['polysig'][length_mask]
+        
+        # Calculate individual MAPEs for this length
+        powersig_length_mapes = np.abs((powersig_vals - ksig_vals) / ksig_vals)
+        polysig_length_mapes = np.abs((polysig_vals - ksig_vals) / ksig_vals)
+        
+        # Store mean of MAPEs for this length
+        powersig_mapes.append(np.mean(powersig_length_mapes))
+        polysig_mapes.append(np.mean(polysig_length_mapes))
+    
+    ax1.plot(unique_lengths, powersig_mapes, 'r-o', label='PowerSig', markersize=6)
+    ax1.plot(unique_lengths, polysig_mapes, 'g-o', label='PolySig', markersize=6)
+    ax1.set_xscale('log', base=2)
+    ax1.set_yscale('log')
+    ax1.set_xlabel('Time Series Length')
+    ax1.set_ylabel('MAPE (relative to KSig)')
+    ax1.set_title('Accuracy Comparison: PowerSig vs PolySig')
+    ax1.grid(True, which="both", ls="-", alpha=0.2)
+    ax1.legend()
+    
+    # Plot 2: Duration comparison (PowerSig vs PolySig only)
+    # Use accuracy data for duration as well
+    powersig_df = accuracy_data[POWERSIG_RESULTS][accuracy_data[POWERSIG_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
+        DURATION: ['mean', 'std']
+    }).reset_index()
+    
+    polysig_df = accuracy_data[POLYSIG_RESULTS][accuracy_data[POLYSIG_RESULTS][RUN_ID] > 0].groupby(LENGTH).agg({
+        DURATION: ['mean', 'std']
+    }).reset_index()
+    
+    ax2.errorbar(
+        powersig_df[LENGTH], 
+        powersig_df[DURATION]['mean'],
+        yerr=powersig_df[DURATION]['std'],
+        fmt='r-o', label='PowerSig', capsize=5, markersize=6
+    )
+    
+    ax2.errorbar(
+        polysig_df[LENGTH], 
+        polysig_df[DURATION]['mean'],
+        yerr=polysig_df[DURATION]['std'],
+        fmt='g-o', label='PolySig', capsize=5, markersize=6
+    )
+    
+    ax2.set_xscale('log', base=2)
+    ax2.set_yscale('log')
+    ax2.set_xlabel('Time Series Length')
+    ax2.set_ylabel('Runtime (seconds)')
+    ax2.set_title('Runtime Comparison: PowerSig vs PolySig')
+    ax2.grid(True, which="both", ls="-", alpha=0.2)
+    ax2.legend()
+    
+    # Adjust layout
+    plt.tight_layout()
+    
+    # Save the plots
+    plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'powersig_vs_polysig_comparison.png'))
+    plt.savefig(os.path.join(BENCHMARKS_RESULTS_DIR, 'powersig_vs_polysig_comparison.svg'))
     plt.close()
 
 def plot_rough_and_accuracy_side_by_side(rough_data, accuracy_results):

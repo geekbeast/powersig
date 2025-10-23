@@ -65,7 +65,7 @@ def download_bitcoin_data(start_date="2020-01-01", end_date=None, max_retries=3)
                 print(f"Attempt {attempt + 1}: Trying {source_name} with symbol {symbol}...")
                 
                 if source_name == "yfinance":
-                    btc = yf.download(symbol, start=start_date, end=end_date, progress=False, timeout=30)
+                    btc = yf.download(symbol, start=start_date, end=end_date, progress=False, timeout=30, auto_adjust=False)
                 
                 # Check if we got valid data
                 if btc is not None and len(btc) > 0:
@@ -232,10 +232,14 @@ def create_sliding_windows_from_array(series, window_size=36):
         
         # Normalize each window individually
         window_mean = np.mean(window)
+        # window_mean = 0.0
         window_std = np.std(window)
+        # window_std = 10000.0
         
+        # window_normalized = window
         window_normalized = (window - window_mean) / window_std
         
+        # target = (series[i + window_size] + series[i + window_size + 1]) / 2
         target = ((series[i + window_size] - window_mean) + (series[i + window_size + 1] - window_mean)) / (2*window_std)
 
         X.append(window_normalized)
@@ -287,10 +291,10 @@ def split_train_test_simple(data, train_days=346, test_days=78):
     
     # Split the data
     train_data = close_prices[:train_days]
-    test_data = close_prices[-test_days:]
+    test_data = close_prices[train_days:train_days+test_days]
     
     print(f"Training data: {len(train_data)} days ({data.index[0].date()} to {data.index[train_days-1].date()})")
-    print(f"Test data: {len(test_data)} days ({data.index[-test_days].date()} to {data.index[-1].date()})")
+    print(f"Test data: {len(test_data)} days ({data.index[train_days].date()} to {data.index[train_days+test_days-1].date()})")
     
     return train_data, test_data
 
@@ -306,26 +310,62 @@ def compute_gram_matrix_powersig(X_train, X_test, powersig):
     Returns:
         Tuple of (train_gram, test_gram)
     """
-
-    static_kernel = ksig.static.kernels.RBFKernel()
-    # static_kernel = ksig.static.kernels.LinearKernel()
-    ksig_pde_kernel = SignaturePDEKernel(normalize=False, static_kernel=static_kernel)
-    
-    print("Computing training gram matrix...")
+    print("Computing PowerSig training gram matrix...")
     start_time = time.time()
     train_gram = powersig.compute_gram_matrix(X_train, X_train)
-    # train_gram = jnp.array(ksig_pde_kernel(cupy.array(X_train), cupy.array(X_train)))
     train_time = time.time() - start_time
-    print(f"✓ Training gram matrix computed in {train_time:.2f} seconds")
+    print(f"✓ PowerSig training gram matrix computed in {train_time:.2f} seconds")
     
-    print("Computing test gram matrix...")
+    print("Computing PowerSig test gram matrix...")
     start_time = time.time()
-    # test_gram = powersig.compute_gram_matrix(X_test, X_train)
-    test_gram = jnp.array(ksig_pde_kernel(cupy.array(X_test), cupy.array(X_train)))
+    test_gram = powersig.compute_gram_matrix(X_test, X_train)
     test_time = time.time() - start_time
-    print(f"✓ Test gram matrix computed in {test_time:.2f} seconds")
+    print(f"✓ PowerSig test gram matrix computed in {test_time:.2f} seconds")
     
     return train_gram, test_gram
+
+def compute_gram_matrix_ksigpde(X_train, X_test, static_kernel_type="linear"):
+    """
+    Compute gram matrices using KSigPDE with static kernel.
+    
+    Args:
+        X_train: Training data
+        X_test: Test data
+        static_kernel_type: Type of static kernel ("linear" or "rbf")
+        
+    Returns:
+        Tuple of (train_gram, test_gram)
+    """
+    print(f"Computing KSigPDE gram matrices with {static_kernel_type} static kernel...")
+    
+    # Create static kernel
+    if static_kernel_type == "linear":
+        static_kernel = LinearKernel()
+    elif static_kernel_type == "rbf":
+        static_kernel = RBFKernel()
+    else:
+        raise ValueError(f"Unknown static kernel type: {static_kernel_type}")
+    
+    # Create KSigPDE kernel
+    ksig_pde_kernel = SignaturePDEKernel(normalize=False, static_kernel=static_kernel)
+    
+    print("Computing KSigPDE training gram matrix...")
+    start_time = time.time()
+    train_gram = ksig_pde_kernel(cupy.array(X_train), cupy.array(X_train))
+    train_time = time.time() - start_time
+    print(f"✓ KSigPDE training gram matrix computed in {train_time:.2f} seconds")
+    
+    print("Computing KSigPDE test gram matrix...")
+    start_time = time.time()
+    test_gram = ksig_pde_kernel(cupy.array(X_test), cupy.array(X_train))
+    test_time = time.time() - start_time
+    print(f"✓ KSigPDE test gram matrix computed in {test_time:.2f} seconds")
+    
+    # Convert to numpy arrays
+    train_gram_np = np.array(train_gram.get())
+    test_gram_np = np.array(test_gram.get())
+    
+    return train_gram_np, test_gram_np
 
 def train_svr_model(train_gram, y_train, C=1.0, epsilon=0.1):
     """
@@ -498,6 +538,107 @@ def validate_gram_matrix_powersig_vs_ksigpde(X_train, powersig):
         'ksig_trunc_time': ksig_trunc_time
     }
 
+def find_best_svr_model(train_gram, test_gram, y_train, y_test, window_stats_train=None, window_stats_test=None, 
+                        epsilon_values=None, C_values=None, method_name="Unknown"):
+    """
+    Find the best SVR model using grid search over C and epsilon parameters.
+    
+    Args:
+        train_gram: Training gram matrix
+        test_gram: Test gram matrix
+        y_train: Training targets
+        y_test: Test targets
+        window_stats_train: List of (mean, std) tuples for training windows
+        window_stats_test: List of (mean, std) tuples for test windows
+        epsilon_values: List of epsilon values to test (default: standard range)
+        C_values: List of C values to test (default: standard range)
+        method_name: Name of the method for logging purposes
+        
+    Returns:
+        Dictionary with best_params, best_results, and grid_results
+    """
+    if epsilon_values is None:
+        epsilon_values = [.0001, 0.001, 0.01, 0.1]
+    if C_values is None:
+        C_values = [.0001, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0]
+    
+    # Add regularization to gram matrix for numerical stability
+    print(f"Adding regularization to {method_name} gram matrix...")
+    reg_factor = 1e-6  # Small regularization factor
+    train_gram_reg = np.array(train_gram) + reg_factor * np.eye(np.array(train_gram).shape[0])
+    print(f"Regularized gram matrix condition number: {np.linalg.cond(train_gram_reg):.2e}")
+    
+    # Grid search
+    best_train_mse = float('inf')
+    best_params = None
+    best_results = None
+    grid_results = []
+    
+    print(f"\n=== Starting Grid Search for {method_name} ===")
+    print(f"Testing {len(epsilon_values)} epsilon values × {len(C_values)} C values = {len(epsilon_values) * len(C_values)} combinations")
+    print("=" * 80)
+    
+    for i, epsilon in enumerate(epsilon_values):
+        for j, C in enumerate(C_values):
+            print(f"\n[{i*len(C_values) + j + 1}/{len(epsilon_values) * len(C_values)}] Testing C={C}, epsilon={epsilon}")
+            
+            try:
+                # Train SVR model
+                svr = train_svr_model(train_gram_reg, y_train, C=C, epsilon=epsilon)
+                
+                # Evaluate model
+                results = evaluate_model(svr, train_gram_reg, test_gram, y_train, y_test, window_stats_train, window_stats_test)
+                
+                # Store results
+                train_mse = results['train_mse']
+                train_mae = results['train_mae']
+                train_mape = results['train_mape']
+                test_mape = results['test_mape']
+                grid_result = {
+                    'C': C,
+                    'epsilon': epsilon,
+                    'test_mape': test_mape,
+                    'test_mse': results['test_mse'],
+                    'test_mae': results['test_mae'],
+                    'test_r2': results['test_r2'],
+                    'train_mape': train_mape,
+                    'train_mse': train_mse,
+                    'train_mae': train_mae,
+                    'train_r2': results['train_r2']
+                }
+                grid_results.append(grid_result)
+                
+                print(f"  Train MSE: {train_mse:.2f}, Train MAE: {train_mae:.2f}, Train MAPE: {train_mape:.2f}%, Test MAPE: {test_mape:.2f}%")
+                
+                # Check if this is the best so far (using train MSE)
+                if train_mse < best_train_mse:
+                    best_train_mse = train_mse
+                    best_params = {'C': C, 'epsilon': epsilon}
+                    best_results = results
+                    print(f"  *** NEW BEST TRAIN MSE: {train_mse:.2f} ***")
+                
+            except Exception as e:
+                print(f"  ERROR: Failed to train/evaluate with C={C}, epsilon={epsilon}: {str(e)}")
+                continue
+    
+    print(f"\n=== Grid Search Complete for {method_name} ===")
+    print(f"Best parameters: C={best_params['C']}, epsilon={best_params['epsilon']}")
+    print(f"Best train MSE: {best_train_mse:.2f}")
+    
+    # Print summary table
+    print(f"\n=== {method_name} Grid Search Results Summary ===")
+    print(f"{'C':<8} {'Epsilon':<8} {'Train MSE':<12} {'Train MAE':<12} {'Train MAPE':<12} {'Test MAPE':<12} {'Test MSE':<12} {'Test MAE':<12} {'Test R²':<8}")
+    print("-" * 100)
+    for result in sorted(grid_results, key=lambda x: x['train_mse']):
+        print(f"{result['C']:<8} {result['epsilon']:<8} {result['train_mse']:<12.2f} {result['train_mae']:<12.2f} {result['train_mape']:<12.2f} {result['test_mape']:<12.2f} {result['test_mse']:<12.2f} {result['test_mae']:<12.2f} {result['test_r2']:<8.4f}")
+    
+    return {
+        'best_params': best_params,
+        'best_results': best_results,
+        'grid_results': grid_results,
+        'train_gram_reg': train_gram_reg
+    }
+
 def evaluate_model(svr, train_gram, test_gram, y_train, y_test, window_stats_train=None, window_stats_test=None):
     """
     Evaluate the trained model.
@@ -598,24 +739,41 @@ def evaluate_model(svr, train_gram, test_gram, y_train, y_test, window_stats_tra
     
     return results
 
-def plot_results(y_train, y_test, y_pred_train, y_pred_test, save_path=None):
+def plot_combined_results(y_train, y_test, powersig_results, ksigpde_results, window_size, static_kernel_name="linear", save_dir="."):
     """
-    Plot the prediction results.
+    Plot the prediction results for both PowerSig and KSigPDE methods in a combined plot.
     
     Args:
-        y_train: Training targets
-        y_test: Test targets
-        y_pred_train: Training predictions
-        y_pred_test: Test predictions
-        save_path: Path to save the plot (optional)
+        y_train: Training targets (normalized)
+        y_test: Test targets (normalized)
+        powersig_results: Dictionary with PowerSig results
+        ksigpde_results: Dictionary with KSigPDE results
+        window_size: Size of the sliding window
+        static_kernel_name: Name of the static kernel used (e.g., "linear", "rbf")
+        save_dir: Directory to save the plots (default: current directory)
     """
-    plt.figure(figsize=(15, 10))
+    # Convert to numpy arrays for processing
+    y_train_np = np.array(y_train).ravel()
+    y_test_np = np.array(y_test).ravel()
+    
+    # Extract predictions from results
+    y_pred_train_powersig = powersig_results['y_pred_train']
+    y_pred_test_powersig = powersig_results['y_pred_test']
+    y_pred_train_ksigpde = ksigpde_results['y_pred_train']
+    y_pred_test_ksigpde = ksigpde_results['y_pred_test']
+    
+    # Extract original scale targets
+    y_train_orig = powersig_results['y_train_orig']
+    y_test_orig = powersig_results['y_test_orig']
+    
+    plt.figure(figsize=(15, 12))
     
     # Training predictions
     plt.subplot(2, 1, 1)
-    plt.plot(y_train, label='Actual', alpha=0.7)
-    plt.plot(y_pred_train, label='Predicted', alpha=0.7)
-    plt.title('Training Set Predictions')
+    plt.plot(y_train_orig, label='Actual (2-day avg)', alpha=0.8, linewidth=2, color='black')
+    plt.plot(y_pred_train_powersig, label='PowerSig', alpha=0.7, linewidth=1.5)
+    # plt.plot(y_pred_train_ksigpde, label='KSigPDE', alpha=0.7, linewidth=1.5)
+    plt.title('Training Set Predictions - Two Day Rolling Average', fontsize=14, fontweight='bold')
     plt.xlabel('Time')
     plt.ylabel('Bitcoin Price (USD)')
     plt.legend()
@@ -623,9 +781,10 @@ def plot_results(y_train, y_test, y_pred_train, y_pred_test, save_path=None):
     
     # Test predictions
     plt.subplot(2, 1, 2)
-    plt.plot(y_test, label='Actual', alpha=0.7)
-    plt.plot(y_pred_test, label='Predicted', alpha=0.7)
-    plt.title('Test Set Predictions')
+    plt.plot(y_test_orig, label='Actual (2-day avg)', alpha=0.8, linewidth=2, color='black')
+    plt.plot(y_pred_test_powersig, label=f'PowerSig (MAPE: {powersig_results["test_mape"]:.2f}%)', alpha=0.7, linewidth=1.5)
+    # plt.plot(y_pred_test_ksigpde, label=f'KSigPDE (MAPE: {ksigpde_results["test_mape"]:.2f}%)', alpha=0.7, linewidth=1.5)
+    plt.title('Test Set Predictions - Two Day Rolling Average', fontsize=14, fontweight='bold')
     plt.xlabel('Time')
     plt.ylabel('Bitcoin Price (USD)')
     plt.legend()
@@ -633,11 +792,20 @@ def plot_results(y_train, y_test, y_pred_train, y_pred_test, save_path=None):
     
     plt.tight_layout()
     
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"Plot saved to {save_path}")
+    # Create filename with specified format
+    base_filename = f"bitcoin_{window_size}_{static_kernel_name}_comparison"
     
-    plt.show()
+    # Save as SVG
+    svg_path = os.path.join(save_dir, f"{base_filename}.svg")
+    plt.savefig(svg_path, dpi=300, bbox_inches='tight')
+    print(f"Combined plot saved to {svg_path}")
+    
+    # Save as PNG
+    png_path = os.path.join(save_dir, f"{base_filename}.png")
+    plt.savefig(png_path, dpi=300, bbox_inches='tight')
+    print(f"Combined plot saved to {png_path}")
+    
+    plt.close()  # Close the figure to free memory
 
 def main():
     print("=== Bitcoin Price Prediction with PowerSigJax ===")
@@ -665,12 +833,13 @@ def main():
     if btc_data is None:
         # Download Bitcoin data if not cached or too old
         # Start from 2017-06-02 to ensure we have the training period
-        btc_data = download_bitcoin_data(start_date="2024-06-07")
+        btc_data = download_bitcoin_data(start_date="2017-06-01", end_date="2018-08-04")
         # Save for future use
         save_bitcoin_data(btc_data)
     print(f"Bitcoin data: {btc_data}")
+    print(f"Bitcoin data shape: {btc_data.shape}")
     # Simple split: first 346 days for training, last 78 days for testings
-    train_data, test_data = split_train_test_simple(btc_data, train_days=346, test_days=78)
+    train_data, test_data = split_train_test_simple(btc_data, train_days=348, test_days=78)
     print(f"Training data min: {train_data.min()}, max: {train_data.max()}")
     
     # Create sliding windows with window-wise normalization
@@ -701,9 +870,9 @@ def main():
     y_train_jax = jnp.array(y_train, dtype=jnp.float64, device=device)
     y_test_jax = jnp.array(y_test, dtype=jnp.float64, device=device)
     
-    # Initialize PowerSigJax
-    print("\nInitializing PowerSigJax...")
-    powersig = PowerSigJax(order=9,static_kernel=static_kernels.rbf_kernel, device=device)  # Using order 8 for validation
+    # Initialize PowerSigJax with linear static kernel
+    print("\nInitializing PowerSigJax with linear static kernel...")
+    powersig = PowerSigJax(order=17, static_kernel=static_kernels.linear_kernel, device=device)
 
     
     # Validate PowerSigJax against KSigPDE
@@ -726,9 +895,9 @@ def main():
     print(f"Training gram matrix - min: {np.min(train_gram_np):.6f}, max: {np.max(train_gram_np):.6f}, mean: {np.mean(train_gram_np):.6f}")
     print(f"Test gram matrix - min: {np.min(test_gram_np):.6f}, max: {np.max(test_gram_np):.6f}, mean: {np.mean(test_gram_np):.6f}")
     
-    # Train SVR model with reasonable C value and regularization
-    C = .010  # Much smaller C for better regularization
-    epsilon = 0.1  # Larger epsilon for more tolerance
+    # Grid search parameters
+    epsilon_values = [.0001, 0.001, 0.01, 0.1, 1.0, 10, 100]
+    C_values = [.0001, 0.001, 0.01]
     
     # Debug: Check gram matrix and target ranges before training
     train_gram_np = np.array(train_gram)
@@ -738,78 +907,187 @@ def main():
     print(f"Training targets - min: {np.min(y_train_np):.6f}, max: {np.max(y_train_np):.6f}")
     print(f"Training targets - mean: {np.mean(y_train_np):.6f}, std: {np.std(y_train_np):.6f}")
     
-    # Add regularization to gram matrix for numerical stability
-    print("Adding regularization to gram matrix...")
-    reg_factor = 1e-6  # Small regularization factor
-    train_gram_reg = train_gram_np + reg_factor * np.eye(train_gram_np.shape[0])
-    print(f"Regularized gram matrix condition number: {np.linalg.cond(train_gram_reg):.2e}")
+    # Find best PowerSig model
+    print(f"\n{'='*80}")
+    print(f"EVALUATING POWERSIG METHOD")
+    print(f"{'='*80}")
     
-    svr = train_svr_model(train_gram_reg, y_train_jax, C=C, epsilon=epsilon)
+    powersig_results = find_best_svr_model(
+        train_gram=train_gram,
+        test_gram=test_gram,
+        y_train=y_train_jax,
+        y_test=y_test_jax,
+        window_stats_train=window_stats_train,
+        window_stats_test=window_stats_test,
+        epsilon_values=epsilon_values,
+        C_values=C_values,
+        method_name="PowerSig"
+    )
     
-    # Evaluate model
-    results = evaluate_model(svr, train_gram_reg, test_gram, y_train_jax, y_test_jax, window_stats_train, window_stats_test)
+    # Train final PowerSig model
+    svr_powersig = train_svr_model(
+        powersig_results['train_gram_reg'], 
+        y_train_jax, 
+        C=powersig_results['best_params']['C'], 
+        epsilon=powersig_results['best_params']['epsilon']
+    )
+    results_powersig = powersig_results['best_results']
     
-    # Print results
-    print(f"\n=== Model Performance (Normalized Scale) ===")
-    print(f"Training MSE: {results['train_mse_norm']:.6f}")
-    print(f"Training MAE: {results['train_mae_norm']:.6f}")
-    print(f"Training MAPE: {results['train_mape_norm']:.2f}%")
-    print(f"Training R²: {results['train_r2_norm']:.4f}")
-    print(f"Test MSE: {results['test_mse_norm']:.6f}")
-    print(f"Test MAE: {results['test_mae_norm']:.6f}")
-    print(f"Test MAPE: {results['test_mape_norm']:.2f}%")
-    print(f"Test R²: {results['test_r2_norm']:.4f}")
+    # Find best KSigPDE model
+    print(f"\n{'='*80}")
+    print(f"EVALUATING KSIGPDE METHOD")
+    print(f"{'='*80}")
     
-    print(f"\n=== Model Performance (Original Scale) ===")
-    print(f"Training MSE: {results['train_mse']:.2f}")
-    print(f"Training MAE: {results['train_mae']:.2f}")
-    print(f"Training MAPE: {results['train_mape']:.2f}%")
-    print(f"Training R²: {results['train_r2']:.4f}")
-    print(f"Test MSE: {results['test_mse']:.2f}")
-    print(f"Test MAE: {results['test_mae']:.2f}")
-    print(f"Test MAPE: {results['test_mape']:.2f}%")
-    print(f"Test R²: {results['test_r2']:.4f}")
+    # Compute KSigPDE gram matrices with linear static kernel (same as PowerSig)
+    train_gram_ksigpde, test_gram_ksigpde = compute_gram_matrix_ksigpde(
+        X_train_aug, X_test_aug, static_kernel_type="linear" if powersig.static_kernel == static_kernels.linear_kernel else "rbf"
+    )
     
-    # Print some sample predictions (normalized scale)
-    print(f"\nSample test predictions (first 10) - Normalized scale:")
+    ksigpde_results = find_best_svr_model(
+        train_gram=train_gram_ksigpde,
+        test_gram=test_gram_ksigpde,
+        y_train=y_train_jax,
+        y_test=y_test_jax,
+        window_stats_train=window_stats_train,
+        window_stats_test=window_stats_test,
+        epsilon_values=epsilon_values,
+        C_values=C_values,
+        method_name="KSigPDE"
+    )
+    
+    # Train final KSigPDE model
+    svr_ksigpde = train_svr_model(
+        ksigpde_results['train_gram_reg'], 
+        y_train_jax, 
+        C=ksigpde_results['best_params']['C'], 
+        epsilon=ksigpde_results['best_params']['epsilon']
+    )
+    results_ksigpde = ksigpde_results['best_results']
+    
+    # Print PowerSig results
+    print(f"\n=== PowerSig Model Performance (Normalized Scale) ===")
+    print(f"Training MSE: {results_powersig['train_mse_norm']:.6f}")
+    print(f"Training MAE: {results_powersig['train_mae_norm']:.6f}")
+    print(f"Training MAPE: {results_powersig['train_mape_norm']:.2f}%")
+    print(f"Training R²: {results_powersig['train_r2_norm']:.4f}")
+    print(f"Test MSE: {results_powersig['test_mse_norm']:.6f}")
+    print(f"Test MAE: {results_powersig['test_mae_norm']:.6f}")
+    print(f"Test MAPE: {results_powersig['test_mape_norm']:.2f}%")
+    print(f"Test R²: {results_powersig['test_r2_norm']:.4f}")
+    
+    print(f"\n=== PowerSig Model Performance (Original Scale) ===")
+    print(f"Training MSE: {results_powersig['train_mse']:.2f}")
+    print(f"Training MAE: {results_powersig['train_mae']:.2f}")
+    print(f"Training MAPE: {results_powersig['train_mape']:.2f}%")
+    print(f"Training R²: {results_powersig['train_r2']:.4f}")
+    print(f"Test MSE: {results_powersig['test_mse']:.2f}")
+    print(f"Test MAE: {results_powersig['test_mae']:.2f}")
+    print(f"Test MAPE: {results_powersig['test_mape']:.2f}%")
+    print(f"Test R²: {results_powersig['test_r2']:.4f}")
+    
+    # Print KSigPDE results
+    print(f"\n=== KSigPDE Model Performance (Normalized Scale) ===")
+    print(f"Training MSE: {results_ksigpde['train_mse_norm']:.6f}")
+    print(f"Training MAE: {results_ksigpde['train_mae_norm']:.6f}")
+    print(f"Training MAPE: {results_ksigpde['train_mape_norm']:.2f}%")
+    print(f"Training R²: {results_ksigpde['train_r2_norm']:.4f}")
+    print(f"Test MSE: {results_ksigpde['test_mse_norm']:.6f}")
+    print(f"Test MAE: {results_ksigpde['test_mae_norm']:.6f}")
+    print(f"Test MAPE: {results_ksigpde['test_mape_norm']:.2f}%")
+    print(f"Test R²: {results_ksigpde['test_r2_norm']:.4f}")
+    
+    print(f"\n=== KSigPDE Model Performance (Original Scale) ===")
+    print(f"Training MSE: {results_ksigpde['train_mse']:.2f}")
+    print(f"Training MAE: {results_ksigpde['train_mae']:.2f}")
+    print(f"Training MAPE: {results_ksigpde['train_mape']:.2f}%")
+    print(f"Training R²: {results_ksigpde['train_r2']:.4f}")
+    print(f"Test MSE: {results_ksigpde['test_mse']:.2f}")
+    print(f"Test MAE: {results_ksigpde['test_mae']:.2f}")
+    print(f"Test MAPE: {results_ksigpde['test_mape']:.2f}%")
+    print(f"Test R²: {results_ksigpde['test_r2']:.4f}")
+    
+    # Print comparison summary
+    print(f"\n=== Method Comparison Summary ===")
+    print(f"{'Method':<12} {'Test MAPE':<12} {'Test MSE':<12} {'Test MAE':<12} {'Test R²':<8}")
+    print("-" * 60)
+    print(f"{'PowerSig':<12} {results_powersig['test_mape']:<12.2f} {results_powersig['test_mse']:<12.2f} {results_powersig['test_mae']:<12.2f} {results_powersig['test_r2']:<8.4f}")
+    print(f"{'KSigPDE':<12} {results_ksigpde['test_mape']:<12.2f} {results_ksigpde['test_mse']:<12.2f} {results_ksigpde['test_mae']:<12.2f} {results_ksigpde['test_r2']:<8.4f}")
+    
+    # Print some sample predictions (normalized scale) - PowerSig
+    print(f"\nSample PowerSig test predictions (first 10) - Normalized scale:")
     print("Actual\tPredicted\tError")
     y_test_np = np.array(y_test).ravel()
-    y_pred_test_norm = svr.predict(test_gram_np)
+    y_pred_test_norm_powersig = svr_powersig.predict(np.array(test_gram))
     
     for i in range(min(10, len(y_test_np))):
         actual_val = float(y_test_np[i])
-        pred_val = float(y_pred_test_norm[i])
+        pred_val = float(y_pred_test_norm_powersig[i])
         error = abs(actual_val - pred_val)
         print(f"{actual_val:.4f}\t{pred_val:.4f}\t{error:.4f}")
     
-    # Print some sample predictions (denormalized to original scale)
-    print(f"\nSample test predictions (first 10) - Original scale:")
+    # Print some sample predictions (normalized scale) - KSigPDE
+    print(f"\nSample KSigPDE test predictions (first 10) - Normalized scale:")
     print("Actual\tPredicted\tError")
-    y_test_orig = results['y_test_orig']
-    y_pred_test = results['y_pred_test']
+    y_pred_test_norm_ksigpde = svr_ksigpde.predict(np.array(test_gram_ksigpde))
+    
+    for i in range(min(10, len(y_test_np))):
+        actual_val = float(y_test_np[i])
+        pred_val = float(y_pred_test_norm_ksigpde[i])
+        error = abs(actual_val - pred_val)
+        print(f"{actual_val:.4f}\t{pred_val:.4f}\t{error:.4f}")
+    
+    # Print some sample predictions (denormalized to original scale) - PowerSig
+    print(f"\nSample PowerSig test predictions (first 10) - Original scale:")
+    print("Actual\tPredicted\tError")
+    y_test_orig = results_powersig['y_test_orig']
+    y_pred_test_powersig = results_powersig['y_pred_test']
     
     for i in range(min(10, len(y_test_orig))):
         actual_val = float(y_test_orig[i])
-        pred_val = float(y_pred_test[i])
+        pred_val = float(y_pred_test_powersig[i])
+        error = abs(actual_val - pred_val)
+        print(f"{actual_val:.2f}\t{pred_val:.2f}\t{error:.2f}")
+    
+    # Print some sample predictions (denormalized to original scale) - KSigPDE
+    print(f"\nSample KSigPDE test predictions (first 10) - Original scale:")
+    print("Actual\tPredicted\tError")
+    y_test_orig_ksigpde = results_ksigpde['y_test_orig']
+    y_pred_test_ksigpde = results_ksigpde['y_pred_test']
+    
+    for i in range(min(10, len(y_test_orig_ksigpde))):
+        actual_val = float(y_test_orig_ksigpde[i])
+        pred_val = float(y_pred_test_ksigpde[i])
         error = abs(actual_val - pred_val)
         print(f"{actual_val:.2f}\t{pred_val:.2f}\t{error:.2f}")
     
     # Print model summary
-    print(f"\n=== Model Summary ===")
-    print(f"Number of support vectors: {len(svr.support_)}")
-    print(f"Support vector ratio: {len(svr.support_) / len(y_train):.2%}")
-    print(f"C parameter: {C}")
-    print(f"Epsilon parameter: {epsilon}")
-    print(f"Polynomial order: 16")
+    print(f"\n=== PowerSig Model Summary ===")
+    print(f"Number of support vectors: {len(svr_powersig.support_)}")
+    print(f"Support vector ratio: {len(svr_powersig.support_) / len(y_train):.2%}")
+    print(f"C parameter: {powersig_results['best_params']['C']}")
+    print(f"Epsilon parameter: {powersig_results['best_params']['epsilon']}")
+    print(f"Polynomial order: 9")
+    print(f"Static kernel: Linear")
     print(f"Window size: {window_size} days")
     
-    # Plot results
-    print(f"\nGenerating plots...")
-    plot_results(
-        results['y_train_orig'], 
-        results['y_test_orig'], 
-        results['y_pred_train'], 
-        results['y_pred_test']
+    print(f"\n=== KSigPDE Model Summary ===")
+    print(f"Number of support vectors: {len(svr_ksigpde.support_)}")
+    print(f"Support vector ratio: {len(svr_ksigpde.support_) / len(y_train):.2%}")
+    print(f"C parameter: {ksigpde_results['best_params']['C']}")
+    print(f"Epsilon parameter: {ksigpde_results['best_params']['epsilon']}")
+    print(f"Static kernel: Linear")
+    print(f"Window size: {window_size} days")
+    
+    # Plot combined results for both methods
+    print(f"\nGenerating combined comparison plot...")
+    
+    plot_combined_results(
+        y_train_jax, 
+        y_test_jax, 
+        results_powersig,
+        results_ksigpde,
+        window_size=window_size,
+        static_kernel_name="linear" if powersig.static_kernel == static_kernels.linear_kernel else "rbf"
     )
     
     print(f"\n✓ Bitcoin prediction example completed successfully!")
