@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "powersig"
+version = "1.0.0"
+description = "Signature Kernel Power Series Library"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+authors = [
+    { name = "Matthew Tamayo-Rios", email = "matthew@geekbeast.com" },
+]
+keywords = [
+    "machine-learning",
+    "signature",
+    "sequence",
+    "time-series",
+    "deep-learning",
+]
+classifiers = [
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: Science/Research",
+    "Natural Language :: English",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: Unix",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+dependencies = [
+    "numpy>=1.26.4",
+    "scikit-learn>=1.3.2",
+    "tqdm>=4.67.1",
+]
+
+[project.optional-dependencies]
+jax-cpu = ["jax[cpu]>=0.4.0"]
+jax-gpu = ["jax[cuda12]>=0.4.0"]
+torch = ["torch>=2.5.0"]
+cupy = ["cupy-cuda12x>=13.4.1"]
+dev = [
+    "pytest>=7.0",
+]
+all = [
+    "jax[cuda12]>=0.4.0",
+    "torch>=2.5.0",
+    "cupy-cuda12x>=13.4.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/geekbeast/powersig"
+Repository = "https://github.com/geekbeast/powersig"
+
+[tool.setuptools.packages.find]
+include = ["powersig*"]
+exclude = ["tests*", "benchmarks*", "examples*"]
