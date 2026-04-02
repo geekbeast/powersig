@@ -48,16 +48,16 @@ class PowerSigJax:
         # print(f"psi_t = {self.psi_t}")
         # print(f"exponents = {self.exponents}")
     
-    def __call__(self, X, Y = None, symmetric: bool = False) -> jnp.ndarray:
+    def __call__(self, X, Y = None, symmetric: bool = False, block_size: Optional[int] = None) -> jnp.ndarray:
         if not isinstance(X, jnp.ndarray):
             X = jnp.array(X, device=self.device)
-        
+
         if Y is None:
             Y = X
         elif not isinstance(Y, jnp.ndarray):
             Y = jnp.array(Y, device=self.device)
-            
-        return self.compute_gram_matrix(X, Y, symmetric)
+
+        return self.compute_gram_matrix(X, Y, symmetric, block_size=block_size)
     
     @partial(jit, static_argnums=(0,3))
     def compute_signature_kernel(self, X: jnp.ndarray, Y: jnp.ndarray, device=None) -> jnp.ndarray:
@@ -133,59 +133,102 @@ class PowerSigJax:
         diagonal_batch_size = ceil(sqrt(longest_diagonal))
         return self.chunked_compute_gram_entry(X, Y, v_s, v_t, diagonal_count, diagonal_batch_size, longest_diagonal, indices, order=self.order)
 
-    # TODO: Think about jitting this
-    def compute_gram_matrix(self, X: jnp.ndarray, Y: jnp.ndarray, symmetric: bool = False) -> jnp.ndarray:
+    def compute_gram_matrix(self, X: jnp.ndarray, Y: jnp.ndarray, symmetric: bool = False, block_size: Optional[int] = None) -> jnp.ndarray:
         """
         Compute the Gram matrix between two sets of time series.
         Args:
-            X: JAX array of shape (batch_size,length, dim) representing the first set of time series
+            X: JAX array of shape (batch_size, length, dim) representing the first set of time series
             Y: JAX array of shape (batch_size, length, dim) representing the second set of time series
             symmetric: If True, computes the kernel matrix for the combined set of X and Y. Default is False.
+            block_size: Number of (i, j) pairs to evaluate in parallel via vmap.
+                When None, auto-tunes based on available GPU memory.
 
         Returns:
             A JAX array of shape (batch_size, batch_size) containing the Gram matrix between X and Y
         """
         gram_matrix = jnp.zeros([X.shape[0], Y.shape[0]], dtype=X.dtype, device=X.device)
-        
-        # Compute the derivatives for the entire batch at once
-        # dX = jax_compute_derivative_batch(X)
-        # dY = jax_compute_derivative_batch(Y)
-        
-        # These will stay the same for the entire batch
-        ds = 1.0 #/ (X.shape[1] - 1)
-        dt = 1.0 #/ (Y.shape[1] - 1)
-        v_s, v_t = compute_vandermonde_vectors(ds, dt, self.order, dtype=jnp.float64,device=X.device)
-        # psi_s = build_stencil_s(v_s, order=self.order, dtype=jnp.float64, device=X.device)
-        # psi_t = build_stencil_t(v_t, order=self.order, dtype=jnp.float64, device=X.device)
 
-        # psi_s = build_stencil(self.order, dX.dtype, X.device)
-        # psi_t = psi_s
+        # These will stay the same for the entire batch
+        ds = 1.0
+        dt = 1.0
+        v_s, v_t = compute_vandermonde_vectors(ds, dt, self.order, dtype=jnp.float64, device=X.device)
 
         longest_diagonal = min(X.shape[1] - 1, Y.shape[1] - 1)
         diagonal_count = (X.shape[1] - 1) + (Y.shape[1] - 1) - 1
-        indices = jnp.arange(longest_diagonal,dtype=jnp.int32,device=X.device)
+        indices = jnp.arange(longest_diagonal, dtype=jnp.int32, device=X.device)
         diagonal_batch_size = ceil(sqrt(longest_diagonal))
 
-        # Ensure exponents are on the same device as input
+        # Ensure constants are on the same device as input
         self.exponents = jax.device_put(self.exponents, X.device)
         self.psi_s = jax.device_put(self.psi_s, X.device)
         self.psi_t = jax.device_put(self.psi_t, X.device)
 
-        # If the longest diagonal is greater than the JIT threshold, use the chunked approach.
-        # The chunked approach wastes less work and is more memory efficient for large diagonals,
-        # while avoiding recompilation
-        total_entries = int(X.shape[0] * Y.shape[0])
-        pbar = tqdm(total=total_entries, desc="Computing Gram Matrix")
+        # Build list of (i, j) pairs to compute
+        pairs_i = []
+        pairs_j = []
         for i in range(X.shape[0]):
-            for j in range(i if symmetric else 0,Y.shape[0]):
-                if longest_diagonal <= JIT_BOUNDARY_THRESHOLD:
-                    gram_matrix = gram_matrix.at[i,j].set(self.compute_gram_entry(X[i], Y[j], v_s, v_t, diagonal_count,longest_diagonal, indices, order=self.order, device=X.device))
-                    pbar.update(1)
-                else:
-                    gram_matrix = gram_matrix.at[i,j].set(self.chunked_compute_gram_entry(X[i], Y[j], v_s, v_t, diagonal_count, diagonal_batch_size, longest_diagonal, indices, order=self.order, device=X.device))
-                    pbar.update(1)
-                if symmetric and i != j:
-                    gram_matrix = gram_matrix.at[j,i].set(gram_matrix[i,j])
+            for j in range(i if symmetric else 0, Y.shape[0]):
+                pairs_i.append(i)
+                pairs_j.append(j)
+
+        total_pairs = len(pairs_i)
+        if total_pairs == 0:
+            return gram_matrix
+
+        i_all = jnp.array(pairs_i, dtype=jnp.int32)
+        j_all = jnp.array(pairs_j, dtype=jnp.int32)
+
+        # Choose entry function based on diagonal length
+        use_chunked = longest_diagonal > JIT_BOUNDARY_THRESHOLD
+        if use_chunked:
+            def single_entry(xi, yj):
+                return self.chunked_compute_gram_entry(
+                    xi, yj, v_s, v_t, diagonal_count, diagonal_batch_size,
+                    longest_diagonal, indices, order=self.order, device=X.device)
+        else:
+            def single_entry(xi, yj):
+                return self.compute_gram_entry(
+                    xi, yj, v_s, v_t, diagonal_count, longest_diagonal,
+                    indices, order=self.order, device=X.device)
+
+        # Auto-tune or use provided block_size
+        if block_size is None:
+            block_size = compute_block_size(
+                longest_diagonal, self.order, X.dtype, self.device, total_pairs)
+        else:
+            block_size = _round_to_power_of_2(min(block_size, total_pairs))
+
+        batched_entry = vmap(single_entry, in_axes=(0, 0))
+
+        pbar = tqdm(total=total_pairs, desc="Computing Gram Matrix")
+        offset = 0
+        while offset < total_pairs:
+            end = min(offset + block_size, total_pairs)
+            actual_count = end - offset
+
+            batch_i = i_all[offset:end]
+            batch_j = j_all[offset:end]
+
+            # Pad the last batch to block_size for consistent JIT compilation
+            if actual_count < block_size:
+                pad_count = block_size - actual_count
+                batch_i = jnp.concatenate([batch_i, jnp.full(pad_count, batch_i[-1], dtype=jnp.int32)])
+                batch_j = jnp.concatenate([batch_j, jnp.full(pad_count, batch_j[-1], dtype=jnp.int32)])
+
+            X_batch = X[batch_i]
+            Y_batch = Y[batch_j]
+
+            results = batched_entry(X_batch, Y_batch)
+
+            # Only use results for actual (non-padded) pairs
+            actual_i = i_all[offset:end]
+            actual_j = j_all[offset:end]
+            gram_matrix = gram_matrix.at[actual_i, actual_j].set(results[:actual_count])
+            if symmetric:
+                gram_matrix = gram_matrix.at[actual_j, actual_i].set(results[:actual_count])
+
+            pbar.update(actual_count)
+            offset = end
 
         pbar.close()
         return gram_matrix
@@ -446,6 +489,72 @@ class PowerSigJax:
 
 DIAGONAL_CHUNK_SIZE = 1024
 JIT_BOUNDARY_THRESHOLD = 64
+MAX_BLOCK_SIZE = 256
+
+
+def estimate_bytes_per_pair(longest_diagonal: int, order: int, dtype) -> int:
+    """Estimate peak GPU memory consumed by one (i,j) pair during the diagonal sweep.
+
+    Accounts for S/T buffers, Toeplitz intermediates from map_diagonal_entry_v2
+    (vmapped over the diagonal), and auxiliary vectors (rho powers, boundary lookups,
+    matvec results).
+    """
+    elem_bytes = jnp.dtype(dtype).itemsize
+    buffers = 2 * longest_diagonal * order                  # S_buf + T_buf
+    toeplitz = 3 * longest_diagonal * order * order          # T, triu(T), tril(T)
+    aux = 5 * longest_diagonal * order                       # r, s, t, two matvecs
+    return elem_bytes * (buffers + toeplitz + aux)
+
+
+def get_available_gpu_memory(device: jax.Device) -> int:
+    """Return available GPU memory in bytes, with conservative fallback."""
+    if device.platform != 'gpu':
+        return 4 * 1024 ** 3  # 4 GB budget on CPU
+
+    try:
+        stats = device.memory_stats()
+        if stats is not None:
+            total = stats.get('bytes_limit', 0)
+            in_use = stats.get('bytes_in_use', 0)
+            if total > 0:
+                return total - in_use
+    except Exception:
+        pass
+
+    return 8 * 1024 ** 3  # 8 GB fallback
+
+
+def _round_to_power_of_2(n: int) -> int:
+    """Round up to the next power of 2 (minimum 1)."""
+    if n <= 1:
+        return 1
+    return 1 << (n - 1).bit_length()
+
+
+def compute_block_size(
+    longest_diagonal: int,
+    order: int,
+    dtype,
+    device: jax.Device,
+    total_pairs: int,
+    safety_factor: float = 0.7,
+) -> int:
+    """Pick the largest block_size that fits in GPU memory.
+
+    The result is rounded to the next power of 2 so that padding the last
+    batch to this size yields a single JIT compilation for the vmapped kernel.
+    """
+    per_pair = estimate_bytes_per_pair(longest_diagonal, order, dtype)
+    available = get_available_gpu_memory(device)
+    budget = int(available * safety_factor)
+
+    if per_pair > 0:
+        raw = max(1, budget // per_pair)
+    else:
+        raw = MAX_BLOCK_SIZE
+
+    raw = min(raw, total_pairs, MAX_BLOCK_SIZE)
+    return _round_to_power_of_2(raw)
 
 @jit
 def batch_ADM_for_diagonal(
