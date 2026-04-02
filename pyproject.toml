@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "powersig"
-version = "1.0.0"
+dynamic = ["version"]
 description = "Signature Kernel Power Series Library"
 readme = "README.md"
 license = "Apache-2.0"
@@ -55,6 +55,9 @@ all = [
 [project.urls]
 Homepage = "https://github.com/geekbeast/powersig"
 Repository = "https://github.com/geekbeast/powersig"
+
+[tool.setuptools.dynamic]
+version = {file = "VERSION"}
 
 [tool.setuptools.packages.find]
 include = ["powersig*"]
