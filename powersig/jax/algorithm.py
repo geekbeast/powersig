@@ -146,22 +146,22 @@ class PowerSigJax:
         Returns:
             A JAX array of shape (batch_size, batch_size) containing the Gram matrix between X and Y
         """
-        gram_matrix = jnp.zeros([X.shape[0], Y.shape[0]], dtype=X.dtype, device=X.device)
+        gram_matrix = jnp.zeros([X.shape[0], Y.shape[0]], dtype=X.dtype, device=self.device)
 
         # These will stay the same for the entire batch
         ds = 1.0
         dt = 1.0
-        v_s, v_t = compute_vandermonde_vectors(ds, dt, self.order, dtype=jnp.float64, device=X.device)
+        v_s, v_t = compute_vandermonde_vectors(ds, dt, self.order, dtype=jnp.float64, device=self.device)
 
         longest_diagonal = min(X.shape[1] - 1, Y.shape[1] - 1)
         diagonal_count = (X.shape[1] - 1) + (Y.shape[1] - 1) - 1
-        indices = jnp.arange(longest_diagonal, dtype=jnp.int32, device=X.device)
+        indices = jnp.arange(longest_diagonal, dtype=jnp.int32, device=self.device)
         diagonal_batch_size = ceil(sqrt(longest_diagonal))
 
         # Ensure constants are on the same device as input
-        self.exponents = jax.device_put(self.exponents, X.device)
-        self.psi_s = jax.device_put(self.psi_s, X.device)
-        self.psi_t = jax.device_put(self.psi_t, X.device)
+        self.exponents = jax.device_put(self.exponents, self.device)
+        self.psi_s = jax.device_put(self.psi_s, self.device)
+        self.psi_t = jax.device_put(self.psi_t, self.device)
 
         # Build list of (i, j) pairs to compute
         pairs_i = []
@@ -184,12 +184,12 @@ class PowerSigJax:
             def single_entry(xi, yj):
                 return self.chunked_compute_gram_entry(
                     xi, yj, v_s, v_t, diagonal_count, diagonal_batch_size,
-                    longest_diagonal, indices, order=self.order, device=X.device)
+                    longest_diagonal, indices, order=self.order, device=self.device)
         else:
             def single_entry(xi, yj):
                 return self.compute_gram_entry(
                     xi, yj, v_s, v_t, diagonal_count, longest_diagonal,
-                    indices, order=self.order, device=X.device)
+                    indices, order=self.order, device=self.device)
 
         # Auto-tune or use provided block_size
         if block_size is None:
