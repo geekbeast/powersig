@@ -48,7 +48,7 @@ class PowerSigJax:
         # print(f"psi_t = {self.psi_t}")
         # print(f"exponents = {self.exponents}")
     
-    def __call__(self, X, Y = None, symmetric: bool = False, block_size: Optional[int] = None) -> jnp.ndarray:
+    def __call__(self, X, Y = None, symmetric: bool = False, block_size: Optional[int] = None, show_progress: bool = True) -> jnp.ndarray:
         if not isinstance(X, jnp.ndarray):
             X = jnp.array(X, device=self.device)
 
@@ -57,7 +57,7 @@ class PowerSigJax:
         elif not isinstance(Y, jnp.ndarray):
             Y = jnp.array(Y, device=self.device)
 
-        return self.compute_gram_matrix(X, Y, symmetric, block_size=block_size)
+        return self.compute_gram_matrix(X, Y, symmetric, block_size=block_size, show_progress=show_progress)
     
     @partial(jit, static_argnums=(0,3))
     def compute_signature_kernel(self, X: jnp.ndarray, Y: jnp.ndarray, device=None) -> jnp.ndarray:
@@ -133,7 +133,7 @@ class PowerSigJax:
         diagonal_batch_size = ceil(sqrt(longest_diagonal))
         return self.chunked_compute_gram_entry(X, Y, v_s, v_t, diagonal_count, diagonal_batch_size, longest_diagonal, indices, order=self.order)
 
-    def compute_gram_matrix(self, X: jnp.ndarray, Y: jnp.ndarray, symmetric: bool = False, block_size: Optional[int] = None) -> jnp.ndarray:
+    def compute_gram_matrix(self, X: jnp.ndarray, Y: jnp.ndarray, symmetric: bool = False, block_size: Optional[int] = None, show_progress: bool = True) -> jnp.ndarray:
         """
         Compute the Gram matrix between two sets of time series.
         Args:
@@ -200,7 +200,7 @@ class PowerSigJax:
 
         batched_entry = vmap(single_entry, in_axes=(0, 0))
 
-        pbar = tqdm(total=total_pairs, desc="Computing Gram Matrix")
+        pbar = tqdm(total=total_pairs, desc="Computing Gram Matrix", disable=not show_progress)
         offset = 0
         while offset < total_pairs:
             end = min(offset + block_size, total_pairs)

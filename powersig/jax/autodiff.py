@@ -1020,7 +1020,7 @@ def compute_sig_kernel_fast_diff(ps, X_i, Y_j, checkpoint_interval=None):
 
 
 def compute_gram_fast_diff(ps, X, Y, symmetric=False, block_size=None,
-                           checkpoint_interval=None):
+                           checkpoint_interval=None, show_progress=True):
     """Compute the Gram matrix with custom VJP support.
 
     This is the differentiable counterpart to PowerSigJax.compute_gram_matrix.
@@ -1089,7 +1089,7 @@ def compute_gram_fast_diff(ps, X, Y, symmetric=False, block_size=None,
 
     gram = jnp.zeros((X.shape[0], Y.shape[0]), dtype=X.dtype, device=ps.device)
 
-    pbar = tqdm(total=total_pairs, desc="Computing Gram (diff)")
+    pbar = tqdm(total=total_pairs, desc="Computing Gram (diff)", disable=not show_progress)
     offset = 0
     while offset < total_pairs:
         end = min(offset + block_size, total_pairs)
