@@ -377,6 +377,48 @@ class TestStructural(unittest.TestCase):
         np.testing.assert_allclose(np.array(gX), 0.0, atol=1e-10)
         np.testing.assert_allclose(np.array(gY), 0.0, atol=1e-10)
 
+    def test_float32_instance_with_float32_paths(self):
+        """A float32 PowerSigJax instance should work with float32 paths."""
+        ps32 = PowerSigJax(order=4, device=CPU, dtype=jnp.float32)
+        k1, k2 = jax.random.split(self.key)
+        X_i = jax.random.normal(k1, (8, 2), dtype=jnp.float32)
+        Y_j = jax.random.normal(k2, (8, 2), dtype=jnp.float32)
+
+        val, (gX, gY) = value_and_grad(
+            lambda Xi, Yj: compute_sig_kernel_fast_diff(ps32, Xi, Yj),
+            argnums=(0, 1))(X_i, Y_j)
+
+        self.assertEqual(gX.dtype, jnp.float32)
+        self.assertEqual(gY.dtype, jnp.float32)
+        self.assertTrue(jnp.isfinite(val))
+
+    def test_mixed_dtype_instances_in_same_process(self):
+        """Two PowerSigJax instances with different dtypes should not
+        interfere via JIT cache."""
+        ps64 = _make_ps(order=4)  # float64
+        ps32 = PowerSigJax(order=4, device=CPU, dtype=jnp.float32)
+
+        k1, k2 = jax.random.split(self.key)
+        X64 = jax.random.normal(k1, (8, 2), dtype=jnp.float64)
+        Y64 = jax.random.normal(k2, (8, 2), dtype=jnp.float64)
+        X32 = X64.astype(jnp.float32)
+        Y32 = Y64.astype(jnp.float32)
+
+        # Run float64 first
+        val64, (gX64, gY64) = value_and_grad(
+            lambda Xi, Yj: compute_sig_kernel_fast_diff(ps64, Xi, Yj),
+            argnums=(0, 1))(X64, Y64)
+
+        # Then float32 — this must not crash from dtype mismatch
+        val32, (gX32, gY32) = value_and_grad(
+            lambda Xi, Yj: compute_sig_kernel_fast_diff(ps32, Xi, Yj),
+            argnums=(0, 1))(X32, Y32)
+
+        self.assertEqual(gX64.dtype, jnp.float64)
+        self.assertEqual(gX32.dtype, jnp.float32)
+        # Values should be close (float32 has less precision)
+        np.testing.assert_allclose(float(val64), float(val32), rtol=1e-4)
+
 
 # ---------------------------------------------------------------------------
 # Layer 5: Performance regression

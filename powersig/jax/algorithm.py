@@ -22,6 +22,7 @@ class PowerSigJax:
     def __init__(self, order: int = 32, static_kernel = static_kernels.linear_kernel, device: Optional[jax.Device] = None, dtype=jnp.float64):
         # Select device - prefer CUDA if available, otherwise use CPU
         self.order = order
+        self.dtype = dtype
         if device is None:
             devices = jax.devices()
             cuda_devices = [d for d in devices if d.platform == 'gpu']
@@ -83,11 +84,11 @@ class PowerSigJax:
         # Generate Vandermonde vectors with high precision
         ds = 1.0 #/ (X.shape[0] - 1)
         dt = 1.0 #/ (Y.shape[0] - 1)
-        v_s, v_t = compute_vandermonde_vectors(ds, dt, self.order, X.dtype, device)
-    
+        v_s, v_t = compute_vandermonde_vectors(ds, dt, self.order, self.dtype, device)
+
         # Create the stencil matrices with Vandermonde scaling
-        # psi_s = build_stencil_s(v_s, self.order, X.dtype, device)
-        # psi_t = build_stencil_t(v_t, self.order, Y.dtype, device) 
+        # psi_s = build_stencil_s(v_s, self.order, self.dtype, device)
+        # psi_t = build_stencil_t(v_t, self.order, self.dtype, device) 
 
         # psi_s = build_stencil(self.order, dX.dtype, device)
         # psi_t = psi_s
@@ -115,11 +116,11 @@ class PowerSigJax:
          # Calculate values we need before padding
         diagonal_count = ( X.shape[0] -1 ) + (Y.shape[0] - 1) - 1
         longest_diagonal = min(X.shape[0] - 1, Y.shape[0] - 1)
-        ic = jnp.zeros([ self.order], dtype=X.dtype, device=device).at[0].set(1)
+        ic = jnp.zeros([ self.order], dtype=self.dtype, device=device).at[0].set(1)
         # Generate Vandermonde vectors with high precision
         ds = 1.0 #/ (X.shape[0] - 1)
         dt = 1.0 #/ (Y.shape[0] - 1)
-        v_s, v_t = compute_vandermonde_vectors(ds, dt, self.order, X.dtype, device)
+        v_s, v_t = compute_vandermonde_vectors(ds, dt, self.order, self.dtype, device)
 
         # Create the stencil matrices with Vandermonde scaling
         # psi_s = build_psi_stencil(self.order, dtype=X.dtype, device=device)
@@ -151,7 +152,7 @@ class PowerSigJax:
         # These will stay the same for the entire batch
         ds = 1.0
         dt = 1.0
-        v_s, v_t = compute_vandermonde_vectors(ds, dt, self.order, dtype=jnp.float64, device=self.device)
+        v_s, v_t = compute_vandermonde_vectors(ds, dt, self.order, dtype=self.dtype, device=self.device)
 
         longest_diagonal = min(X.shape[1] - 1, Y.shape[1] - 1)
         diagonal_count = (X.shape[1] - 1) + (Y.shape[1] - 1) - 1

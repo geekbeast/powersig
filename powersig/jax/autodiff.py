@@ -561,12 +561,12 @@ def _forward_sweep(X_i, Y_j, v_s, v_t, psi_s, psi_t, ic, exponents,
     cols = N - 1
     diagonal_count = rows + cols - 1
     longest_diagonal = min(rows, cols)
-    dtype = X_i.dtype
+    buf_dtype = psi_s.dtype  # match stencil precision
 
     indices = jnp.arange(longest_diagonal, dtype=jnp.int32)
 
-    S_buf = jnp.zeros((longest_diagonal, P), dtype=dtype)
-    T_buf = jnp.zeros((longest_diagonal, P), dtype=dtype)
+    S_buf = jnp.zeros((longest_diagonal, P), dtype=buf_dtype)
+    T_buf = jnp.zeros((longest_diagonal, P), dtype=buf_dtype)
     S_buf = S_buf.at[:, 0].set(1.0)
     T_buf = T_buf.at[:, 0].set(1.0)
 
@@ -618,19 +618,19 @@ def _forward_sweep_with_checkpoints(X_i, Y_j, v_s, v_t, psi_s, psi_t,
     cols = N - 1
     diagonal_count = rows + cols - 1
     longest_diagonal = min(rows, cols)
-    dtype = X_i.dtype
+    buf_dtype = psi_s.dtype  # match stencil precision
     k = checkpoint_interval
     num_checkpoints = ceil(diagonal_count / k)
 
     indices = jnp.arange(longest_diagonal, dtype=jnp.int32)
 
-    S_buf = jnp.zeros((longest_diagonal, P), dtype=dtype)
-    T_buf = jnp.zeros((longest_diagonal, P), dtype=dtype)
+    S_buf = jnp.zeros((longest_diagonal, P), dtype=buf_dtype)
+    T_buf = jnp.zeros((longest_diagonal, P), dtype=buf_dtype)
     S_buf = S_buf.at[:, 0].set(1.0)
     T_buf = T_buf.at[:, 0].set(1.0)
 
-    S_checkpoints = jnp.zeros((num_checkpoints, longest_diagonal, P), dtype=dtype)
-    T_checkpoints = jnp.zeros((num_checkpoints, longest_diagonal, P), dtype=dtype)
+    S_checkpoints = jnp.zeros((num_checkpoints, longest_diagonal, P), dtype=buf_dtype)
+    T_checkpoints = jnp.zeros((num_checkpoints, longest_diagonal, P), dtype=buf_dtype)
 
     def compute_diagonal(d, carry):
         S_buf, T_buf, S_ckpt, T_ckpt = carry
@@ -697,7 +697,7 @@ def _reverse_sweep_with_replay(X_i, Y_j, S_checkpoints, T_checkpoints,
     cols = N - 1
     diagonal_count = rows + cols - 1
     longest_diagonal = min(rows, cols)
-    dtype = X_i.dtype
+    buf_dtype = psi_s.dtype  # match stencil precision
     k = checkpoint_interval
     num_checkpoints = ceil(diagonal_count / k)
 
@@ -710,13 +710,13 @@ def _reverse_sweep_with_replay(X_i, Y_j, S_checkpoints, T_checkpoints,
     # Adjoint boundary buffers — start from the final output
     # The output is S_buf[0] @ v_s, so the initial adjoint is:
     # bar_S_buf[0] = g * v_s, bar_S_buf[i>0] = 0, bar_T_buf = 0.
-    bar_S_buf = jnp.zeros((longest_diagonal, P), dtype=dtype)
-    bar_T_buf = jnp.zeros((longest_diagonal, P), dtype=dtype)
+    bar_S_buf = jnp.zeros((longest_diagonal, P), dtype=buf_dtype)
+    bar_T_buf = jnp.zeros((longest_diagonal, P), dtype=buf_dtype)
     bar_S_buf = bar_S_buf.at[0].set(g * v_s)
 
     # Replay tape for one block
-    S_tape = jnp.zeros((k, longest_diagonal, P), dtype=dtype)
-    T_tape = jnp.zeros((k, longest_diagonal, P), dtype=dtype)
+    S_tape = jnp.zeros((k, longest_diagonal, P), dtype=buf_dtype)
+    T_tape = jnp.zeros((k, longest_diagonal, P), dtype=buf_dtype)
 
     # Process blocks in reverse
     # Block b covers diagonals [b*k, min((b+1)*k, diagonal_count))
@@ -1010,7 +1010,7 @@ def compute_sig_kernel_fast_diff(ps, X_i, Y_j, checkpoint_interval=None):
     if checkpoint_interval is None:
         checkpoint_interval = _compute_checkpoint_interval(diagonal_count)
 
-    v_s, v_t = compute_vandermonde_vectors(1.0, 1.0, ps.order, X_i.dtype)
+    v_s, v_t = compute_vandermonde_vectors(1.0, 1.0, ps.order, ps.dtype)
 
     sig_fn = _make_sig_kernel_diff(
         ps.static_kernel, checkpoint_interval,
@@ -1049,7 +1049,7 @@ def compute_gram_fast_diff(ps, X, Y, symmetric=False, block_size=None,
     if checkpoint_interval is None:
         checkpoint_interval = _compute_checkpoint_interval(diagonal_count)
 
-    v_s, v_t = compute_vandermonde_vectors(1.0, 1.0, ps.order, X.dtype,
+    v_s, v_t = compute_vandermonde_vectors(1.0, 1.0, ps.order, ps.dtype,
                                             device=ps.device)
 
     # Ensure structural constants are on the right device
