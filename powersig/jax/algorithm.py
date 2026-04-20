@@ -491,7 +491,7 @@ class PowerSigJax:
 DIAGONAL_CHUNK_SIZE = 1024
 JIT_BOUNDARY_THRESHOLD = 64
 _MAX_BLOCK_SIZE_SMALL = 256      # GPUs with <= 24 GB
-_MAX_BLOCK_SIZE_LARGE = 65536    # GPUs with > 24 GB
+_MAX_BLOCK_SIZE_LARGE = 16384    # GPUs with > 24 GB
 
 
 def get_max_block_size(device: jax.Device) -> int:
