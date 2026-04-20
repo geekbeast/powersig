@@ -973,6 +973,8 @@ def compute_diff_block_size(longest_diagonal, order, dtype, device,
                             total_pairs, checkpoint_interval,
                             diagonal_count, safety_factor=0.5):
     """Pick the largest vmap block_size that fits in GPU memory for the diff path."""
+    from powersig.jax.algorithm import get_max_block_size
+    max_bs = get_max_block_size(device)
     per_pair = estimate_diff_bytes_per_pair(
         longest_diagonal, order, dtype, checkpoint_interval, diagonal_count)
     available = get_available_gpu_memory(device)
@@ -981,9 +983,9 @@ def compute_diff_block_size(longest_diagonal, order, dtype, device,
     if per_pair > 0:
         raw = max(1, budget // per_pair)
     else:
-        raw = MAX_BLOCK_SIZE
+        raw = max_bs
 
-    raw = min(raw, total_pairs, MAX_BLOCK_SIZE)
+    raw = min(raw, total_pairs, max_bs)
     return _round_to_power_of_2(raw)
 
 

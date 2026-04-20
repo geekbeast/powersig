@@ -490,7 +490,31 @@ class PowerSigJax:
 
 DIAGONAL_CHUNK_SIZE = 1024
 JIT_BOUNDARY_THRESHOLD = 64
-MAX_BLOCK_SIZE = 256
+_MAX_BLOCK_SIZE_SMALL = 256      # GPUs with <= 24 GB
+_MAX_BLOCK_SIZE_LARGE = 65536    # GPUs with > 24 GB
+
+
+def get_max_block_size(device: jax.Device) -> int:
+    """Return the max vmap block size based on GPU memory.
+
+    Small GPUs (<= 24 GB): conservative 256 to avoid OOM.
+    Larger GPUs: scale up to 65536 so the Python-level block loop
+    doesn't become the bottleneck.
+    """
+    try:
+        stats = device.memory_stats()
+        if stats is not None:
+            total = stats.get("bytes_limit", 0)
+            if total > 24 * 1024 ** 3:
+                return _MAX_BLOCK_SIZE_LARGE
+    except Exception:
+        pass
+    return _MAX_BLOCK_SIZE_SMALL
+
+
+# Legacy alias — code that reads the constant directly still works,
+# but compute_block_size / compute_diff_block_size use the function.
+MAX_BLOCK_SIZE = _MAX_BLOCK_SIZE_SMALL
 
 
 def estimate_bytes_per_pair(longest_diagonal: int, order: int, dtype) -> int:
@@ -545,6 +569,7 @@ def compute_block_size(
     The result is rounded to the next power of 2 so that padding the last
     batch to this size yields a single JIT compilation for the vmapped kernel.
     """
+    max_bs = get_max_block_size(device)
     per_pair = estimate_bytes_per_pair(longest_diagonal, order, dtype)
     available = get_available_gpu_memory(device)
     budget = int(available * safety_factor)
@@ -552,9 +577,9 @@ def compute_block_size(
     if per_pair > 0:
         raw = max(1, budget // per_pair)
     else:
-        raw = MAX_BLOCK_SIZE
+        raw = max_bs
 
-    raw = min(raw, total_pairs, MAX_BLOCK_SIZE)
+    raw = min(raw, total_pairs, max_bs)
     return _round_to_power_of_2(raw)
 
 @jit
