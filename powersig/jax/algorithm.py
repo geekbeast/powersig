@@ -490,35 +490,31 @@ class PowerSigJax:
 
 DIAGONAL_CHUNK_SIZE = 1024
 JIT_BOUNDARY_THRESHOLD = 64
+_MAX_BLOCK_SIZE_SMALL = 256      # GPUs with <= 24 GB
+_MAX_BLOCK_SIZE_LARGE = 65536    # GPUs with > 24 GB
 
 
 def get_max_block_size(device: jax.Device) -> int:
-    """Return the max vmap block size based on available GPU memory.
+    """Return the max vmap block size based on GPU memory.
 
-    Scales with GPU size:
-      <= 24 GB: 256  (small consumer GPUs)
-      <= 48 GB: 4096
-      <= 80 GB: 8192
-      > 80 GB:  16384
+    Small GPUs (<= 24 GB): conservative 256 to avoid OOM.
+    Larger GPUs: scale up to 65536 so the Python-level block loop
+    doesn't become the bottleneck.
     """
     try:
         stats = device.memory_stats()
         if stats is not None:
             total = stats.get("bytes_limit", 0)
-            gb = total / (1024 ** 3)
-            if gb > 80:
-                return 16384
-            elif gb > 48:
-                return 8192
-            elif gb > 24:
-                return 4096
+            if total > 24 * 1024 ** 3:
+                return _MAX_BLOCK_SIZE_LARGE
     except Exception:
         pass
-    return 256
+    return _MAX_BLOCK_SIZE_SMALL
 
 
-# Legacy alias for external code that reads the constant directly.
-MAX_BLOCK_SIZE = 256
+# Legacy alias — code that reads the constant directly still works,
+# but compute_block_size / compute_diff_block_size use the function.
+MAX_BLOCK_SIZE = _MAX_BLOCK_SIZE_SMALL
 
 
 def estimate_bytes_per_pair(longest_diagonal: int, order: int, dtype) -> int:
