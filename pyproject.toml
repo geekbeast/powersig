@@ -45,6 +45,7 @@ torch = ["torch>=2.5.0"]
 cupy = ["cupy-cuda12x>=13.4.1"]
 dev = [
     "pytest>=7.0",
+    "fbm>=0.3.0",
 ]
 all = [
     "jax[cuda13]>=0.10.0",

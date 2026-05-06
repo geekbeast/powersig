@@ -1,7 +1,6 @@
 from typing import Tuple
 
 import jax
-import torch
 import jax.numpy as jnp
 import powersig.util.fbm_utils
 
@@ -26,7 +25,7 @@ Tuple[jnp.array, float]:
     dt = t / n_steps
 
     # Get fBM paths and convert from CuPy to NumPy to JAX
-    fbm_paths, _ = powersig.util.fbm_utils.fractional_brownian_motion(n_steps, n_paths, dim=dim, hurst=hurst, t=t)
+    fbm_paths, _ = powersig.util.fbm_utils.fractional_brownian_motion(n_steps, n_paths, cuda=False, dim=dim, hurst=hurst, t=t)
     if hasattr(fbm_paths, 'get'):  # If it's a CuPy array
         fbm_paths = fbm_paths.get()
     
