@@ -2,28 +2,43 @@
 PowerSig - Efficient Computation of Signature Kernels
 
 This package provides efficient implementations of signature kernels
-using both JAX and CuPy for GPU acceleration.
+using JAX, PyTorch, or CuPy backends. Install only the backend you need:
+
+    pip install powersig[jax-cpu]    # JAX on CPU
+    pip install powersig[jax-gpu]    # JAX on GPU
+    pip install powersig[torch]      # PyTorch
+    pip install powersig[cupy]       # CuPy
 """
 
-# Import submodules first
-from . import jax
-from . import torch
-from . import util
-from . import cupy_backend
+import importlib as _importlib
 
-# Main implementations
-from .jax.algorithm import PowerSigJax
-from .jax.utils import fractional_brownian_motion
 
-# Utility functions
-from .util.fbm_utils import fractional_brownian_motion as fbm
+def __getattr__(name):
+    """Lazy-import backend submodules so missing optional deps don't break import."""
+    _submodules = {"jax", "torch", "cupy_backend", "util"}
+    if name in _submodules:
+        return _importlib.import_module(f".{name}", __name__)
+
+    # Convenience re-exports — only attempt if the backend is installed
+    _lazy_imports = {
+        "PowerSigJax": (".jax.algorithm", "PowerSigJax"),
+        "fractional_brownian_motion": (".jax.utils", "fractional_brownian_motion"),
+        "fbm": (".util.fbm_utils", "fractional_brownian_motion"),
+    }
+    if name in _lazy_imports:
+        module_path, attr = _lazy_imports[name]
+        mod = _importlib.import_module(module_path, __name__)
+        return getattr(mod, attr)
+
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
-    'PowerSigJax',
-    'fractional_brownian_motion',
-    'fbm',
-    'jax',
-    'torch',
-    'util',
-    'cupy_backend'
+    "PowerSigJax",
+    "fractional_brownian_motion",
+    "fbm",
+    "jax",
+    "torch",
+    "util",
+    "cupy_backend",
 ]

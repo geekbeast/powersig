@@ -1,4 +1,8 @@
 # Power-series based computation of Signature Kernels
+
+[![CI](https://github.com/geekbeast/powersig/actions/workflows/ci.yml/badge.svg)](https://github.com/geekbeast/powersig/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue)](https://github.com/geekbeast/powersig)
+
 Using ADM-derived Neumann series to compute signature kernels.
 
 ## Installation 
