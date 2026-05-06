@@ -39,15 +39,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-jax-cpu = ["jax[cpu]>=0.4.0"]
-jax-gpu = ["jax[cuda12]>=0.4.0"]
+jax-cpu = ["jax[cpu]>=0.4.34"]
+jax-gpu = ["jax[cuda13]>=0.10.0"]
 torch = ["torch>=2.5.0"]
 cupy = ["cupy-cuda12x>=13.4.1"]
 dev = [
     "pytest>=7.0",
 ]
 all = [
-    "jax[cuda12]>=0.4.0",
+    "jax[cuda13]>=0.10.0",
     "torch>=2.5.0",
     "cupy-cuda12x>=13.4.1",
 ]
