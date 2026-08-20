@@ -1,4 +1,7 @@
 matplotlib
+# sigkernel's setup.py imports Cython without declaring it in
+# [build-system].requires, so a PEP 517 isolated build fails. Install it with
+# `pip install --no-build-isolation` after the rest of this file.
 git+https://github.com/crispitagorico/sigkernel.git
 git+https://github.com/geekbeast/KSig.git
 git+https://github.com/FrancescoPiatti/polysigkernel.git
