@@ -1,7 +1,14 @@
+# CUDA 13 stack. cupy-cuda12x and cupy-cuda13x both provide the `cupy` module,
+# so exactly one of them belongs here. torch needs a cu130 build (2.9+) to match;
+# the current default PyPI wheel provides one.
+#
+# numpy is >=2.1 because jax only gained CUDA 13 plugins in 0.10, and jax>=0.10
+# requires numpy>=2.0 — pinning numpy to 1.26 silently leaves jax on CPU. The
+# <2.3 ceiling is numba 0.61.2's.
 Cython==3.0.11
-numpy==1.26.4
+numpy>=2.1,<2.3
 scipy
-torch>=2.2.2
+torch>=2.5.0
 torchvision
 torchaudio
 scikit-learn
@@ -9,9 +16,9 @@ wheel
 setuptools
 aeon
 numba==0.61.2
-cupy-cuda12x==13.5.1
+cupy-cuda13x>=13.6.0
 psutil
 tqdm==4.67.1
-jax[cuda12]
+jax[cuda13]>=0.10.0
 yfinance
 matplotlib
