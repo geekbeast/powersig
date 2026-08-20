@@ -17,6 +17,7 @@ setuptools
 aeon
 numba==0.61.2
 cupy-cuda13x>=13.6.0
+fbm
 psutil
 tqdm==4.67.1
 jax[cuda13]>=0.10.0
