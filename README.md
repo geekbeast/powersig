@@ -168,6 +168,39 @@ Which one to pick:
 - **JAX** if you want `jit`/`vmap`/`grad` composition, or are already in a JAX
   codebase.
 
+Both compute the same values, so this is a question of which framework you are
+already in rather than which is faster — with one caveat below.
+
+### PyTorch on a GPU: pass `compile_forward=True`
+
+```python
+ps = PowerSigTorch(order=8, compile_forward=True)
+```
+
+One kernel between two 129-point 2-D paths at order 8, single RTX 4090, median
+of repeated trials:
+
+| backend | time |
+| --- | --- |
+| PyTorch, `compile_forward=True` | 5.6 ms |
+| JAX | 6.4 ms |
+| PyTorch, default | 65.7 ms |
+
+Left alone, the PyTorch sweep is bound by per-anti-diagonal kernel-launch
+overhead rather than by arithmetic — the cost sits at roughly 257 us per
+anti-diagonal whatever the truncation order, so order 8 and order 32 run at the
+same speed and the backend lands about 10x behind JAX. `compile_forward=True`
+routes the sweep through `torch.compile` and recovers roughly 12x, putting it
+level with or slightly ahead of JAX.
+
+It is off by default because it is not free to turn on: it applies only on CUDA,
+and it compiles per input shape, costing a pause of tens of seconds on the first
+call for each new path length. That is worth it for repeated work at a fixed
+size, and not worth it for a handful of one-off kernels at varying lengths.
+
+Gram matrices amortize the launch overhead across pairs, so the default setting
+is far less punishing there than it is for single pairs.
+
 A **CuPy** backend also exists under `powersig.cupy_backend`. It covers the forward
 Gram computation only — no autodiff and no pluggable static kernel — so the JAX and
 PyTorch backends are the supported choices for general use.

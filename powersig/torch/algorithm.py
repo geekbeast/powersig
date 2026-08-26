@@ -248,7 +248,22 @@ class PowerSigTorch:
     ) -> torch.Tensor:
         X_i = self._as_single_path(X, device=device)
         Y_j = self._as_single_path(Y, device=device)
-        return self._minimum_sweep(X_i[None, ...], Y_j[None, ...])[0]
+        return self._detach_from_graph_buffer(
+            self._minimum_sweep(X_i[None, ...], Y_j[None, ...])[0]
+        )
+
+    def _detach_from_graph_buffer(self, out: torch.Tensor) -> torch.Tensor:
+        """Copy a compiled sweep's result out of its CUDA-graph static buffer.
+
+        compile_forward uses torch.compile(mode="reduce-overhead"), which replays
+        a CUDA graph writing into a fixed output buffer. Without this copy the
+        tensor a caller is holding is silently overwritten by their next call, so
+        collecting results in a list yields the last value repeated. The clone is
+        a scalar, so it costs nothing next to the sweep itself.
+        """
+        if self.compile_forward and out.is_cuda:
+            return out.clone()
+        return out
 
     def compute_signature_kernel_bool_geometry(
         self, X: torch.Tensor, Y: torch.Tensor, device: Optional[torch.device] = None

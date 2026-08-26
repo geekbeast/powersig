@@ -282,5 +282,61 @@ class TestAutograd(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(torch.cuda.is_available(), "compile_forward only applies on CUDA")
+class TestCompiledForward(unittest.TestCase):
+    """compile_forward=True must be as correct as it is fast.
+
+    It routes the sweep through torch.compile(mode="reduce-overhead"), which
+    replays a CUDA graph writing into a fixed output buffer. The hazard is that
+    a result a caller is still holding gets overwritten by their next call.
+    """
+
+    N_PTS, ORDER = 65, 8
+
+    def setUp(self):
+        self.dev = torch.device("cuda")
+        self.eager = PowerSigTorch(order=self.ORDER, device=self.dev,
+                                   dtype=torch.float64, compile_forward=False)
+        self.compiled = PowerSigTorch(order=self.ORDER, device=self.dev,
+                                      dtype=torch.float64, compile_forward=True)
+        rng = np.random.default_rng(0)
+        self.pairs = [
+            (torch.tensor(0.1 * rng.normal(size=(self.N_PTS, 2)).cumsum(0), device=self.dev),
+             torch.tensor(0.1 * rng.normal(size=(self.N_PTS, 2)).cumsum(0), device=self.dev))
+            for _ in range(6)
+        ]
+
+    def test_compiled_matches_eager(self):
+        for i, (X, Y) in enumerate(self.pairs):
+            np.testing.assert_allclose(
+                float(self.compiled.compute_signature_kernel(X, Y)),
+                float(self.eager.compute_signature_kernel(X, Y)),
+                rtol=1e-9, atol=1e-11, err_msg=f"pair {i}",
+            )
+
+    def test_held_results_survive_later_calls(self):
+        """Regression: results used to alias the CUDA-graph output buffer, so
+        collecting them in a list yielded the last value repeated."""
+        held = [self.compiled.compute_signature_kernel(X, Y) for X, Y in self.pairs[:3]]
+        before = [float(h) for h in held]
+        for X, Y in self.pairs[3:]:
+            self.compiled.compute_signature_kernel(X, Y)
+        after = [float(h) for h in held]
+        self.assertEqual(before, after, "held results were overwritten by later calls")
+
+        expected = [float(self.eager.compute_signature_kernel(X, Y))
+                    for X, Y in self.pairs[:3]]
+        np.testing.assert_allclose(after, expected, rtol=1e-9, atol=1e-11)
+
+    def test_gram_matrix_matches_eager(self):
+        rng = np.random.default_rng(1)
+        X = torch.tensor(0.1 * rng.normal(size=(5, self.N_PTS, 2)).cumsum(1), device=self.dev)
+        np.testing.assert_allclose(
+            self.compiled.compute_gram_matrix(X, show_progress=False).cpu().numpy(),
+            self.eager.compute_gram_matrix(X, show_progress=False).cpu().numpy(),
+            rtol=1e-9, atol=1e-11,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
