@@ -310,5 +310,81 @@ class TestInstanceReuse(unittest.TestCase):
         np.testing.assert_allclose(asymmetric, reference, rtol=1e-10, atol=1e-12)
 
 
+# ---------------------------------------------------------------------------
+# Cost of the corrected sweep geometry
+# ---------------------------------------------------------------------------
+class TestGeometryCost(unittest.TestCase):
+    """The asymmetric-geometry fix must stay free.
+
+    The sweep runs this arithmetic once per anti-diagonal inside the hot loop, so
+    a correctness fix that reached for jnp.where, a Python-level branch, or a
+    helper call could pay for itself in the inner loop. Measured on the compiled
+    module, the shipped correction costs exactly the same as the original
+    expression it replaced.
+
+    Both are compiled in-process with the same JAX build and compared to each
+    other rather than to a recorded number, so the assertion does not drift as
+    JAX changes its cost model.
+    """
+
+    ROWS, COLS, N_DIAGONALS = 128, 96, 256
+
+    @staticmethod
+    def _original_geometry(d, rows, cols):
+        # The expression this fix replaced: correct only when rows == cols, but
+        # it is the cheapness baseline the corrected version has to match.
+        t_start = (d < cols) * 0 + (d >= cols) * (d - cols + 1)
+        s_start = (d < cols) * d + (d >= cols) * (cols - 1)
+        return s_start, t_start, jnp.minimum(rows - t_start, s_start + 1)
+
+    @staticmethod
+    def _corrected_geometry(d, rows, cols):
+        # Must stay in step with powersig/jax/algorithm.py::compute_diagonal and
+        # powersig/util/grid.py; test_corrected_geometry_matches_shared_helper
+        # fails if it drifts.
+        s_start = (d < rows) * d + (d >= rows) * (rows - 1)
+        t_start = (d < rows) * 0 + (d >= rows) * (d - rows + 1)
+        return s_start, t_start, jnp.minimum(s_start + 1, cols - t_start)
+
+    def _compiled_cost(self, fn):
+        ds = jnp.arange(self.N_DIAGONALS, dtype=jnp.int32)
+        compiled = jax.jit(
+            lambda d: jax.vmap(lambda x: fn(x, self.ROWS, self.COLS))(d)
+        ).lower(ds).compile()
+        analysis = compiled.cost_analysis()
+        if isinstance(analysis, list):
+            analysis = analysis[0]
+        return analysis.get("flops"), analysis.get("bytes accessed")
+
+    def test_corrected_geometry_matches_shared_helper(self):
+        """Guards the copy above against drifting from the shipped geometry."""
+        for rows in range(1, 7):
+            for cols in range(1, 7):
+                for d in range(rows + cols - 1):
+                    got = tuple(
+                        int(v) for v in self._corrected_geometry(d, rows, cols)
+                    )
+                    self.assertEqual(
+                        got,
+                        get_diagonal_range(d, rows, cols),
+                        msg=f"d={d} rows={rows} cols={cols}",
+                    )
+
+    def test_corrected_geometry_costs_no_more_than_original(self):
+        original_flops, original_bytes = self._compiled_cost(self._original_geometry)
+        corrected_flops, corrected_bytes = self._compiled_cost(self._corrected_geometry)
+
+        self.assertIsNotNone(original_flops)
+        self.assertLessEqual(
+            corrected_flops,
+            original_flops,
+            msg=(
+                f"corrected geometry costs {corrected_flops} flops vs "
+                f"{original_flops} for the expression it replaced"
+            ),
+        )
+        self.assertLessEqual(corrected_bytes, original_bytes)
+
+
 if __name__ == "__main__":
     unittest.main()
