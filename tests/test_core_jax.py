@@ -93,15 +93,49 @@ class TestDiagonalRange(unittest.TestCase):
         self.assertEqual((s, t, dlen), (2, 0, 3))
 
     def test_rectangular_grid(self):
-        # 2 rows, 4 cols
+        # 2 rows, 4 cols. s_start is the largest s on the anti-diagonal and
+        # t_start the smallest t, so both stay inside the grid once the sweep
+        # runs off the bottom edge.
         s, t, dlen = get_diagonal_range(0, 2, 4)
         self.assertEqual((s, t, dlen), (0, 0, 1))
 
         s, t, dlen = get_diagonal_range(3, 2, 4)
-        self.assertEqual((s, t, dlen), (3, 0, 2))
+        self.assertEqual((s, t, dlen), (1, 2, 2))
 
         s, t, dlen = get_diagonal_range(4, 2, 4)
-        self.assertEqual((s, t, dlen), (3, 1, 1))
+        self.assertEqual((s, t, dlen), (1, 3, 1))
+
+    def test_tall_rectangular_grid(self):
+        # 3 rows, 2 cols -- the transpose of the wide case above.
+        expected = [
+            (0, 0, 1),
+            (1, 0, 2),
+            (2, 0, 2),
+            (2, 1, 1),
+        ]
+        self.assertEqual([get_diagonal_range(d, 3, 2) for d in range(4)], expected)
+
+    def test_matches_brute_force_geometry(self):
+        # Ground truth: enumerate the cells on each anti-diagonal directly.
+        for rows in range(1, 7):
+            for cols in range(1, 7):
+                for d in range(rows + cols - 1):
+                    cells = [
+                        (s, t)
+                        for s in range(rows)
+                        for t in range(cols)
+                        if s + t == d
+                    ]
+                    expected = (
+                        max(s for s, _ in cells),
+                        min(t for _, t in cells),
+                        len(cells),
+                    )
+                    self.assertEqual(
+                        get_diagonal_range(d, rows, cols),
+                        expected,
+                        msg=f"d={d} rows={rows} cols={cols}",
+                    )
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +254,60 @@ class TestBatchADM(unittest.TestCase):
         self.assertEqual(result.shape, (2, 2, 2))
         # Verify not all zeros (computation happened)
         self.assertFalse(jnp.allclose(result[:2], jnp.zeros_like(result[:2])))
+
+
+# ---------------------------------------------------------------------------
+# Instance reuse across the jitted entry points
+# ---------------------------------------------------------------------------
+class TestInstanceReuse(unittest.TestCase):
+    def test_signature_kernel_then_gram_matrix(self):
+        """compute_signature_kernel is jitted; it must not leave a tracer on self.
+
+        Regression test: assigning to self.exponents inside the jitted method
+        used to poison the instance, so a later compute_gram_matrix raised
+        InvalidInputException on a leaked JitTracer.
+        """
+        ps = PowerSigJax(order=8)
+        path = jnp.asarray(np.linspace(0.0, 1.0, 17).reshape(17, 1))
+        first = float(ps.compute_signature_kernel(path, path))
+
+        batch = jnp.asarray(np.linspace(0.0, 1.0, 17).reshape(1, 17, 1))
+        gram = np.asarray(ps.compute_gram_matrix(batch, batch))
+
+        self.assertEqual(gram.shape, (1, 1))
+        np.testing.assert_allclose(gram[0, 0], first, rtol=1e-10, atol=1e-12)
+
+    def test_asymmetric_path_lengths_match_equal_length_reference(self):
+        """The kernel depends on the paths, not on how finely they are sampled.
+
+        Upsampling a piecewise-linear path along its own segments leaves the path
+        unchanged, so a 6-vs-5 point pair must agree with the same two paths
+        re-gridded to a common length. This fails if the diagonal sweep keys its
+        geometry off `cols` when rows != cols.
+        """
+
+        def upsample(P, factor):
+            out = []
+            for i in range(len(P) - 1):
+                for k in range(factor):
+                    out.append(P[i] + (P[i + 1] - P[i]) * k / factor)
+            out.append(P[-1])
+            return np.array(out)
+
+        rng = np.random.default_rng(123)
+        X = 0.2 * rng.normal(size=(6, 2))   # 5 segments
+        Y = 0.2 * rng.normal(size=(5, 2))   # 4 segments
+        # lcm(5, 4) = 20 -> both become 21 points tracing the identical paths.
+        Xr, Yr = upsample(X, 4), upsample(Y, 5)
+        self.assertEqual(Xr.shape, Yr.shape)
+
+        asymmetric = float(
+            PowerSigJax(order=16).compute_signature_kernel(jnp.asarray(X), jnp.asarray(Y))
+        )
+        reference = float(
+            PowerSigJax(order=16).compute_signature_kernel(jnp.asarray(Xr), jnp.asarray(Yr))
+        )
+        np.testing.assert_allclose(asymmetric, reference, rtol=1e-10, atol=1e-12)
 
 
 if __name__ == "__main__":

@@ -74,8 +74,10 @@ class PowerSigJax:
         """
         # dX = jax_compute_derivative(X.squeeze(0))
         # dY = jax_compute_derivative(Y.squeeze(0))
-        # Ensure exponents are on the same device as input
-        self.exponents = jax.device_put(self.exponents, device)
+        # NB: do not device_put onto `self` here -- this method is jitted, so
+        # assigning to an attribute stores a tracer on the instance and leaks it
+        # into every later call (a subsequent compute_gram_matrix then dies with
+        # InvalidInputException). `self.exponents` is already placed in __init__.
          # Calculate values we need before padding
         diagonal_count = ( X.shape[0] -1) + (Y.shape[0] - 1) - 1
         longest_diagonal = min(X.shape[0] - 1, Y.shape[0] - 1)
@@ -276,10 +278,14 @@ class PowerSigJax:
 
         def compute_diagonal(d, carry):
             S_buf, T_buf = carry
-            # s_start, t_start, dlen = get_diagonal_range(d, dX_i.shape[0], dY_j.shape[0])
-            t_start = (d<cols)*0 + (d>=cols)*(d-cols +1)
-            s_start = (d<cols)*d + (d>=cols)*(cols - 1)
-            dlen = jnp.minimum(rows - t_start, s_start + 1)
+            # Anti-diagonal d covers the cells {(s, t) : s + t == d} inside the
+            # rows x cols grid. s_start is the largest such s and t_start the
+            # smallest such t, so the sweep pins s at the bottom edge (rows - 1)
+            # once it runs off it -- keying this off `cols` walks s out of bounds
+            # whenever rows != cols. See tests/test_core_jax.py::TestDiagonalRange.
+            s_start = (d<rows)*d + (d>=rows)*(rows - 1)
+            t_start = (d<rows)*0 + (d>=rows)*(d-rows + 1)
+            dlen = jnp.minimum(s_start + 1, cols - t_start)
             is_before_wrap = d < rows
             # dX_L = dX_i.shape[0] - (s_start + 1)
 
@@ -410,8 +416,8 @@ class PowerSigJax:
             # print(f"batch_longest_diag = {batch_longest_diag}")
             def next_diagonal(diagonal_index,carry):
                 # jax.debug.print("========================= START OF BATCH {} =========================\n", d)
-                t_start = (diagonal_index<cols)*0 + (diagonal_index>=cols)*(diagonal_index-cols +1)
-                s_start = (diagonal_index<cols)*diagonal_index + (diagonal_index>=cols)*(cols - 1)
+                s_start = (diagonal_index<rows)*diagonal_index + (diagonal_index>=rows)*(rows - 1)
+                t_start = (diagonal_index<rows)*0 + (diagonal_index>=rows)*(diagonal_index-rows + 1)
                 
                 is_before_wrap = diagonal_index < rows
                 # rho = jax_compute_dot_prod_batch(jnp.take(dX_i, s_start-diagonal_indices, axis=0, fill_value=0), jnp.take(dY_j, t_start+diagonal_indices, axis=0, fill_value=0))
@@ -810,9 +816,9 @@ def compute_boundary_vmap(psi_s: jnp.ndarray, psi_t: jnp.ndarray, exponents: jnp
 @jit
 def get_diagonal_range(d: int, rows: int, cols: int) -> Tuple[int, int, int]:
     # d, s_start, t_start are 0 based indexes while rows/cols are shapes.
-    t_start = jnp.where(d<cols, 0, d-cols +1)
-    s_start = jnp.where(d<cols, d, cols - 1)
-    dlen = jnp.minimum(rows - t_start, s_start + 1)
+    s_start = jnp.where(d<rows, d, rows - 1)
+    t_start = jnp.where(d<rows, 0, d-rows + 1)
+    dlen = jnp.minimum(s_start + 1, cols - t_start)
     # if d < cols:
     #     # if d < cols, then we haven't hit the right edge of the grid
     #     t_start = 0
