@@ -16,6 +16,7 @@ from functools import partial
 from tqdm.auto import tqdm
 
 from powersig.jax.jax_series import jax_compute_derivative, jax_compute_derivative_batch
+from powersig.jax.diagonal import diagonal_tile_inputs
 
 
 class PowerSigJax:
@@ -74,10 +75,8 @@ class PowerSigJax:
         """
         # dX = jax_compute_derivative(X.squeeze(0))
         # dY = jax_compute_derivative(Y.squeeze(0))
-        # NB: do not device_put onto `self` here -- this method is jitted, so
-        # assigning to an attribute stores a tracer on the instance and leaks it
-        # into every later call (a subsequent compute_gram_matrix then dies with
-        # InvalidInputException). `self.exponents` is already placed in __init__.
+        # Do not mutate instance constants inside jit: that leaks a tracer
+        # when this instance is subsequently reused for another shape or VJP.
          # Calculate values we need before padding
         diagonal_count = ( X.shape[0] -1) + (Y.shape[0] - 1) - 1
         longest_diagonal = min(X.shape[0] - 1, Y.shape[0] - 1)
@@ -278,14 +277,8 @@ class PowerSigJax:
 
         def compute_diagonal(d, carry):
             S_buf, T_buf = carry
-            # Anti-diagonal d covers the cells {(s, t) : s + t == d} inside the
-            # rows x cols grid. s_start is the largest such s and t_start the
-            # smallest such t, so the sweep pins s at the bottom edge (rows - 1)
-            # once it runs off it -- keying this off `cols` walks s out of bounds
-            # whenever rows != cols. See tests/test_core_jax.py::TestDiagonalRange.
-            s_start = (d<rows)*d + (d>=rows)*(rows - 1)
-            t_start = (d<rows)*0 + (d>=rows)*(d-rows + 1)
-            dlen = jnp.minimum(s_start + 1, cols - t_start)
+            # s_start, t_start, dlen = get_diagonal_range(d, dX_i.shape[0], dY_j.shape[0])
+            s_start, t_start, dlen = get_diagonal_range(d, rows, cols)
             is_before_wrap = d < rows
             # dX_L = dX_i.shape[0] - (s_start + 1)
 
@@ -298,16 +291,9 @@ class PowerSigJax:
             #                      precision=jax.lax.Precision.HIGHEST)
 
             def next_diagonal_entry(diagonal_index, S, T):
-                # Combine the first two where statements into a single mask
-                s_index = diagonal_index - is_before_wrap
-                t_index = diagonal_index + (1 - is_before_wrap)
-
-                # Avoid branching
-                s = ((t_start + diagonal_index == 0) * self.ic) + ((t_start + diagonal_index != 0) * S[s_index])
-                t = ((s_start - diagonal_index == 0) * self.ic) + ((s_start - diagonal_index != 0) * T[t_index])
-                dX_idx = (s_start - diagonal_index) * ((s_start - diagonal_index) < rows)
-                dY_idx = (t_start + diagonal_index) * ((t_start + diagonal_index) < cols)
-                rho = self.static_kernel(X_i[dX_idx+1],X_i[dX_idx], Y_j[dY_idx+1],Y_j[dY_idx])
+                s, t, rho, _, _ = diagonal_tile_inputs(
+                    diagonal_index, s_start, t_start, dlen, is_before_wrap,
+                    X_i, Y_j, S, T, self.ic, self.static_kernel)
                 # rho = (X_i.shape[0]-1)*(Y_j.shape[0]-1)*jnp.dot(X_i[dX_idx+1]-X_i[dX_idx], Y_j[dY_idx+1]-Y_j[dY_idx], precision = jax.lax.Precision.HIGHEST)
                 # rho = jnp.dot(dX_i[dX_idx], dY_j[dY_idx], precision = jax.lax.Precision.HIGHEST)
                 # jax.debug.print("""
@@ -416,24 +402,16 @@ class PowerSigJax:
             # print(f"batch_longest_diag = {batch_longest_diag}")
             def next_diagonal(diagonal_index,carry):
                 # jax.debug.print("========================= START OF BATCH {} =========================\n", d)
-                s_start = (diagonal_index<rows)*diagonal_index + (diagonal_index>=rows)*(rows - 1)
-                t_start = (diagonal_index<rows)*0 + (diagonal_index>=rows)*(diagonal_index-rows + 1)
+                s_start, t_start, dlen = get_diagonal_range(diagonal_index, rows, cols)
                 
                 is_before_wrap = diagonal_index < rows
                 # rho = jax_compute_dot_prod_batch(jnp.take(dX_i, s_start-diagonal_indices, axis=0, fill_value=0), jnp.take(dY_j, t_start+diagonal_indices, axis=0, fill_value=0))
                 # rho = jnp.einsum('ij,ij->i', jnp.take(dX_i, s_start-diagonal_indices, axis=0, fill_value=0), jnp.take(dY_j, t_start+diagonal_indices, axis=0, fill_value=0),
                 #                  precision=jax.lax.Precision.HIGHEST)
                 def next_diagonal_entry(index_in_diagonal, S, T):
-                    # Combine the first two where statements into a single mask
-                    s_index = index_in_diagonal - is_before_wrap
-                    t_index = index_in_diagonal + (1 - is_before_wrap)
-
-                    # Avoid branching
-                    s = ((t_start + index_in_diagonal == 0) * self.ic) + ((t_start + index_in_diagonal != 0) * S[s_index])
-                    t = ((s_start - index_in_diagonal == 0) * self.ic) + ((s_start - index_in_diagonal != 0) * T[t_index])
-                    dX_idx = (s_start - index_in_diagonal) * ((s_start - index_in_diagonal) < rows)
-                    dY_idx = (t_start + index_in_diagonal) * ((t_start + index_in_diagonal) < cols)
-                    rho = self.static_kernel(X_i[dX_idx+1],X_i[dX_idx], Y_j[dY_idx+1],Y_j[dY_idx])
+                    s, t, rho, _, _ = diagonal_tile_inputs(
+                        index_in_diagonal, s_start, t_start, dlen, is_before_wrap,
+                        X_i, Y_j, S, T, self.ic, self.static_kernel)
                     # rho = (X_i.shape[0]-1)*(Y_j.shape[0]-1)*jnp.dot(X_i[dX_idx+1]-X_i[dX_idx], Y_j[dY_idx+1]-Y_j[dY_idx], precision = jax.lax.Precision.HIGHEST)
                     # rho = jnp.dot(dX_i[dX_idx], dY_j[dY_idx], precision = jax.lax.Precision.HIGHEST)
                     # jax.debug.print("""
@@ -816,18 +794,9 @@ def compute_boundary_vmap(psi_s: jnp.ndarray, psi_t: jnp.ndarray, exponents: jnp
 @jit
 def get_diagonal_range(d: int, rows: int, cols: int) -> Tuple[int, int, int]:
     # d, s_start, t_start are 0 based indexes while rows/cols are shapes.
-    s_start = jnp.where(d<rows, d, rows - 1)
-    t_start = jnp.where(d<rows, 0, d-rows + 1)
+    s_start = jnp.minimum(d, rows - 1)
+    t_start = d - s_start
     dlen = jnp.minimum(s_start + 1, cols - t_start)
-    # if d < cols:
-    #     # if d < cols, then we haven't hit the right edge of the grid
-    #     t_start = 0
-    #     s_start = d
-    # else:
-    #     # if d >= cols then we have the right edge and wrapped around the corner
-    #     t_start = d - cols + 1  # diag index - cols + 1
-    #     s_start = cols - 1
-    # return s_start, t_start, min(rows - t_start, s_start + 1)
     return s_start, t_start, dlen
 
 # @partial(jit, static_argnums=(1,2,3))
