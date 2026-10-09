@@ -1,27 +1,65 @@
-"""
-PowerSig Torch Module
+"""PyTorch backend for signature-kernel computations."""
 
-This module provides PyTorch implementations of signature kernels and related utilities.
-"""
-
-from .algorithm import PowerSigTorch
+from .algorithm import (
+    DIAGONAL_CHUNK_SIZE,
+    JIT_BOUNDARY_THRESHOLD,
+    PowerSigTorch,
+    _round_to_power_of_2,
+    build_psi_stencil,
+    build_stencil,
+    build_stencil_s,
+    build_stencil_t,
+    compute_block_size,
+    compute_vandermonde_vectors,
+    estimate_bytes_per_pair,
+    get_available_gpu_memory,
+    get_diagonal_range_bool,
+    get_max_block_size,
+)
+from .autodiff import (
+    compute_gram_fast_diff,
+    compute_prefix_family,
+    compute_prefix_family_fast_diff,
+    compute_sig_kernel_fast_diff,
+)
+from .static_kernels import linear_kernel, rbf_fn, rbf_kernel
 from .utils import (
-    fractional_brownian_motion,
-    torch_compute_differences,
-    unity_transform,
-    unity_clamp_and_map,
-    scale_and_shift,
+    chebychev_clamp_and_map,
     chebychev_transformation,
-    chebychev_clamp_and_map
+    fractional_brownian_motion,
+    scale_and_shift,
+    torch_compute_differences,
+    unity_clamp_and_map,
+    unity_transform,
 )
 
 __all__ = [
-    'PowerSigTorch',
-    'fractional_brownian_motion',
-    'torch_compute_differences',
-    'unity_transform',
-    'unity_clamp_and_map',
-    'scale_and_shift',
-    'chebychev_transformation',
-    'chebychev_clamp_and_map'
+    "DIAGONAL_CHUNK_SIZE",
+    "JIT_BOUNDARY_THRESHOLD",
+    "PowerSigTorch",
+    "_round_to_power_of_2",
+    "build_psi_stencil",
+    "build_stencil",
+    "build_stencil_s",
+    "build_stencil_t",
+    "chebychev_clamp_and_map",
+    "chebychev_transformation",
+    "compute_block_size",
+    "compute_gram_fast_diff",
+    "compute_prefix_family",
+    "compute_prefix_family_fast_diff",
+    "compute_sig_kernel_fast_diff",
+    "compute_vandermonde_vectors",
+    "estimate_bytes_per_pair",
+    "fractional_brownian_motion",
+    "get_available_gpu_memory",
+    "get_diagonal_range_bool",
+    "get_max_block_size",
+    "linear_kernel",
+    "rbf_fn",
+    "rbf_kernel",
+    "scale_and_shift",
+    "torch_compute_differences",
+    "unity_clamp_and_map",
+    "unity_transform",
 ]
