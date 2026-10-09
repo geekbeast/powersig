@@ -21,6 +21,7 @@ from powersig.jax.algorithm import (
     get_available_gpu_memory,
     _round_to_power_of_2,
 )
+from powersig.jax.algorithm import get_diagonal_range as jax_get_diagonal_range
 from powersig.util.grid import get_diagonal_range
 
 
@@ -357,17 +358,28 @@ class TestGeometryCost(unittest.TestCase):
         return analysis.get("flops"), analysis.get("bytes accessed")
 
     def test_corrected_geometry_matches_shared_helper(self):
-        """Guards the copy above against drifting from the shipped geometry."""
+        """Guards the copy above against drifting from the shipped geometry.
+
+        Checks it against both implementations the sweep can reach: the python
+        helper in powersig/util/grid.py (used by the Torch and CuPy backends)
+        and the jitted one in powersig/jax/algorithm.py that the JAX sweep
+        calls. They are written differently, so this also pins them to each
+        other.
+        """
         for rows in range(1, 7):
             for cols in range(1, 7):
                 for d in range(rows + cols - 1):
-                    got = tuple(
-                        int(v) for v in self._corrected_geometry(d, rows, cols)
+                    where = f"d={d} rows={rows} cols={cols}"
+                    expected = get_diagonal_range(d, rows, cols)
+                    self.assertEqual(
+                        tuple(int(v) for v in self._corrected_geometry(d, rows, cols)),
+                        expected,
+                        msg=where,
                     )
                     self.assertEqual(
-                        got,
-                        get_diagonal_range(d, rows, cols),
-                        msg=f"d={d} rows={rows} cols={cols}",
+                        tuple(int(v) for v in jax_get_diagonal_range(d, rows, cols)),
+                        expected,
+                        msg=f"{where} (jitted JAX helper)",
                     )
 
     def test_corrected_geometry_costs_no_more_than_original(self):
@@ -384,6 +396,28 @@ class TestGeometryCost(unittest.TestCase):
             ),
         )
         self.assertLessEqual(corrected_bytes, original_bytes)
+
+    def test_shipped_jax_geometry_costs_no_more_than_original(self):
+        """The same bound on the helper the JAX sweep actually calls.
+
+        The test above measures a local copy, which cannot catch a regression in
+        powersig/jax/algorithm.py. This measures the shipped helper directly.
+        """
+        original_flops, original_bytes = self._compiled_cost(self._original_geometry)
+        shipped_flops, shipped_bytes = self._compiled_cost(
+            lambda d, rows, cols: jax_get_diagonal_range(d, rows, cols)
+        )
+
+        self.assertIsNotNone(original_flops)
+        self.assertLessEqual(
+            shipped_flops,
+            original_flops,
+            msg=(
+                f"shipped JAX geometry costs {shipped_flops} flops vs "
+                f"{original_flops} for the expression it replaced"
+            ),
+        )
+        self.assertLessEqual(shipped_bytes, original_bytes)
 
 
 if __name__ == "__main__":
