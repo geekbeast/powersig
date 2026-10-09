@@ -205,6 +205,25 @@ A **CuPy** backend also exists under `powersig.cupy_backend`. It covers the forw
 Gram computation only — no autodiff and no pluggable static kernel — so the JAX and
 PyTorch backends are the supported choices for general use.
 
+## Precision regimes
+
+PowerSig computes in float64 by default: importing the JAX backend enables
+`jax_enable_x64` and sets the default matmul precision to `highest`, and the
+backend classes default to float64 arrays. To run every backend in float32 with
+TensorFloat-32 disabled, configure the regime once, before the first kernel
+evaluation:
+
+```python
+from powersig import precision
+
+record = precision.configure("float32")   # NVIDIA_TF32_OVERRIDE=0, JAX x64 off, matmul 'highest', torch TF32 off
+ps = PowerSigJax(order=8)                 # dtype now defaults to float32
+```
+
+`record` lists every switch and belongs next to a run's results;
+`POWERSIG_PRECISION=float32` in the environment does the same at import time.
+[docs/precision.md](docs/precision.md) explains why all four switches are needed.
+
 ## Testing
 
 ```bash

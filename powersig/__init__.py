@@ -15,7 +15,7 @@ import importlib as _importlib
 
 def __getattr__(name):
     """Lazy-import backend submodules so missing optional deps don't break import."""
-    _submodules = {"jax", "torch", "cupy_backend", "util"}
+    _submodules = {"jax", "torch", "cupy_backend", "util", "precision"}
     if name in _submodules:
         return _importlib.import_module(f".{name}", __name__)
 
@@ -41,4 +41,5 @@ __all__ = [
     "torch",
     "util",
     "cupy_backend",
+    "precision",
 ]
