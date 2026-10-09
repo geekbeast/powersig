@@ -20,7 +20,12 @@ from powersig.jax.diagonal import diagonal_tile_inputs
 
 
 class PowerSigJax:
-    def __init__(self, order: int = 32, static_kernel = static_kernels.linear_kernel, device: Optional[jax.Device] = None, dtype=jnp.float64):
+    def __init__(self, order: int = 32, static_kernel = static_kernels.linear_kernel, device: Optional[jax.Device] = None, dtype=None):
+        # dtype None follows the configured precision regime (float64 unless powersig.precision.configure was called)
+        if dtype is None:
+            from powersig import precision as _precision
+            dtype = _precision.default_dtype('jax')
+        self.dtype = dtype
         # Select device - prefer CUDA if available, otherwise use CPU
         self.order = order
         if device is None:

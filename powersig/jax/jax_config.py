@@ -6,6 +6,8 @@ Optimized for high-performance systems with multiple cores, high memory, and GPU
 import os
 import jax
 
+from powersig import precision as _precision
+
 # Assume high-end hardware
 CPU_COUNT = 32  # High core count
 TOTAL_MEMORY_GB = 64  # High memory (64GB)
@@ -29,8 +31,9 @@ def _update_first_supported(candidates, what):
 
 
 def configure_jax():
-    # Enable 64-bit precision
-    jax.config.update('jax_enable_x64', True)
+    # Precision regime: an explicit powersig.precision.configure() call wins, then POWERSIG_PRECISION in the
+    # environment, then the historical default (64-bit enabled, matmul precision 'highest').
+    _precision.apply_backend_import('jax')
     # jax.config.update('jax_default_dtype_bits', '64')
 
     # Create XLA flags for GPU optimization
@@ -53,7 +56,6 @@ def configure_jax():
         'execution-time optimization',
     )
 
-    jax.config.update('jax_default_matmul_precision', 'highest')
     # Enable and configure compilation cache
     jax.config.update('jax_enable_compilation_cache', True)
     jax.config.update('jax_compilation_cache_max_size', 2048 * 1024 * 1024)  # 2GB cache

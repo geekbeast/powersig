@@ -42,7 +42,7 @@ jobs:
         env:
           JAX_PLATFORMS: cpu
           NVIDIA_TF32_OVERRIDE: "0"
-        run: pytest tests/test_core_jax.py tests/test_diagonal_masking.py -v
+        run: pytest tests/test_core_jax.py tests/test_diagonal_masking.py tests/test_precision.py -v
 
       - name: Run PyTorch tests
         if: matrix.backend == 'torch'
@@ -52,4 +52,5 @@ jobs:
         run: |
           pytest tests/test_core_torch.py \
                  tests/test_autodiff_torch.py \
-                 tests/test_prefix_family_torch.py -v
+                 tests/test_prefix_family_torch.py \
+                 tests/test_precision.py -v

@@ -7,6 +7,7 @@ from tqdm.auto import tqdm
 from powersig.util.grid import get_diagonal_range
 
 from . import static_kernels
+from powersig import precision as _precision
 
 
 DIAGONAL_CHUNK_SIZE = 1024
@@ -166,15 +167,20 @@ def _device_index(device: torch.device) -> int:
     return torch.cuda.current_device()
 
 
+_precision.apply_backend_import('torch')
+
+
 class PowerSigTorch:
     def __init__(
         self,
         order: int = 32,
         static_kernel: Callable = static_kernels.linear_kernel,
         device: Optional[torch.device] = None,
-        dtype: torch.dtype = torch.float64,
+        dtype: Optional[torch.dtype] = None,
         compile_forward: bool = False,
     ):
+        if dtype is None:   # follow the configured precision regime (float64 unless powersig.precision.configure was called)
+            dtype = _precision.default_dtype('torch')
         self.order = order
         self.dtype = dtype
         self.static_kernel = static_kernel
