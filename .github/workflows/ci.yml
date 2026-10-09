@@ -29,5 +29,6 @@ jobs:
       - name: Run tests
         env:
           JAX_PLATFORMS: cpu
+          NVIDIA_TF32_OVERRIDE: "0"
         run: |
-          pytest tests/test_core_jax.py -v
+          pytest tests/test_core_jax.py tests/test_diagonal_masking.py -v
