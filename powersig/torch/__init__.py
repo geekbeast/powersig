@@ -22,7 +22,7 @@ from .autodiff import (
     compute_prefix_family_fast_diff,
     compute_sig_kernel_fast_diff,
 )
-from .static_kernels import linear_kernel, rbf_fn, rbf_kernel
+from .static_kernels import linear_kernel, rbf_fn, rbf_kernel, rel_l2_kernel
 from .utils import (
     chebychev_clamp_and_map,
     chebychev_transformation,
@@ -58,6 +58,7 @@ __all__ = [
     "linear_kernel",
     "rbf_fn",
     "rbf_kernel",
+    "rel_l2_kernel",
     "scale_and_shift",
     "torch_compute_differences",
     "unity_clamp_and_map",

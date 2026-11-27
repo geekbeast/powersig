@@ -10,6 +10,7 @@ from jax import value_and_grad
 
 from powersig.jax import static_kernels as jax_static_kernels
 from powersig.jax.algorithm import PowerSigJax
+from powersig.torch import rel_l2_kernel
 from powersig.torch import static_kernels as torch_static_kernels
 from powersig.torch.algorithm import (
     PowerSigTorch,
@@ -186,6 +187,24 @@ class TestGramMatrix(unittest.TestCase):
         )
         np.testing.assert_allclose(torch_gram, jax_gram, rtol=1e-9, atol=1e-11)
 
+    def test_rel_l2_matches_linear_gram_on_unit_paths(self):
+        # Include the origin, a repeated direction and float32 radii whose
+        # squares underflow or overflow. Normalize the reference in float64.
+        x = np.array([[[0, 0], [3e-25, 4e-25], [3e25, 4e25]],
+                      [[1, -1], [0, 0], [-4, 3]]], dtype=np.float64)
+        y = np.array([[[0, 2], [-3, 1], [4e25, 3e25], [0, 0]]], dtype=np.float64)
+
+        def unit_path(path):
+            norm = np.linalg.norm(path, axis=-1, keepdims=True)
+            return path / np.where(norm == 0, 1, norm)
+
+        expected = self.ps_jax(unit_path(x), unit_path(y))
+        torch_ps = PowerSigTorch(order=8, static_kernel=rel_l2_kernel, device=CPU, dtype=torch.float32)
+        jax_ps = PowerSigJax(order=8, static_kernel=jax_static_kernels.rel_l2_kernel,
+                             device=JAX_CPU, dtype=jnp.float64)
+        for gram in (torch_ps(x, y, show_progress=False), jax_ps(x, y)):
+            np.testing.assert_allclose(gram, expected, rtol=2e-5, atol=1e-6)
+
     def test_rbf_kernel_matches_jax_reference(self):
         rng = np.random.default_rng(99)
         X_np = rng.normal(size=(2, 8, 2))
@@ -209,6 +228,13 @@ class TestGramMatrix(unittest.TestCase):
 
 
 class TestAutograd(unittest.TestCase):
+    def test_rel_l2_gradient_at_zero_and_nonzero_endpoints(self):
+        points = torch.tensor([[3., 4.], [0., 0.], [1., 0.], [0., 1.]],
+                              dtype=torch.float64, requires_grad=True)
+        grad, = torch.autograd.grad(rel_l2_kernel(*points), points)
+        expected = [[0.224, -0.168], [0., 0.], [0., 0.8], [-0.6, 0.]]
+        np.testing.assert_allclose(grad, expected, atol=1e-12)
+
     def test_linear_gradient_matches_jax(self):
         rng = np.random.default_rng(123)
         X_np = rng.normal(size=(8, 2))
