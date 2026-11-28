@@ -43,6 +43,14 @@ dependencies = [
 
 [project.optional-dependencies]
 jax-cpu = ["jax[cpu]>=0.4.34"]
+jax-trn1 = [
+    "jax==0.10.0",
+    "jaxlib==0.10.0",
+    "jax-neuronx==0.10.0.1.0.11459",
+    "libneuronxla==3.0.5356.0",
+    "neuronx-cc==2.27.5334.0",
+    "islpy==2026.1",
+]
 jax-gpu = ["jax[cuda13]>=0.10.0"]
 torch = ["torch>=2.5.0"]
 cupy = ["cupy-cuda12x>=13.4.1"]
