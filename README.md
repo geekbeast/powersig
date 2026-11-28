@@ -35,6 +35,7 @@ pip install "powersig[torch] @ git+https://github.com/geekbeast/powersig.git"
 | --- | --- | --- |
 | `jax-cpu` | JAX | `jax[cpu]>=0.4.34` |
 | `jax-gpu` | JAX | `jax[cuda13]>=0.10.0` |
+| `jax-trn1` | JAX on AWS Trainium1 (experimental) | JAX 0.10 and the Neuron compiler and PJRT plugin |
 | `torch` | PyTorch | `torch>=2.5.0` |
 | `cupy` / `cupy-cuda13` | CuPy | `cupy-cuda12x` / `cupy-cuda13x` |
 | `all` | JAX + PyTorch + CuPy | all of the above |
@@ -205,6 +206,50 @@ is far less punishing there than it is for single pairs.
 A **CuPy** backend also exists under `powersig.cupy_backend`. It covers the forward
 Gram computation only — no autodiff and no pluggable static kernel — so the JAX and
 PyTorch backends are the supported choices for general use.
+
+## JAX on Trainium1 (experimental)
+
+`powersig.jax.trn1.PowerSigTrn1` evaluates a batch of path pairs on one
+NeuronCore in float32. On a Trn1 host with the Neuron driver and runtime,
+install the optional dependencies from the checkout and set the compiler
+precision before starting Python.
+
+```bash
+pip install --extra-index-url https://pip.repos.neuron.amazonaws.com ".[jax-trn1]"
+export JAX_PLATFORMS=neuron,cpu JAX_ENABLE_X64=0 POWERSIG_PRECISION=float32
+export NEURON_CC_FLAGS="--auto-cast=none"
+```
+
+```python
+from functools import partial
+
+import jax
+from powersig.jax.static_kernels import linear_kernel, rbf_kernel, rel_l2_kernel
+from powersig.jax.trn1 import PowerSigTrn1
+
+ps = PowerSigTrn1(order=8, static_kernel=rel_l2_kernel)
+# Other choices include linear_kernel (the default) or partial(rbf_kernel, bandwidth=0.75).
+gram = ps(X, Y)                            # (batch_x, batch_y)
+x, y = jax.device_put((X[0], Y[0]), ps.device)
+dx, dy = jax.grad(ps.compute_signature_kernel, argnums=(0, 1))(x, y)
+```
+
+The estimator selects the first visible NeuronCore. Device placement follows
+the enclosing JAX computation under `jit` or `grad`, so place transformed
+inputs on that core. Path lengths, batch sizes and order specialize the compiled
+program. Use batches that fit one core's memory.
+
+Each anti-diagonal has its own compile-time width. For 47 and 94 samples, the
+grid has 46 × 93 cells. Padding all 138 diagonals to width 46 would schedule
+6,348 cell updates per path pair. This sweep schedules exactly 4,278. The
+compiler can still pad matrix multiplies for the hardware. To measure warm
+latency, call `ps(X, Y).block_until_ready()` once to compile and synchronize,
+then time repeated synchronized calls with the same shapes.
+
+The CPU parity tests cover all three kernels and gradients with respect to
+both paths. On a Trn1 host with an available core and the environment above,
+run the same comparisons on hardware with
+`POWERSIG_TEST_TRN1=1 python -m pytest tests/test_trn1_jax.py`.
 
 ## Rel-L2 (cosine) static kernel
 
