@@ -22,7 +22,29 @@ from powersig.jax.algorithm import (
     _round_to_power_of_2,
 )
 from powersig.jax.algorithm import get_diagonal_range as jax_get_diagonal_range
+from powersig.jax.static_kernels import rel_l2_kernel
 from powersig.util.grid import get_diagonal_range
+
+
+class TestRelL2Kernel(unittest.TestCase):
+    def test_four_corner_cosines_at_different_scales(self):
+        # The second cell spans the same directions at tiny and huge radii.
+        radii = jnp.array([[1], [1e-25]], dtype=jnp.float32)
+        x2 = radii * jnp.array([3, 4])
+        x1 = jnp.array([1, 0]) / radii
+        y2 = jnp.array([4, 3]) / radii
+        y1 = radii * jnp.array([3, -4])
+        rho = rel_l2_kernel(x2, x1, y2, y1)
+        expected = 24 / 25 - 4 / 5 - (-7 / 25) + 3 / 5
+        self.assertEqual(rho.dtype, jnp.float32)
+        np.testing.assert_allclose(rho, [expected, expected], rtol=1e-6)
+
+    def test_gradient_at_zero_and_nonzero_endpoints(self):
+        points = jnp.array([[3., 4.], [0., 0.], [1., 0.], [0., 1.]])
+        grad = jax.grad(lambda p: rel_l2_kernel(*p))(points)
+        # At each nonzero endpoint the unit-vector Jacobian is (I - u u.T) / ||x||.
+        expected = [[0.224, -0.168], [0., 0.], [0., 0.8], [-0.6, 0.]]
+        np.testing.assert_allclose(grad, expected, atol=1e-12)
 
 
 # ---------------------------------------------------------------------------

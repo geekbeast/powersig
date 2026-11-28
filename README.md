@@ -153,7 +153,8 @@ PowerSigTorch(order=32, static_kernel=linear_kernel, device=None, dtype=torch.fl
 - `order` — truncation order of the power series. Higher is more accurate and more
   expensive; 8–32 is the usual range.
 - `static_kernel` — the static kernel lifted to a signature kernel. `linear_kernel`
-  (default) and `rbf_kernel` are provided by each backend's `static_kernels` module.
+  (default), `rbf_kernel`, and `rel_l2_kernel` are provided by each backend's
+  `static_kernels` module.
 - `device` — defaults to the first available GPU, else CPU.
 - `dtype` — defaults to float64. Use float32 to trade accuracy for speed.
 
@@ -204,6 +205,27 @@ is far less punishing there than it is for single pairs.
 A **CuPy** backend also exists under `powersig.cupy_backend`. It covers the forward
 Gram computation only — no autodiff and no pluggable static kernel — so the JAX and
 PyTorch backends are the supported choices for general use.
+
+## Rel-L2 (cosine) static kernel
+
+Pass `static_kernel=rel_l2_kernel` to either constructor to compare changes in
+direction. Rescaling any individual path sample by a positive factor leaves the
+result unchanged.
+
+For a nonzero sample, let $u(x)=x/\lVert x\rVert_2$. The pointwise cosine kernel
+is $k(x,y)=u(x)\cdot u(y)$. On segments that avoid the origin, integrating
+the mixed derivative over the cell gives the alternating sum of the four corners.
+
+$$
+\begin{aligned}
+\rho &= \int_0^1\!\int_0^1 \partial_s\partial_t k(x(s),y(t))\,dt\,ds \\
+     &= k(x_2,y_2)-k(x_1,y_2)-k(x_2,y_1)+k(x_1,y_1) \\
+     &= \big(u(x_2)-u(x_1)\big)\cdot\big(u(y_2)-u(y_1)\big).
+\end{aligned}
+$$
+
+For paths that include the origin, both backends use $u(0)=0$ and assign a zero
+gradient to that sample.
 
 ## Precision regimes
 
